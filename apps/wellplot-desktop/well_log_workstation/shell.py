@@ -751,6 +751,19 @@ class WellLogWorkstationWindow(QMainWindow):
         self.section_contact_btn.setEnabled(False)
         self.section_contact_btn.clicked.connect(self._on_edit_section_contacts)
         sl.addWidget(self.section_contact_btn)
+        # Section well spacing (FRS §3.1 / P1-C): equal vs geographic (survey).
+        spacing_row = QHBoxLayout()
+        spacing_row.addWidget(QLabel("井距模式"))
+        self.section_spacing_combo = QComboBox()
+        self.section_spacing_combo.setObjectName("SectionWellSpacing")
+        self.section_spacing_combo.addItem("等井距", "equal")
+        self.section_spacing_combo.addItem("地理井距（测斜闭合位移）", "geographic")
+        self.section_spacing_combo.setEnabled(False)
+        self.section_spacing_combo.currentIndexChanged.connect(
+            self._on_section_spacing_changed
+        )
+        spacing_row.addWidget(self.section_spacing_combo, 1)
+        sl.addLayout(spacing_row)
         self.section_canvas = SectionCanvas()
         sl.addWidget(self.section_canvas, 1)
         self.document_tabs.addTab(self._section_host, "油藏剖面")
@@ -2480,6 +2493,76 @@ class WellLogWorkstationWindow(QMainWindow):
         emit_plot_changed(plot.id)
         self._update_status()
 
+    def _section_trajectory_data(
+        self,
+        plot: PlotDocument,
+        presentations: list[HostPresentation],
+        well_positions: list[tuple[float, float]],
+        shifts: dict[str, float],
+        surveys: dict[str, list],
+    ) -> tuple[list[float], list[np.ndarray | None]]:
+        """Compute geographic-spacing well offsets + trajectory polylines.
+
+        Offsets (well-index units) are the projected closure of each well's
+        survey on the section azimuth, normalised by the average inter-well
+        spacing; trajectory polylines are ``[offset_units, md + shift]``.
+
+        Wells without a survey contribute a 0 offset and no trajectory line.
+        """
+        from well_log_workstation.section_geometry import (
+            section_trajectory_polyline,
+        )
+        from well_log_workstation.survey import compute_trajectory
+
+        # Section azimuth: bearing of the first→last wellhead; fall back to
+        # 0 (N–S) when coordinates are missing.
+        azimuth_deg = 0.0
+        if len(well_positions) >= 2:
+            dx = well_positions[-1][0] - well_positions[0][0]
+            dy = well_positions[-1][1] - well_positions[0][1]
+            if dx or dy:
+                azimuth_deg = math.degrees(math.atan2(dx, dy))
+        # Average inter-well spacing (metres-ish in the lng/lat plane); when
+        # unavailable use the max survey closure so offsets stay reasonable.
+        dists = [
+            math.hypot(
+                well_positions[i + 1][0] - well_positions[i][0],
+                well_positions[i + 1][1] - well_positions[i][1],
+            )
+            for i in range(len(well_positions) - 1)
+        ]
+        spacing_m = sum(dists) / len(dists) if dists else 0.0
+
+        offsets: list[float] = []
+        trajectories: list[np.ndarray | None] = []
+        max_closure = 0.0
+        for well_id, pres in zip(plot.well_ids, presentations, strict=False):
+            stations = surveys.get(pres.well_name) or []
+            if not stations:
+                offsets.append(0.0)
+                trajectories.append(None)
+                continue
+            traj = compute_trajectory(stations)
+            closure = float(traj.closure_dist[-1]) if traj.closure_dist.size else 0.0
+            max_closure = max(max_closure, closure)
+        # Second pass once the max closure is known (for degenerate spacing).
+        for well_id, pres in zip(plot.well_ids, presentations, strict=False):
+            stations = surveys.get(pres.well_name) or []
+            if not stations:
+                continue
+            traj = compute_trajectory(stations)
+            eff_spacing = spacing_m or (max_closure or 1.0)
+            pl = section_trajectory_polyline(
+                traj, azimuth_deg, eff_spacing, shift=shifts.get(pres.well_name, 0.0)
+            )
+            trajectories.append(pl)
+            offsets.append(float(pl[-1, 0]) if pl.shape[0] else 0.0)
+        # Pad any well that had no survey (already appended in first pass).
+        while len(offsets) < len(presentations):
+            offsets.append(0.0)
+            trajectories.append(None)
+        return offsets, trajectories
+
     def _show_section(self, plot: PlotDocument) -> None:
         """Render the reservoir section (host-side, Phase-2 T4/T5)."""
         if self._workspace is None:
@@ -2530,6 +2613,21 @@ class WellLogWorkstationWindow(QMainWindow):
                     surveys[pres.well_name] = stations
         shifts = datum.compute_shifts(well_dicts, surveys=surveys or None)
 
+        # Well trajectory display (P1-C / FRS §3.1): geographic spacing places
+        # each well by its survey closure projected on the section azimuth,
+        # plus a curved trajectory polyline per deviated well.
+        well_spacing = str(getattr(plot, "well_spacing", None) or "equal")
+        if well_spacing not in ("equal", "geographic"):
+            well_spacing = "equal"
+        well_x_offsets: list[float] | None = None
+        well_trajectories: list[np.ndarray | None] | None = None
+        if well_spacing == "geographic":
+            well_x_offsets, well_trajectories = self._section_trajectory_data(
+                plot, presentations, well_positions, shifts, surveys
+            )
+        self.section_canvas.set_well_x_offsets(well_x_offsets)
+        self.section_canvas.set_well_trajectories(well_trajectories)
+
         # Section geometry (T4): faults / contacts / tie quads.
         faults: list[SectionFault2D] = faults_from_json(
             getattr(plot, "faults", None) or []
@@ -2576,6 +2674,15 @@ class WellLogWorkstationWindow(QMainWindow):
         )
         self.section_fault_btn.setEnabled(True)
         self.section_contact_btn.setEnabled(True)
+        # Sync the spacing combo from the plot doc (guarded against re-entry).
+        self._section_spacing_guard = True
+        try:
+            want = str(getattr(plot, "well_spacing", None) or "equal")
+            idx = self.section_spacing_combo.findData(want)
+            self.section_spacing_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        finally:
+            self._section_spacing_guard = False
+        self.section_spacing_combo.setEnabled(True)
         self.document_tabs.setCurrentWidget(self._section_host)
         emit_plot_changed(plot.id)
         self._update_status()
@@ -4758,6 +4865,31 @@ class WellLogWorkstationWindow(QMainWindow):
         self._show_section(plot)
         self.statusBar().showMessage(
             f"已更新流体界面（{len(new_contacts)} 条）", 4000
+        )
+
+    def _on_section_spacing_changed(self, _idx: int = -1) -> None:
+        """Toggle equal vs geographic well spacing (FRS §3.1 / P1-C)."""
+        guard = getattr(self, "_section_spacing_guard", False)
+        if guard or self._workspace is None or self._active_plot_type != "section":
+            return
+        if not self._active_plot_id:
+            return
+        spacing = str(self.section_spacing_combo.currentData() or "equal")
+        if spacing not in ("equal", "geographic"):
+            spacing = "equal"
+        try:
+            plot = load_plot_document(self._workspace, self._active_plot_id)
+        except WorkspaceError:
+            return
+        plot.well_spacing = spacing
+        try:
+            save_plot_document(self._workspace, plot)
+        except WorkspaceError:
+            pass
+        self._show_section(plot)
+        self.statusBar().showMessage(
+            f"井距模式：{'地理井距' if spacing == 'geographic' else '等井距'}",
+            4000,
         )
 
     def _on_new_composite_plot(self) -> None:

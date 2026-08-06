@@ -29,7 +29,10 @@ from well_log_workstation.section_geometry.tie_polygons import (
     tie_quads,
 )
 from well_log_workstation.section_geometry.trajectory_2d import (
+    normalize_offsets,
+    project_closure_to_section,
     project_trajectory_2d,
+    section_trajectory_polyline,
 )
 
 __all__ = [
@@ -55,4 +58,7 @@ __all__ = [
     "TieQuad2D",
     "tie_quads",
     "project_trajectory_2d",
+    "project_closure_to_section",
+    "normalize_offsets",
+    "section_trajectory_polyline",
 ]

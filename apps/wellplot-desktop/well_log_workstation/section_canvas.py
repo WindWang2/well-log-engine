@@ -55,6 +55,11 @@ class SectionCanvas(QWidget):
         self._drag_y: int | None = None
         self._drag_d0: float | None = None
         self._drag_d1: float | None = None
+        # Well trajectory display (P1-C / FRS §3.1): per-well lateral offsets
+        # in well-index units (0 = equal spacing) and per-well trajectory
+        # polylines [x_offset_units, display_depth].
+        self._well_x_offsets: list[float] | None = None
+        self._well_trajectories: list[np.ndarray | None] | None = None
 
     # -- data -----------------------------------------------------------
 
@@ -73,6 +78,34 @@ class SectionCanvas(QWidget):
         self._tie_quads = list(tie_quads or [])
         self._fit_depth()
         self.update()
+
+    def set_well_x_offsets(self, offsets: list[float] | None) -> None:
+        """Set per-well lateral offsets in well-index units (0 = equal)."""
+        if offsets is None:
+            self._well_x_offsets = None
+        else:
+            self._well_x_offsets = [float(o) for o in offsets]
+        self.update()
+
+    def set_well_trajectories(
+        self, trajectories: list[np.ndarray | None] | None
+    ) -> None:
+        """Set per-well trajectory polylines ``[x_offset_units, depth]``."""
+        if trajectories is None:
+            self._well_trajectories = None
+        else:
+            self._well_trajectories = list(trajectories)
+        self.update()
+
+    def well_x_offsets(self) -> list[float] | None:
+        return None if self._well_x_offsets is None else list(self._well_x_offsets)
+
+    def well_trajectories(self) -> list[np.ndarray | None] | None:
+        return (
+            None
+            if self._well_trajectories is None
+            else list(self._well_trajectories)
+        )
 
     def columns(self) -> list[HostPresentation]:
         return list(self._columns)
@@ -173,7 +206,10 @@ class SectionCanvas(QWidget):
             return top + ((d - d0) / (d1 - d0)) * (bottom - top)
 
         def x_well(i: int) -> float:
-            return 8 + i * (col_w + gap) + col_w / 2
+            return self.unit_to_pixel(i, col_w, gap)
+
+        def x_unit(u: float) -> float:
+            return self.unit_to_pixel(u, col_w, gap)
 
         # 0. Tie quads (under everything). Apply fault throws to the corners
         # so quads crossing a fault plane show the down-dip offset; then split
@@ -187,7 +223,7 @@ class SectionCanvas(QWidget):
             poly = QPolygonF()
             for (qx, qy) in item.corners:
                 xi = min(max(qx / max(1.0, n - 1), 0.0), float(n - 1))
-                cx = 8 + xi * (col_w + gap) + col_w / 2
+                cx = x_unit(xi)
                 poly.append(QPointF(cx, y_map(qy)))
             p.setPen(Qt.PenStyle.NoPen)
             if item.pattern_id:
@@ -227,7 +263,7 @@ class SectionCanvas(QWidget):
 
         # 1. Well columns + curves (mirror CorrelationCanvas)
         for i, pres in enumerate(self._columns):
-            x0 = 8 + i * (col_w + gap)
+            x0 = x_well(i) - col_w / 2
             p.setPen(QPen(QColor("#333"), 1))
             p.drawRect(x0, 8, col_w - 2, 22)
             p.drawText(x0 + 4, 24, pres.well_name[:18])
@@ -274,7 +310,25 @@ class SectionCanvas(QWidget):
                     p.drawLine(int(prev[0]), int(prev[1]), int(xx), int(yy))
                 prev = (xx, yy)
 
-        # 2. Fault polylines (red, dashed — FRS §3.3 standard for faults).
+        # 2. Well trajectory polylines (P1-C / FRS §3.1): the deviated /
+        # horizontal segments of each well, shown grey dashed. Drawn before
+        # fault lines so structural overlays stay on top.
+        if self._well_trajectories:
+            pen = QPen(QColor("#94a3b8"), 1.2, Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            for i, traj in enumerate(self._well_trajectories):
+                if traj is None or traj.shape[0] < 2 or i >= n:
+                    continue
+                prev = None
+                for (tx, ty) in traj:
+                    u = min(max(float(i) + float(tx), 0.0), float(n - 1))
+                    cx = x_unit(u)
+                    yy = y_map(float(ty))
+                    if prev is not None:
+                        p.drawLine(int(prev[0]), int(prev[1]), int(cx), int(yy))
+                    prev = (cx, yy)
+
+        # 3. Fault polylines (red, dashed — FRS §3.3 standard for faults).
         for fault in self._faults:
             pts = fault_polyline(fault, n)
             if pts.shape[0] < 2:
@@ -286,13 +340,13 @@ class SectionCanvas(QWidget):
             prev = None
             for (fx, fy) in pts:
                 xi = min(max(fx / max(1.0, n - 1), 0.0), float(n - 1))
-                cx = 8 + xi * (col_w + gap) + col_w / 2
+                cx = x_unit(xi)
                 yy = y_map(fy)
                 if prev is not None:
                     p.drawLine(int(prev[0]), int(prev[1]), int(cx), int(yy))
                 prev = (cx, yy)
 
-        # 3. Contact polylines (OWC blue / GOC orange, dotted per ADR 0050)
+        # 4. Contact polylines (OWC blue / GOC orange, dotted per ADR 0050)
         for contact in self._contacts:
             pen = QPen(QColor(contact.resolved_color()), 1.4, Qt.PenStyle.SolidLine)
             pen.setDashPattern([1.0, 1.0])  # dotted — fluid-contact convention
@@ -301,18 +355,42 @@ class SectionCanvas(QWidget):
                 prev = None
                 for (cx0, cy) in seg:
                     xi = min(max(cx0 / max(1.0, n - 1), 0.0), float(n - 1))
-                    cx = 8 + xi * (col_w + gap) + col_w / 2
+                    cx = x_unit(xi)
                     yy = y_map(cy)
                     if prev is not None:
                         p.drawLine(int(prev[0]), int(prev[1]), int(cx), int(yy))
                     prev = (cx, yy)
 
+        spacing_note = "地理井距" if self._well_x_offsets else "等井距"
         p.setPen(QColor("#555"))
         p.drawText(
             8,
             h - 6,
-            f"油藏剖面 · {n} 井 · 共享深度 {d0:.1f}–{d1:.1f} · "
+            f"油藏剖面 · {n} 井 · {spacing_note} · 共享深度 {d0:.1f}–{d1:.1f} · "
             f"断层 {len(self._faults)} · 接触 {len(self._contacts)} · "
             f"充填 {len(self._tie_quads)} · 滚轮缩放 / 拖动平移",
         )
         p.end()
+
+    def unit_to_pixel(self, u: float, col_w: int, gap: int) -> float:
+        """Map a well-index unit (0..n-1, possibly fractional) to pixels.
+
+        With per-well lateral offsets set, the offset is linearly interpolated
+        between the two bounding wells so quads/faults/contacts spanning a gap
+        follow the offset wells. Without offsets this is the classic
+        ``8 + u*(col_w+gap) + col_w/2`` mapping.
+        """
+        u = max(0.0, min(float(u), float(max(len(self._columns) - 1, 0))))
+        base = 8 + u * (col_w + gap) + col_w / 2
+        if not self._well_x_offsets:
+            return base
+        n = len(self._columns)
+        if n < 2:
+            return base
+        i = int(math.floor(u))
+        j = min(i + 1, n - 1)
+        frac = u - i
+        off_i = self._well_x_offsets[i]
+        off_j = self._well_x_offsets[j]
+        interp = off_i + frac * (off_j - off_i)
+        return base + interp * (col_w + gap)

@@ -56,7 +56,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 剖面选井/排序/增删/镜像 | 🟡 | correlation 列排序/间隙持久化 (`test_..._correlation_layout.py`) | 镜像翻转 → Desktop |
 | 平面画线自动取井生成剖面 | ❌ | `plane_map_view` 仅井位散点（无选井/切线） | → Desktop(平面交互) |
 | 高程剖面 (MSL) / 拉平剖面 | 🟡 | `datum/well_section_datum.py:19-79` md/tvdss/horizon；tvdss 为 -kb 近似（非真海拔） | 真 TVDSS（需测斜+KB）→ SDK(轨迹) |
-| 斜井 TVD 剖面 / 沿轨迹展布 (Unfolded) | ❌ | `trajectory_2d` 直线；`datum` 拒绝 tvd | → SDK(轨迹) + Desktop(展布) |
+| 斜井 TVD 剖面 / 沿轨迹展布 (Unfolded) | 🟡 | `survey.py` 最小曲率法 + datum tvd 模式 + **地理井距展布**（井列按测斜闭合位移投影摆放 + 井内弯曲轨迹线，`well_spacing="geographic"`）；Unfolded（沿 MD 展布剖面类型）仍缺 | **P1(计算+datum+展布✅)/后续**: Unfolded 剖面类型 |
 | 实际井距/等井距、纵横比例尺解耦 | ❌ | correlation 等距列 | → Desktop(画布布局) |
 | 分层线拖拽吸附 (Snap Picking) | 🟡 | link 拾取 10px 容差 (`correlation_canvas.py:162-202`)；无曲线极值吸附 | → Desktop(磁吸) |
 | 曲线形态自动对比 | 🟡 | 仅名字匹配 (`correlation_links.match_tops_by_name:88-132`) | → Desktop(相似度) + SDK(信号处理) |
@@ -116,7 +116,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | **P1-B 流体界面** ✅ | — | 已交付：`section_geometry/contact_section.py` 2D 每井深度模型（替换 3D CRS 死代码）；`FluidContact2D` + `contact_segment_2d` + `split_quad_by_contact`（quad 切上油/气·下水双色填充）；`PlotDocument.contacts` 持久化；section 画布渲染接触线 + 双色 quad；「编辑流体界面」对话框；旧 3D 测试迁移 | 几何单测（切分/边界/缺井）；render smoke；持久化往返 |
 | **P1-C 测斜/TVD datum** ✅ | — | 已交付：`survey.py` 最小曲率法（MD/Inc/Az → TVD/TVDSS/ΔN/ΔE/闭合位移）；测斜存 `wells/<id>/survey.json`（对称 tops，load/save）；datum 增 `tvd` 模式（TVD−MD 位移，无 survey 降级 0）；`_show_section` 读 `plot.datum_mode` + tvd 加载 survey；「编辑测斜数据」菜单 + `SurveyDialog` | 计算单测（直井/斜井/边界）；插值；serde；datum tvd；存储往返 |
 | **P1-B 流体界面** | 界面切割多边形 | OWC/GOC 持久化 + UI + 油水双色/过渡带渲染 |
-| **P1-C 挂井与展布** | 测斜→TVD/TVDSS/ΔN/ΔE 计算；真 TST | 部分交付：`survey.py` 最小曲率法 + datum tvd 模式（✅）；真轨迹展布画布（按闭合位移摆列、斜井段弯曲）+ Unfolded（沿 MD 展布）仍缺 | 计算单测已通过；展布画布留后续 |
+| **P1-C 挂井与展布** | 测斜→TVD/TVDSS/ΔN/ΔE 计算；真 TST | 已交付：`survey.py` 最小曲率法 + datum tvd 模式 + 地理井距展布（`PlotDocument.well_spacing`，井列按闭合位移投影摆放 + 井内弯曲轨迹线）；Unfolded（沿 MD 展布）与真 TST 仍缺 | 计算/投影/展布单测 + 画布 smoke + 持久化往返 |
 
 ### P2 — 公式 / 联动 / 出版整饰
 

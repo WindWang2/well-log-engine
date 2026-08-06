@@ -143,6 +143,10 @@ class PlotDocument:
     # Section fluid contacts (FRS §3.3 / P1-B): list of serialized
     # FluidContact2D dicts (OWC/GOC per-well depth). Optional; empty = none.
     contacts: list[dict] = field(default_factory=list)
+    # Section well spacing (FRS §3.1 / P1-C): "equal" = fixed column interval,
+    # "geographic" = wells placed by survey closure projected on the section
+    # azimuth (+ curved trajectory polylines). Optional; default equal.
+    well_spacing: str = "equal"
 
     def absolute_path(self, workspace: Workspace) -> Path:
         return workspace.root / self.path
@@ -216,6 +220,8 @@ def _to_json(doc: PlotDocument) -> dict[str, Any]:
         payload["faults"] = [dict(f) for f in doc.faults if isinstance(f, dict)]
     if doc.type == "section" or doc.contacts:
         payload["contacts"] = [dict(c) for c in doc.contacts if isinstance(c, dict)]
+    if doc.type == "section" or doc.well_spacing != "equal":
+        payload["well_spacing"] = str(doc.well_spacing)
     return payload
 
 
@@ -361,6 +367,9 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         for c in raw_contacts:
             if isinstance(c, dict):
                 contacts.append(dict(c))
+    well_spacing = str(data.get("well_spacing") or "equal")
+    if well_spacing not in ("equal", "geographic"):
+        well_spacing = "equal"
     return PlotDocument(
         id=str(data["id"]),
         name=str(data.get("name") or data["id"]),
@@ -386,6 +395,7 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         litho_pattern_map=litho_pattern_map,
         faults=faults,
         contacts=contacts,
+        well_spacing=well_spacing,
     )
 
 
@@ -470,6 +480,7 @@ def load_plot_document(workspace: Workspace, plot_id: str) -> PlotDocument:
             litho_pattern_map=dict(doc.litho_pattern_map),
             faults=list(doc.faults),
             contacts=list(doc.contacts),
+            well_spacing=doc.well_spacing,
         )
     # Lazy import: keep this module importable without PySide6 (see save).
     from well_log_workstation.events import restore_plot_revision
