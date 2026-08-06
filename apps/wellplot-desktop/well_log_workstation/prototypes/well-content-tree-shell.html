@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PROTOTYPE — 单井数据树 + 图/表切换壳层</title>
+<style>
+  :root {
+    --bg: #1e1f22;
+    --panel: #2b2d30;
+    --panel2: #313338;
+    --border: #3c3f41;
+    --text: #e8e8e8;
+    --muted: #9aa0a6;
+    --accent: #3d8bfd;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --empty: #484f58;
+    --track: #58a6ff;
+    --leaf: #7ee787;
+    --font: "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 var(--font); }
+  body { display: flex; flex-direction: column; padding-bottom: 64px; }
+
+  .banner {
+    background: #5c1a1a; color: #ffd7d7; padding: 6px 12px; font-size: 12px;
+    border-bottom: 1px solid #8b2e2e; flex: 0 0 auto;
+  }
+  .banner code { background: #3a1010; padding: 1px 5px; border-radius: 3px; }
+
+  /* app chrome */
+  .menubar { background: var(--panel); border-bottom: 1px solid var(--border); padding: 4px 10px; color: var(--muted); flex: 0 0 auto; }
+  .menubar span { margin-right: 16px; }
+  .shell { flex: 1; display: flex; min-height: 0; gap: 0; }
+  .pane {
+    background: var(--panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; min-width: 0;
+  }
+  .pane:last-child { border-right: none; }
+  .pane-h {
+    padding: 8px 10px; font-weight: 600; border-bottom: 1px solid var(--border);
+    background: var(--panel2); display: flex; align-items: center; gap: 8px;
+  }
+  .pane-h .sub { font-weight: 400; color: var(--muted); font-size: 11px; }
+  .pane-body { flex: 1; overflow: auto; padding: 8px; }
+  .left { width: 220px; flex: 0 0 220px; }
+  .mid { flex: 1; }
+  .right { width: 260px; flex: 0 0 260px; }
+  .mid-tree { width: 200px; flex: 0 0 200px; } /* variant C only */
+
+  /* tabs */
+  .tabs { display: flex; border-bottom: 1px solid var(--border); background: var(--panel2); }
+  .tab {
+    flex: 1; text-align: center; padding: 6px; cursor: pointer; color: var(--muted);
+    border-bottom: 2px solid transparent; user-select: none;
+  }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+  /* tree */
+  .tree ul { list-style: none; margin: 0; padding-left: 14px; }
+  .tree > ul { padding-left: 0; }
+  .tree li { margin: 2px 0; }
+  .node {
+    display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 4px;
+    cursor: default;
+  }
+  .node:hover { background: #3a3d41; }
+  .node.selected { background: #264f78; }
+  .node .icon { width: 14px; text-align: center; color: var(--muted); font-size: 11px; }
+  .node .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node.leaf .name { color: var(--leaf); }
+  .node.source .name { color: var(--track); }
+  .node input[type=checkbox] { accent-color: var(--accent); }
+  .tri { font-size: 10px; color: var(--muted); width: 12px; }
+  .badge {
+    font-size: 10px; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0 5px;
+  }
+
+  /* catalog */
+  .catalog-item {
+    padding: 5px 8px; border-radius: 4px; cursor: pointer; margin: 2px 0;
+  }
+  .catalog-item:hover { background: #3a3d41; }
+  .catalog-item.active { background: #264f78; }
+  .catalog-item .hint { color: var(--muted); font-size: 11px; }
+
+  /* center toolbar */
+  .toolbar {
+    display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+    border-bottom: 1px solid var(--border); background: var(--panel2); flex-wrap: wrap;
+  }
+  .seg {
+    display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+  }
+  .seg button {
+    background: transparent; border: 0; color: var(--muted); padding: 5px 14px;
+    cursor: pointer; font: inherit;
+  }
+  .seg button.active { background: var(--accent); color: #fff; }
+  .caption { color: var(--muted); font-size: 12px; }
+  .caption strong { color: var(--text); font-weight: 500; }
+
+  /* canvas mock */
+  .view { flex: 1; display: flex; flex-direction: column; min-height: 0; background: #121417; }
+  .graphic {
+    flex: 1; display: flex; gap: 2px; padding: 8px; min-height: 220px; overflow-x: auto;
+  }
+  .track-col {
+    flex: 0 0 72px; background: #1a1d21; border: 1px solid var(--border); border-radius: 2px;
+    display: flex; flex-direction: column;
+  }
+  .track-col .th {
+    font-size: 10px; text-align: center; padding: 4px 2px; border-bottom: 1px solid var(--border);
+    color: var(--leaf); white-space: nowrap; overflow: hidden;
+  }
+  .track-col .body {
+    flex: 1; position: relative; background:
+      repeating-linear-gradient(0deg, transparent, transparent 11px, #2a2e33 12px);
+  }
+  .track-col .curve {
+    position: absolute; inset: 8px 20% 8px 20%;
+    border-left: 2px solid var(--accent); opacity: 0.85;
+    border-radius: 40% 60% 30% 70% / 20% 40% 60% 80%;
+  }
+  .depth-col {
+    flex: 0 0 40px; color: var(--muted); font-size: 10px;
+    display: flex; flex-direction: column; justify-content: space-between; padding: 24px 0 8px;
+    text-align: right;
+  }
+  .empty-guide {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); border: 1px dashed var(--empty); margin: 16px; border-radius: 8px;
+    flex-direction: column; gap: 8px; text-align: center; padding: 24px;
+  }
+  .empty-guide strong { color: var(--text); }
+
+  /* table mock */
+  .table-wrap { flex: 1; overflow: auto; padding: 0; }
+  table.data {
+    border-collapse: collapse; width: max-content; min-width: 100%; font-size: 12px;
+  }
+  table.data th, table.data td {
+    border: 1px solid var(--border); padding: 3px 8px; text-align: right;
+    white-space: nowrap;
+  }
+  table.data th { background: var(--panel2); position: sticky; top: 0; color: var(--leaf); font-weight: 500; }
+  table.data td:first-child, table.data th:first-child { text-align: left; color: var(--muted); }
+  table.data tr.sel { background: #264f78; }
+  table.data tr:hover { background: #32363c; }
+  .soft-tip {
+    background: #3d2e00; color: #f0c14b; padding: 4px 10px; font-size: 11px;
+    border-bottom: 1px solid #5c4500; display: none;
+  }
+  .soft-tip.show { display: block; }
+
+  /* right pane sections */
+  .section { margin-bottom: 12px; }
+  .section h4 {
+    margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--muted); font-weight: 600;
+  }
+  .tpl {
+    padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px;
+    margin: 3px 0; cursor: pointer;
+  }
+  .tpl.active { border-color: var(--accent); background: #1a2f4a; }
+  .tpl .name { font-weight: 500; }
+  .tpl .meta { font-size: 11px; color: var(--muted); }
+  .btn {
+    background: var(--accent); color: #fff; border: 0; border-radius: 4px;
+    padding: 5px 10px; font: inherit; cursor: pointer; width: 100%; margin-top: 4px;
+  }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .readonly-list { font-size: 12px; color: var(--muted); }
+  .readonly-list li { margin: 2px 0; }
+  .callout {
+    border-left: 3px solid var(--accent); background: #1a2433; padding: 6px 8px;
+    font-size: 11px; color: var(--muted); margin: 8px 0;
+  }
+  .callout b { color: var(--text); }
+
+  /* status + state dump */
+  .statusbar {
+    flex: 0 0 auto; background: var(--panel); border-top: 1px solid var(--border);
+    padding: 4px 10px; font-size: 11px; color: var(--muted); display: flex; gap: 16px;
+  }
+  .state-dump {
+    flex: 0 0 auto; background: #0d1117; border-top: 1px solid var(--border);
+    padding: 6px 10px; font: 11px/1.35 ui-monospace, monospace; color: #8b949e;
+    max-height: 72px; overflow: auto;
+  }
+  .state-dump .k { color: #79c0ff; }
+
+  /* prototype switcher */
+  .proto-bar {
+    position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%);
+    z-index: 100; display: flex; align-items: center; gap: 8px;
+    background: #f0f0f0; color: #111; padding: 8px 12px; border-radius: 999px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.45); font-size: 13px; font-weight: 600;
+  }
+  .proto-bar button {
+    width: 32px; height: 32px; border-radius: 50%; border: 0; background: #111; color: #fff;
+    cursor: pointer; font-size: 16px; line-height: 1;
+  }
+  .proto-bar .label { min-width: 220px; text-align: center; }
+  .proto-bar .hint { font-weight: 400; font-size: 11px; color: #555; display: block; }
+
+  /* variant-specific shell rows */
+  .shell-row { display: flex; flex: 1; min-height: 0; }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+  <div class="banner">
+    <strong>PROTOTYPE / throwaway</strong> —
+    回答：<em>单井「井内容树 + 图/表切换」壳层看起来/点起来对不对？</em>
+    · 非生产 · 状态仅内存 ·
+    运行：<code>xdg-open well_log_workstation/prototypes/well-content-tree-shell.html</code>
+    · 方向键 ← → 切换变体
+  </div>
+
+  <div class="menubar">
+    <span>文件</span><span>编辑</span><span>视图</span><span>图版</span><span>帮助</span>
+    <span style="float:right;color:var(--muted)">WellPlot Desktop · shell wireframe</span>
+  </div>
+
+  <div class="shell" id="shell"></div>
+
+  <div class="statusbar" id="statusbar"></div>
+  <div class="state-dump" id="stateDump"></div>
+
+  <div class="proto-bar" id="protoBar" title="Prototype switcher — not part of product UI">
+    <button type="button" id="prevVar" aria-label="Previous variant">←</button>
+    <div class="label">
+      <span id="varLabel">A</span>
+      <span class="hint">← → 切换变体 · 勾选叶子看图/表联动</span>
+    </div>
+    <button type="button" id="nextVar" aria-label="Next variant">→</button>
+  </div>
+
+<script>
+/**
+ * PROTOTYPE — well content tree + graphic/table shell
+ * Question: does this shell look/feel right for WellPlot Desktop single-well?
+ * Three structurally different placements of Well Content Tree vs catalog vs templates.
+ * Decisions locked: #333 tree IA, #334 dual layer, #335 scalar leaves, #336 dual view, #337 perf notes.
+ */
+(function () {
+  const VARIANTS = [
+    {
+      key: "A",
+      name: "左侧双 Tab：工区 | 井内容",
+      blurb: "Catalog 与 Well Content Tree 同栏分 Tab；右侧专注图版/样式",
+    },
+    {
+      key: "B",
+      name: "右侧 Inspector：树在上、图版在下",
+      blurb: "左栏纯 catalog；显示集与样式同右栏上下叠，强调双层职责",
+    },
+    {
+      key: "C",
+      name: "中间独立树栏（四栏壳）",
+      blurb: "选井后固定露出井内容树；主区只做图/表；右栏只图版",
+    },
+  ];
+
+  // Mock well catalog + per-well content (always 2 levels: source → track leaves)
+  const WELLS = {
+    A2: {
+      label: "A2",
+      sources: [
+        {
+          id: "src-las-a2",
+          name: "A2.Las",
+          kind: "multi", // multi-curve import
+          leaves: [
+            { id: "GR", label: "GR", unit: "API", templateSlot: "GR" },
+            { id: "CAL", label: "CAL", unit: "in", templateSlot: null },
+            { id: "RT", label: "RT", unit: "ohmm", templateSlot: "RT" },
+            { id: "AT10", label: "AT10", unit: "ohmm", templateSlot: null },
+            { id: "AT20", label: "AT20", unit: "ohmm", templateSlot: null },
+            { id: "AT30", label: "AT30", unit: "ohmm", templateSlot: null },
+            { id: "AT60", label: "AT60", unit: "ohmm", templateSlot: null },
+            { id: "AT90", label: "AT90", unit: "ohmm", templateSlot: null },
+            { id: "DEN", label: "DEN", unit: "g/cm3", templateSlot: "DEN" },
+            { id: "CNL", label: "CNL", unit: "v/v", templateSlot: null },
+            { id: "PE", label: "PE", unit: "b/e", templateSlot: null },
+            { id: "DT", label: "DT", unit: "us/ft", templateSlot: null },
+          ],
+        },
+        {
+          id: "src-gr-only",
+          name: "GR_extra.Las",
+          kind: "single", // still two levels per #333
+          leaves: [{ id: "GR2", label: "GR_extra", unit: "API", templateSlot: null }],
+        },
+      ],
+    },
+    B1: {
+      label: "B1",
+      sources: [
+        {
+          id: "src-b1",
+          name: "B1.Las",
+          kind: "multi",
+          leaves: [
+            { id: "GR", label: "GR", unit: "API", templateSlot: "GR" },
+            { id: "RT", label: "RT", unit: "ohmm", templateSlot: "RT" },
+          ],
+        },
+      ],
+    },
+  };
+
+  const TEMPLATES = [
+    { id: "std-gr-rt-den", name: "标准 GR-RT-DEN", slots: ["GR", "RT", "DEN"] },
+    { id: "gr-only", name: "仅 GR", slots: ["GR"] },
+    { id: "resistivity", name: "电阻率族", slots: ["RT", "AT10", "AT90"] },
+  ];
+
+  const state = {
+    variant: "A",
+    wellId: "A2",
+    mode: "graphic", // graphic | table
+    templateId: "std-gr-rt-den",
+    // display set: leaf ids checked
+    checked: new Set(),
+    leftTab: "content", // for variant A: catalog | content
+    selectedLeaf: null,
+    selectedTableRow: 3,
+  };
+
+  function defaultChecksForTemplate(wellId, templateId) {
+    const tpl = TEMPLATES.find((t) => t.id === templateId);
+    const well = WELLS[wellId];
+    const set = new Set();
+    if (!tpl || !well) return set;
+    for (const src of well.sources) {
+      for (const leaf of src.leaves) {
+        if (leaf.templateSlot && tpl.slots.includes(leaf.templateSlot)) {
+          set.add(leaf.id);
+        }
+      }
+    }
+    return set;
+  }
+
+  // init display set = template matches only (#334)
+  state.checked = defaultChecksForTemplate(state.wellId, state.templateId);
+
+  function allLeaves(wellId) {
+    const w = WELLS[wellId];
+    if (!w) return [];
+    return w.sources.flatMap((s) => s.leaves.map((l) => ({ ...l, sourceId: s.id, sourceName: s.name })));
+  }
+
+  function checkedLeaves() {
+    return allLeaves(state.wellId).filter((l) => state.checked.has(l.id));
+  }
+
+  function parentCheckState(src) {
+    const ids = src.leaves.map((l) => l.id);
+    const n = ids.filter((id) => state.checked.has(id)).length;
+    if (n === 0) return "none";
+    if (n === ids.length) return "all";
+    return "partial";
+  }
+
+  function setLeaf(id, on) {
+    if (on) state.checked.add(id);
+    else state.checked.delete(id);
+    render();
+  }
+
+  function toggleSource(src) {
+    const st = parentCheckState(src);
+    const turnOn = st !== "all";
+    for (const l of src.leaves) {
+      if (turnOn) state.checked.add(l.id);
+      else state.checked.delete(l.id);
+    }
+    render();
+  }
+
+  function selectWell(id) {
+    state.wellId = id;
+    // keep display set semantics when switching wells: re-default to template matches for that well
+    state.checked = defaultChecksForTemplate(id, state.templateId);
+    state.selectedLeaf = null;
+    render();
+  }
+
+  function applyTemplate(id) {
+    state.templateId = id;
+    // #334: template switch keeps display set (restyle only) — do NOT reset checks
+    render();
+  }
+
+  function resetChecksToTemplate() {
+    state.checked = defaultChecksForTemplate(state.wellId, state.templateId);
+    render();
+  }
+
+  // ——— render helpers ———
+  function el(html) {
+    const t = document.createElement("template");
+    t.innerHTML = html.trim();
+    return t.content.firstElementChild;
+  }
+
+  function renderCatalogList() {
+    return Object.entries(WELLS)
+      .map(
+        ([id, w]) => `
+      <div class="catalog-item ${id === state.wellId ? "active" : ""}" data-well="${id}">
+        <div>🛢 ${w.label}</div>
+        <div class="hint">井 · catalog only</div>
+      </div>`
+      )
+      .join("");
+  }
+
+  function renderContentTree() {
+    const well = WELLS[state.wellId];
+    if (!well) return `<div class="empty-guide">未选井</div>`;
+    let html = `<div class="tree"><ul>
+      <li><div class="node selected"><span class="icon">🛢</span><span class="name">${well.label}</span><span class="badge">选中井</span></div>
+      <ul>`;
+    for (const src of well.sources) {
+      const st = parentCheckState(src);
+      const tri = st === "all" ? "☑" : st === "partial" ? "▣" : "☐";
+      const kindBadge = src.kind === "single" ? "单井道源" : "多井道源";
+      html += `<li>
+        <div class="node source" data-src="${src.id}">
+          <span class="tri" data-toggle-src="${src.id}" title="父级三态勾选">${tri}</span>
+          <span class="icon">📁</span>
+          <span class="name">${src.name}</span>
+          <span class="badge">${kindBadge}</span>
+        </div>
+        <ul>`;
+      for (const leaf of src.leaves) {
+        const on = state.checked.has(leaf.id);
+        const slot = leaf.templateSlot
+          ? `<span class="badge">槽 ${leaf.templateSlot}</span>`
+          : `<span class="badge">默认样式</span>`;
+        html += `<li>
+          <div class="node leaf ${state.selectedLeaf === leaf.id ? "selected" : ""}" data-leaf="${leaf.id}">
+            <input type="checkbox" data-check="${leaf.id}" ${on ? "checked" : ""} />
+            <span class="icon">〰</span>
+            <span class="name">${leaf.label}</span>
+            <span class="badge">${leaf.unit}</span>
+            ${slot}
+          </div>
+        </li>`;
+      }
+      html += `</ul></li>`;
+    }
+    html += `</ul></li></ul></div>
+      <div class="callout"><b>井内容树</b>（非 catalog）：导入源 → 井道叶子；单源也两层；深度尺不在树。</div>`;
+    return html;
+  }
+
+  function renderTemplates() {
+    return (
+      TEMPLATES.map((t) => {
+        const active = t.id === state.templateId ? "active" : "";
+        return `<div class="tpl ${active}" data-tpl="${t.id}">
+          <div class="name">${t.name}</div>
+          <div class="meta">槽位：${t.slots.join(", ")} · 只影响样式/布局</div>
+        </div>`;
+      }).join("") +
+      `<button class="btn" type="button" id="btnApplyTpl">应用图版（换样式，不改勾选）</button>
+       <button class="btn" type="button" id="btnResetChecks" style="background:#444;margin-top:6px">将勾选重置为图版匹配</button>
+       <div class="callout"><b>双层</b>：显示集 = 树勾选；样式 = 图版。换图版不改勾选（#334）。</div>`
+    );
+  }
+
+  function renderDerivedTrackList() {
+    const leaves = checkedLeaves();
+    if (!leaves.length) return `<ul class="readonly-list"><li>（空显示集）</li></ul>`;
+    return `<ul class="readonly-list">${leaves
+      .map((l) => {
+        const tpl = TEMPLATES.find((t) => t.id === state.templateId);
+        const styled = l.templateSlot && tpl.slots.includes(l.templateSlot);
+        return `<li>〰 ${l.label} · ${styled ? "图版样式" : "默认样式"}</li>`;
+      })
+      .join("")}</ul>`;
+  }
+
+  function renderMainView() {
+    const leaves = checkedLeaves();
+    const modeSeg = `
+      <div class="toolbar">
+        <div class="seg" role="group" aria-label="视图模式">
+          <button type="button" data-mode="graphic" class="${state.mode === "graphic" ? "active" : ""}">图形</button>
+          <button type="button" data-mode="table" class="${state.mode === "table" ? "active" : ""}">表格</button>
+        </div>
+        <span class="caption">单井 <strong>${WELLS[state.wellId].label}</strong>
+          · 图版 <strong>${TEMPLATES.find((t) => t.id === state.templateId).name}</strong>
+          · 勾选 <strong>${leaves.length}</strong> 道</span>
+      </div>`;
+
+    if (!leaves.length) {
+      return (
+        modeSeg +
+        `<div class="view"><div class="empty-guide">
+          <strong>显示集为空</strong>
+          <span>在井内容树勾选井道以显示图形或表格。<br/>默认勾选 = 当前图版匹配槽位。</span>
+        </div></div>`
+      );
+    }
+
+    if (state.mode === "graphic") {
+      const cols = leaves
+        .map(
+          (l) => `<div class="track-col">
+            <div class="th">${l.label}</div>
+            <div class="body"><div class="curve" style="border-left-color:hsl(${hashHue(l.id)} 70% 55%)"></div></div>
+          </div>`
+        )
+        .join("");
+      return (
+        modeSeg +
+        `<div class="view"><div class="graphic">
+          <div class="depth-col"><span>0</span><span>500</span><span>1000</span><span>1500</span></div>
+          ${cols}
+        </div></div>`
+      );
+    }
+
+    // table
+    const many = leaves.length + 1 >= 8; // demo soft tip earlier than 64
+    const tip = `<div class="soft-tip ${many ? "show" : ""}">列较多时横向滚动（规格：≥64 列软提示，无硬上限）· 屏幕表虚拟化，非整表物化</div>`;
+    const head = `<tr><th>Depth</th>${leaves.map((l) => `<th>${l.label}</th>`).join("")}</tr>`;
+    const rows = [];
+    for (let i = 0; i < 24; i++) {
+      const depth = (1000 + i * 0.125).toFixed(3);
+      const sel = i === state.selectedTableRow ? "sel" : "";
+      const cells = leaves
+        .map((l) => `<td>${(Math.sin(i / 3 + hashHue(l.id)) * 20 + 50).toFixed(2)}</td>`)
+        .join("");
+      rows.push(`<tr class="${sel}" data-row="${i}"><td>${depth}</td>${cells}</tr>`);
+    }
+    return (
+      modeSeg +
+      tip +
+      `<div class="view"><div class="table-wrap"><table class="data"><thead>${head}</thead><tbody>${rows.join("")}</tbody></table></div></div>`
+    );
+  }
+
+  function hashHue(s) {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    return Math.abs(h) % 360;
+  }
+
+  function renderVariantA() {
+    return `
+      <div class="pane left">
+        <div class="tabs">
+          <div class="tab ${state.leftTab === "catalog" ? "active" : ""}" data-left-tab="catalog">工区</div>
+          <div class="tab ${state.leftTab === "content" ? "active" : ""}" data-left-tab="content">井内容</div>
+        </div>
+        <div class="pane-body" id="leftBody">
+          ${state.leftTab === "catalog" ? renderCatalogList() : renderContentTree()}
+        </div>
+      </div>
+      <div class="pane mid">
+        <div class="pane-h">主视图 <span class="sub">图形 | 表格 · 会话内按井记模式（示意）</span></div>
+        ${renderMainView()}
+      </div>
+      <div class="pane right">
+        <div class="pane-h">属性 / 图版</div>
+        <div class="pane-body">
+          <div class="section"><h4>图版模板（样式层）</h4>${renderTemplates()}</div>
+          <div class="section"><h4>当前显示图道（只读映射）</h4>${renderDerivedTrackList()}</div>
+        </div>
+      </div>`;
+  }
+
+  function renderVariantB() {
+    return `
+      <div class="pane left">
+        <div class="pane-h">工区 <span class="sub">catalog · 仅到井</span></div>
+        <div class="pane-body">${renderCatalogList()}</div>
+      </div>
+      <div class="pane mid">
+        <div class="pane-h">主视图</div>
+        ${renderMainView()}
+      </div>
+      <div class="pane right">
+        <div class="pane-h">Inspector</div>
+        <div class="pane-body">
+          <div class="section">
+            <h4>井内容 · 显示集</h4>
+            ${renderContentTree()}
+          </div>
+          <div class="section">
+            <h4>图版 · 样式层</h4>
+            ${renderTemplates()}
+          </div>
+          <div class="section">
+            <h4>派生图道列表</h4>
+            ${renderDerivedTrackList()}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function renderVariantC() {
+    return `
+      <div class="pane left">
+        <div class="pane-h">工区</div>
+        <div class="pane-body">${renderCatalogList()}</div>
+      </div>
+      <div class="pane mid-tree">
+        <div class="pane-h">井内容 <span class="sub">${WELLS[state.wellId].label}</span></div>
+        <div class="pane-body">${renderContentTree()}</div>
+      </div>
+      <div class="pane mid">
+        <div class="pane-h">主视图</div>
+        ${renderMainView()}
+      </div>
+      <div class="pane right">
+        <div class="pane-h">图版 / 样式</div>
+        <div class="pane-body">
+          <div class="section"><h4>图版模板</h4>${renderTemplates()}</div>
+          <div class="section"><h4>派生图道</h4>${renderDerivedTrackList()}</div>
+          <div class="callout">四栏：catalog | 井内容树 | 图·表 | 图版。树始终可见。</div>
+        </div>
+      </div>`;
+  }
+
+  function render() {
+    const shell = document.getElementById("shell");
+    if (state.variant === "A") shell.innerHTML = renderVariantA();
+    else if (state.variant === "B") shell.innerHTML = renderVariantB();
+    else shell.innerHTML = renderVariantC();
+
+    bindShellEvents();
+
+    const v = VARIANTS.find((x) => x.key === state.variant);
+    document.getElementById("varLabel").innerHTML =
+      `${v.key} — ${v.name}<span class="hint">${v.blurb}</span>`;
+
+    const leaves = checkedLeaves().map((l) => l.label);
+    document.getElementById("statusbar").innerHTML = `
+      <span>变体 <b style="color:var(--text)">${state.variant}</b></span>
+      <span>井 <b style="color:var(--text)">${state.wellId}</b></span>
+      <span>模式 <b style="color:var(--text)">${state.mode}</b></span>
+      <span>图版 <b style="color:var(--text)">${state.templateId}</b></span>
+      <span>显示集 [${leaves.join(", ") || "∅"}]</span>
+    `;
+
+    document.getElementById("stateDump").innerHTML =
+      `<span class="k">state</span> = ${JSON.stringify(
+        {
+          variant: state.variant,
+          wellId: state.wellId,
+          mode: state.mode,
+          templateId: state.templateId,
+          displaySet: [...state.checked],
+          leftTab: state.leftTab,
+          selectedLeaf: state.selectedLeaf,
+          selectedTableRow: state.selectedTableRow,
+        },
+        null,
+        0
+      )}`;
+
+    // URL shareable
+    const url = new URL(location.href);
+    url.searchParams.set("variant", state.variant);
+    history.replaceState(null, "", url);
+  }
+
+  function bindShellEvents() {
+    document.querySelectorAll("[data-well]").forEach((n) => {
+      n.addEventListener("click", () => selectWell(n.getAttribute("data-well")));
+    });
+    document.querySelectorAll("[data-left-tab]").forEach((n) => {
+      n.addEventListener("click", () => {
+        state.leftTab = n.getAttribute("data-left-tab");
+        render();
+      });
+    });
+    document.querySelectorAll("[data-check]").forEach((n) => {
+      n.addEventListener("change", (e) => {
+        setLeaf(n.getAttribute("data-check"), e.target.checked);
+      });
+    });
+    document.querySelectorAll("[data-toggle-src]").forEach((n) => {
+      n.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const id = n.getAttribute("data-toggle-src");
+        const well = WELLS[state.wellId];
+        const src = well.sources.find((s) => s.id === id);
+        if (src) toggleSource(src);
+      });
+    });
+    document.querySelectorAll("[data-leaf]").forEach((n) => {
+      n.addEventListener("click", (e) => {
+        if (e.target.matches("input")) return;
+        state.selectedLeaf = n.getAttribute("data-leaf");
+        render();
+      });
+    });
+    document.querySelectorAll("[data-mode]").forEach((n) => {
+      n.addEventListener("click", () => {
+        state.mode = n.getAttribute("data-mode");
+        render();
+      });
+    });
+    document.querySelectorAll("[data-tpl]").forEach((n) => {
+      n.addEventListener("click", () => {
+        state.templateId = n.getAttribute("data-tpl");
+        render();
+      });
+    });
+    const apply = document.getElementById("btnApplyTpl");
+    if (apply) apply.addEventListener("click", () => applyTemplate(state.templateId));
+    const reset = document.getElementById("btnResetChecks");
+    if (reset) reset.addEventListener("click", resetChecksToTemplate);
+    document.querySelectorAll("[data-row]").forEach((n) => {
+      n.addEventListener("click", () => {
+        state.selectedTableRow = Number(n.getAttribute("data-row"));
+        render();
+      });
+    });
+  }
+
+  function cycle(delta) {
+    const i = VARIANTS.findIndex((v) => v.key === state.variant);
+    const next = VARIANTS[(i + delta + VARIANTS.length) % VARIANTS.length];
+    state.variant = next.key;
+    render();
+  }
+
+  document.getElementById("prevVar").addEventListener("click", () => cycle(-1));
+  document.getElementById("nextVar").addEventListener("click", () => cycle(1));
+  document.addEventListener("keydown", (e) => {
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (e.key === "ArrowLeft") cycle(-1);
+    if (e.key === "ArrowRight") cycle(1);
+  });
+
+  // boot from URL
+  const q = new URL(location.href).searchParams.get("variant");
+  if (q && VARIANTS.some((v) => v.key === q.toUpperCase())) {
+    state.variant = q.toUpperCase();
+  }
+  render();
+})();
+</script>
+</body>
+</html>

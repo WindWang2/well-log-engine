@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wellplot-desktop"
+version = "0.1.0"
+description = "WellPlot Desktop — sample host product built on WellLogEngine"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Kevin" }]
+dependencies = [
+  "PySide6>=6.6",
+  "numpy>=1.26",
+  "lasio>=0.31",
+]
+
+[project.optional-dependencies]
+# Optional mapping / fence / composite surfaces (host geoviz packages)
+geoviz = []
+dev = [
+  "pytest>=8",
+  "pytest-qt>=4",
+]
+
+[project.scripts]
+wellplot-desktop = "well_log_workstation.main:main"
+well-log-workstation = "well_log_workstation.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["well_log_workstation*"]
+
+[tool.setuptools.package-data]
+well_log_workstation = [
+  "templates/*.json",
+  "testdata/**/*",
+  "packaging/**/*",
+  "prototypes/**/*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+qt_api = "pyside6"
+addopts = "-q"

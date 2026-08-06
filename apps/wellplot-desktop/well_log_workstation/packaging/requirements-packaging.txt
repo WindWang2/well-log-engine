@@ -1,0 +1,2 @@
+# Build-time only (T15 / #303). Not required for development/runtime tests.
+pyinstaller>=6.3

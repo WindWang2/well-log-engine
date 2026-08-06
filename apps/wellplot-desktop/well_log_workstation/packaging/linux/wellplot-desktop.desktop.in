@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=WellPlot Desktop
+GenericName=Well Log Plotting
+Comment=Standalone well-log plotting desktop (log-first)
+Exec=@EXEC@
+Icon=@ICON@
+Terminal=false
+Categories=Science;Geoscience;Education;
+StartupWMClass=WellPlot Desktop
+Keywords=well;log;LAS;plot;

@@ -47,12 +47,30 @@ Presets: see [CMakePresets.json](CMakePresets.json). Dependencies: [vcpkg.json](
 
 Python wheel (optional): [pyproject.toml](pyproject.toml) and [python/README.md](python/README.md).
 
+## Sample product: WellPlot Desktop
+
+A full **reference host** that exercises the SDK (workspace, LAS, multi-track, Graphic|Table, optional `WellLogView` embed):
+
+| Path | Description |
+|------|-------------|
+| [`apps/wellplot-desktop/`](apps/wellplot-desktop/) | WellPlot Desktop — product / SDK sample |
+
+```bash
+cd apps/wellplot-desktop
+pip install -e ".[dev]"
+python -m well_log_workstation
+```
+
+See [apps/wellplot-desktop/README.md](apps/wellplot-desktop/README.md).
+
 ## Layout
 
 ```
 well-log-engine/
 ├── include/          # Public C++ headers
 ├── src/              # core, scene, session, render_gl, qtwidgets, export_*, …
+├── apps/
+│   └── wellplot-desktop/   # Reference host product (Python + Qt)
 ├── tests/            # unit / integration / qt / python
 ├── benchmarks/
 ├── schemas/          # e.g. manifest JSON schema
@@ -66,12 +84,13 @@ CMake package exports layered targets under `WellLog::*` (see ADR 0035).
 
 ## Relationship to hosts
 
-| Repo | Role |
-|------|------|
-| **well-log-engine** (this) | Engine SDK — data model, scene, GL, export, optional Qt/Python adapters |
-| [paleo-workbench](https://github.com/WindWang2/paleo-workbench) | Host desktop (WellPlot Desktop, workspace, LAS import UI, …) |
+| Component | Role |
+|-----------|------|
+| **WellLogEngine** (this repo root) | SDK — data model, scene, GL, export, optional Qt/Python adapters |
+| **WellPlot Desktop** (`apps/wellplot-desktop`) | Sample product calling the SDK |
+| [paleo-workbench](https://github.com/WindWang2/paleo-workbench) | Larger workbench monorepo (maps, seismic, …); consumes this engine as a submodule |
 
-Legacy host paths (`native/well_log_core`, host QPainter multi-track) remain migration fallbacks until the engine meets host gates.
+Legacy host QPainter multi-track remains a fallback when the engine wheel is unavailable.
 
 ## License
 

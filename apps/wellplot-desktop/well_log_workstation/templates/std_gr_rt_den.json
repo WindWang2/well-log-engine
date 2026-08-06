@@ -1,0 +1,68 @@
+{
+  "id": "std-gr-rt-den",
+  "name": "标准三轨 GR-RT-DEN",
+  "schemaVersion": 1,
+  "header": {
+    "title": "单井综合测井图",
+    "show_well_name": true,
+    "show_depth_scale": true,
+    "show_template_name": true,
+    "lines": []
+  },
+  "footer": {
+    "show_depth_range": true,
+    "text": ""
+  },
+  "tracks": [
+    {
+      "id": "depth",
+      "role": "depth",
+      "title": "深度",
+      "width_fraction": 0.12,
+      "scale": null,
+      "layers": []
+    },
+    {
+      "id": "gr",
+      "role": "curve",
+      "title": "GR",
+      "width_fraction": 0.28,
+      "scale": { "mode": "linear", "min": 0, "max": 150, "unit": "GAPI" },
+      "layers": [
+        {
+          "type": "curve",
+          "mnemonics": ["GR", "GAM", "GAMMA", "SGR"],
+          "color": "#1a6fb5"
+        }
+      ]
+    },
+    {
+      "id": "rt",
+      "role": "curve",
+      "title": "RT",
+      "width_fraction": 0.28,
+      "scale": { "mode": "log", "min": 0.2, "max": 200, "unit": "OHMM" },
+      "layers": [
+        {
+          "type": "curve",
+          "mnemonics": ["RT", "RD", "LLD", "ILD", "AT90"],
+          "color": "#c45c26"
+        }
+      ]
+    },
+    {
+      "id": "den",
+      "role": "curve",
+      "title": "DEN",
+      "width_fraction": 0.32,
+      "scale": { "mode": "linear", "min": 1.8, "max": 2.9, "unit": "G/C3" },
+      "layers": [
+        {
+          "type": "curve",
+          "mnemonics": ["DEN", "RHOB", "ZDEN", "RHOZ"],
+          "color": "#2a9d4a"
+        }
+      ]
+    }
+  ]
+}

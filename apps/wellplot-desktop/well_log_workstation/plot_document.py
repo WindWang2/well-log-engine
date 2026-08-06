@@ -1,0 +1,489 @@
+"""Single-well / correlation plot documents under ``plots/`` (#220).
+
+Host metadata only; multi-track layout still comes from template apply (H).
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from well_log_workstation.correlation_links import HorizonLink
+from well_log_workstation.workspace import (
+    PlotCatalogEntry,
+    PlotType,
+    Workspace,
+    WorkspaceError,
+    add_plot,
+    save_workspace,
+)
+
+PLOT_SCHEMA_VERSION = 5
+
+
+@dataclass
+class PanelRef:
+    """Composite-figure panel reference (Phase-2 T9 / #253, T7 / #251).
+
+    A composite figure (油藏综合图) lays out several sub-plots in panels.
+    T7 adds the paper-side placement + render mode:
+
+    - ``source_plot_type``: the source plot's PlotType (drives live vs
+      snapshot - GL/engine plots must snapshot).
+    - ``rect_mm``: panel rect on the paper in mm (``[x, y, w, h]``); None
+      means the layout window picks a default position.
+    - ``render_mode``: ``"live"`` (QGraphicsProxyWidget, non-GL) or
+      ``"snapshot"`` (QPixmap via source.grab(), GL/engine plots).
+    """
+
+    plot_id: str
+    slot: str = "main"
+    source_plot_type: str = "single_well"
+    rect_mm: list[float] | None = None  # [x, y, w, h] in mm
+    render_mode: str = "live"
+
+
+@dataclass
+class PlotDocument:
+    id: str
+    name: str
+    type: PlotType
+    well_ids: list[str]
+    template_id: str | None
+    # Relative path from workspace root
+    path: str
+    # Correlation horizon links (#229); empty for single-well
+    links: list[HorizonLink] = field(default_factory=list)
+    # Composite-figure panels (Phase-2 T9); only ``composite`` plots use it.
+    panels: list[PanelRef] = field(default_factory=list)
+    # Per-plot revision, persisted in plots/<id>.json (schema v3, ADR 0051).
+    revision: int = 0
+    # Composite free graphics (schema v4): raw shape dicts placed on the
+    # paper directly, independent of panels/templates. Empty for all other
+    # plot types.
+    free_graphics: list[dict] = field(default_factory=list)
+    # Single-well track property overrides (schema v5 / #292): track_id → props.
+    # Keys: visible, title, width_fraction, scale_min, scale_max, scale_mode.
+    track_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Correlation column gap in pixels (#295 / T7). Optional field; default 6.
+    # Well order is the existing ``well_ids`` list order.
+    column_gap_px: int = 6
+    # Correlation display datum (#296 / T8): md | tvdss | horizon.
+    datum_mode: str = "md"
+    datum_horizon: str | None = None
+    # Inter-well fill MVP (#297 / T9)
+    show_interwell_fill: bool = False
+    interwell_fill_color: str = "#93c5fd"
+
+    def absolute_path(self, workspace: Workspace) -> Path:
+        return workspace.root / self.path
+
+
+def _plot_rel_path(plot_id: str) -> str:
+    return f"plots/{plot_id}.json"
+
+
+def _to_json(doc: PlotDocument) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "schemaVersion": PLOT_SCHEMA_VERSION,
+        "id": doc.id,
+        "name": doc.name,
+        "type": doc.type,
+        "well_ids": list(doc.well_ids),
+        "template_id": doc.template_id,
+    }
+    # Always persist links for correlation docs so clear/remove is durable (#230)
+    if doc.type == "correlation" or doc.links:
+        payload["links"] = [lk.to_json() for lk in doc.links]
+    if doc.type == "composite" or doc.panels:
+        payload["panels"] = [
+            {
+                "plot_id": p.plot_id,
+                "slot": p.slot,
+                "source_plot_type": p.source_plot_type,
+                "rect_mm": p.rect_mm,
+                "render_mode": p.render_mode,
+            }
+            for p in doc.panels
+        ]
+    # Always persist the revision (ADR 0051); unlike links/panels it is
+    # unconditional so a stale file can never look unversioned.
+    payload["revision"] = int(doc.revision)
+    # Free graphics (schema v4): persist for composite docs, and also for any
+    # doc that carries them (mirrors links/panels so stale values never drop).
+    if doc.type == "composite" or doc.free_graphics:
+        payload["free_graphics"] = list(doc.free_graphics)
+    if doc.type == "single_well" or doc.track_overrides:
+        payload["track_overrides"] = {
+            str(k): dict(v) for k, v in doc.track_overrides.items() if isinstance(v, dict)
+        }
+    # Correlation layout (T7/T8): write when correlation so re-open is stable.
+    if doc.type == "correlation" or doc.column_gap_px != 6:
+        payload["column_gap_px"] = int(doc.column_gap_px)
+    if doc.type == "correlation" or doc.datum_mode != "md" or doc.datum_horizon:
+        payload["datum_mode"] = str(doc.datum_mode or "md")
+        if doc.datum_horizon:
+            payload["datum_horizon"] = str(doc.datum_horizon)
+    if doc.type == "correlation" or doc.show_interwell_fill:
+        payload["show_interwell_fill"] = bool(doc.show_interwell_fill)
+        payload["interwell_fill_color"] = str(
+            doc.interwell_fill_color or "#93c5fd"
+        )
+    return payload
+
+
+def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
+    version = int(data.get("schemaVersion", 0))
+    if version == 1:
+        # v1 -> v2 additive: panels is new and defaults to empty.
+        data = dict(data)
+        data.setdefault("panels", [])
+        version = 2
+    if version == 2:
+        # v2 -> v3 additive: revision is new and defaults to 0 (ADR 0051).
+        data = dict(data)
+        data.setdefault("revision", 0)
+        version = 3
+    if version == 3:
+        # v3 -> v4 additive: free_graphics is new and defaults to empty.
+        data = dict(data)
+        data.setdefault("free_graphics", [])
+        version = 4
+    if version == 4:
+        # v4 -> v5 additive: track_overrides for single-well layout edits (#292).
+        data = dict(data)
+        data.setdefault("track_overrides", {})
+        version = PLOT_SCHEMA_VERSION
+    if version != PLOT_SCHEMA_VERSION:
+        raise WorkspaceError(
+            f"unsupported plot schemaVersion={version} "
+            f"(expected {PLOT_SCHEMA_VERSION})"
+        )
+    ptype = str(data.get("type") or "single_well")
+    if ptype not in ("single_well", "correlation", "section", "plane_map", "fence_3d", "composite"):
+        ptype = "single_well"
+    links: list[HorizonLink] = []
+    for raw in data.get("links") or []:
+        if isinstance(raw, dict):
+            link = HorizonLink.from_json(raw)
+            if link is not None:
+                links.append(link)
+    panels: list[PanelRef] = []
+    for raw in data.get("panels") or []:
+        if isinstance(raw, dict):
+            rect = raw.get("rect_mm")
+            panels.append(
+                PanelRef(
+                    plot_id=str(raw.get("plot_id") or ""),
+                    slot=str(raw.get("slot") or "main"),
+                    source_plot_type=str(raw.get("source_plot_type") or "single_well"),
+                    rect_mm=(
+                        [float(v) for v in rect]
+                        if isinstance(rect, (list, tuple)) and len(rect) == 4
+                        else None
+                    ),
+                    render_mode=str(raw.get("render_mode") or "live"),
+                )
+            )
+    free_graphics: list[dict] = []
+    for raw in data.get("free_graphics") or []:
+        if isinstance(raw, dict):
+            free_graphics.append(raw)
+    track_overrides: dict[str, dict[str, Any]] = {}
+    raw_ov = data.get("track_overrides") or {}
+    if isinstance(raw_ov, dict):
+        for tid, props in raw_ov.items():
+            if isinstance(props, dict):
+                track_overrides[str(tid)] = dict(props)
+    try:
+        column_gap_px = int(data.get("column_gap_px", 6))
+    except (TypeError, ValueError):
+        column_gap_px = 6
+    column_gap_px = max(0, min(200, column_gap_px))
+    datum_mode = str(data.get("datum_mode") or "md")
+    if datum_mode not in ("md", "tvdss", "horizon"):
+        datum_mode = "md"
+    raw_h = data.get("datum_horizon")
+    datum_horizon = str(raw_h).strip() if raw_h else None
+    if datum_horizon == "":
+        datum_horizon = None
+    show_interwell_fill = bool(data.get("show_interwell_fill", False))
+    interwell_fill_color = str(data.get("interwell_fill_color") or "#93c5fd")
+    return PlotDocument(
+        id=str(data["id"]),
+        name=str(data.get("name") or data["id"]),
+        type=ptype,  # type: ignore[arg-type]
+        well_ids=[str(x) for x in (data.get("well_ids") or [])],
+        template_id=data.get("template_id"),
+        path=path,
+        links=links,
+        panels=panels,
+        free_graphics=free_graphics,
+        revision=max(0, int(data.get("revision") or 0)),
+        track_overrides=track_overrides,
+        column_gap_px=column_gap_px,
+        datum_mode=datum_mode,
+        datum_horizon=datum_horizon,
+        show_interwell_fill=show_interwell_fill,
+        interwell_fill_color=interwell_fill_color,
+    )
+
+
+def save_plot_document(workspace: Workspace, doc: PlotDocument) -> None:
+    """Write plots/<id>.json and ensure catalog entry matches."""
+    workspace.plots_dir.mkdir(parents=True, exist_ok=True)
+    rel = doc.path or _plot_rel_path(doc.id)
+    doc.path = rel
+    abs_path = workspace.root / rel
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    # Lazy import: keep this schema/persistence module importable without
+    # PySide6 (events.py imports QtCore) for /usr/bin/python3 verification.
+    from well_log_workstation.events import bump_plot_revision
+
+    # Saving commits a new revision; bump (no emit) before writing the file.
+    # Shared by both branches below (file write + catalog upsert).
+    doc.revision = bump_plot_revision(doc.id)
+    tmp = abs_path.with_suffix(".json.tmp")
+    payload = json.dumps(_to_json(doc), indent=2, ensure_ascii=False) + "\n"
+    tmp.write_text(payload, encoding="utf-8")
+    tmp.replace(abs_path)
+
+    # Upsert catalog
+    existing = next((p for p in workspace.plots if p.id == doc.id), None)
+    if existing is None:
+        add_plot(
+            workspace,
+            name=doc.name,
+            plot_type=doc.type,
+            well_ids=doc.well_ids,
+            template_id=doc.template_id,
+            path=rel,
+            plot_id=doc.id,
+        )
+    else:
+        existing.name = doc.name
+        existing.type = doc.type
+        existing.well_ids = list(doc.well_ids)
+        existing.template_id = doc.template_id
+        existing.path = rel
+        save_workspace(workspace)
+
+
+def load_plot_document(workspace: Workspace, plot_id: str) -> PlotDocument:
+    """Load plot metadata from disk (catalog path or default plots/<id>.json)."""
+    entry = next((p for p in workspace.plots if p.id == plot_id), None)
+    rel = entry.path if entry and entry.path else _plot_rel_path(plot_id)
+    abs_path = workspace.root / rel
+    if not abs_path.is_file():
+        raise WorkspaceError(f"图件文件不存在: {rel}")
+    try:
+        data = json.loads(abs_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise WorkspaceError(f"无法读取图件: {exc}") from exc
+    if not isinstance(data, dict):
+        raise WorkspaceError("图件 JSON 根必须是对象")
+    doc = _from_json(data, path=rel)
+    if doc.id != plot_id and entry is not None:
+        # Prefer catalog id if file was renamed oddly
+        doc = PlotDocument(
+            id=plot_id,
+            name=doc.name,
+            type=doc.type,
+            well_ids=doc.well_ids,
+            template_id=doc.template_id,
+            path=rel,
+            links=list(doc.links),
+            panels=list(doc.panels),
+            free_graphics=list(doc.free_graphics),
+            revision=doc.revision,
+            track_overrides=dict(doc.track_overrides),
+            column_gap_px=doc.column_gap_px,
+            datum_mode=doc.datum_mode,
+            datum_horizon=doc.datum_horizon,
+            show_interwell_fill=doc.show_interwell_fill,
+            interwell_fill_color=doc.interwell_fill_color,
+        )
+    # Lazy import: keep this module importable without PySide6 (see save).
+    from well_log_workstation.events import restore_plot_revision
+
+    # Seed the in-memory counter from the persisted value; both return paths
+    # above (with/without id-mismatch rebuild) share this single restore.
+    restore_plot_revision(doc.id, doc.revision)
+    return doc
+
+
+def create_single_well_plot(
+    workspace: Workspace,
+    *,
+    well_id: str,
+    well_name: str,
+    template_id: str,
+    name: str | None = None,
+    plot_id: str | None = None,
+) -> PlotDocument:
+    """Create and persist a 单井分析图 document (multi-track template binding)."""
+    if not any(w.id == well_id for w in workspace.wells):
+        raise WorkspaceError("井不在工区目录中")
+    pid = plot_id or str(uuid.uuid4())
+    doc = PlotDocument(
+        id=pid,
+        name=name or f"{well_name} 单井分析图",
+        type="single_well",
+        well_ids=[well_id],
+        template_id=template_id,
+        path=_plot_rel_path(pid),
+    )
+    save_plot_document(workspace, doc)
+    return doc
+
+
+def create_correlation_plot(
+    workspace: Workspace,
+    *,
+    well_ids: list[str],
+    template_id: str,
+    name: str | None = None,
+    plot_id: str | None = None,
+) -> PlotDocument:
+    """Create and persist a 地层对比图-lite document (≥2 wells)."""
+    if len(well_ids) < 2:
+        raise WorkspaceError("地层对比至少需要 2 口井")
+    catalog_ids = {w.id for w in workspace.wells}
+    for wid in well_ids:
+        if wid not in catalog_ids:
+            raise WorkspaceError(f"井不在工区目录中: {wid}")
+    names = []
+    for wid in well_ids:
+        entry = next(w for w in workspace.wells if w.id == wid)
+        names.append(entry.name)
+    pid = plot_id or str(uuid.uuid4())
+    label = name or f"{'–'.join(names[:3])} 地层对比"
+    doc = PlotDocument(
+        id=pid,
+        name=label,
+        type="correlation",
+        well_ids=list(well_ids),
+        template_id=template_id,
+        path=_plot_rel_path(pid),
+    )
+    save_plot_document(workspace, doc)
+    return doc
+
+
+def _validate_well_ids(workspace: Workspace, well_ids: list[str], *, min_count: int) -> list[str]:
+    """Shared well-id validation for the Phase-2 T9 create_* helpers."""
+    if len(well_ids) < min_count:
+        raise WorkspaceError(f"至少需要 {min_count} 口井")
+    catalog_ids = {w.id for w in workspace.wells}
+    for wid in well_ids:
+        if wid not in catalog_ids:
+            raise WorkspaceError(f"井不在工区目录中: {wid}")
+    return list(well_ids)
+
+
+def create_section_plot(
+    workspace: Workspace,
+    *,
+    well_ids: list[str],
+    template_id: str,
+    name: str | None = None,
+    plot_id: str | None = None,
+) -> PlotDocument:
+    """Create and persist a 油藏剖面图 document (≥2 wells; Phase-2 T9 / #253)."""
+    ids = _validate_well_ids(workspace, well_ids, min_count=2)
+    pid = plot_id or str(uuid.uuid4())
+    doc = PlotDocument(
+        id=pid,
+        name=name or f"油藏剖面（{len(ids)} 井）",
+        type="section",
+        well_ids=ids,
+        template_id=template_id,
+        path=_plot_rel_path(pid),
+    )
+    save_plot_document(workspace, doc)
+    return doc
+
+
+def create_plane_map_plot(
+    workspace: Workspace,
+    *,
+    wells: list[str] | None = None,
+    template_id: str,
+    name: str | None = None,
+    plot_id: str | None = None,
+) -> PlotDocument:
+    """Create and persist a 平面图 document (requires a project CRS; Phase-2 T9).
+
+    ``workspace.coordinate`` must be set (defaults to WGS84) so the map has a
+    CRS context for the paleo_map Plate Carrée identity.
+    """
+    if not workspace.coordinate:
+        raise WorkspaceError("平面图需要先设置工区坐标系（workspace.coordinate）")
+    ids = _validate_well_ids(workspace, list(wells or []), min_count=1) if wells else []
+    pid = plot_id or str(uuid.uuid4())
+    doc = PlotDocument(
+        id=pid,
+        name=name or "平面图",
+        type="plane_map",
+        well_ids=ids,
+        template_id=template_id,
+        path=_plot_rel_path(pid),
+    )
+    save_plot_document(workspace, doc)
+    return doc
+
+
+def create_fence_3d_plot(
+    workspace: Workspace,
+    *,
+    well_ids: list[str],
+    template_id: str,
+    name: str | None = None,
+    plot_id: str | None = None,
+) -> PlotDocument:
+    """Create and persist a 3D fence plot document (≥2 wells; Phase-2 T9)."""
+    ids = _validate_well_ids(workspace, well_ids, min_count=2)
+    pid = plot_id or str(uuid.uuid4())
+    doc = PlotDocument(
+        id=pid,
+        name=name or f"三维栅状图（{len(ids)} 井）",
+        type="fence_3d",
+        well_ids=ids,
+        template_id=template_id,
+        path=_plot_rel_path(pid),
+    )
+    save_plot_document(workspace, doc)
+    return doc
+
+
+def create_composite_plot(
+    workspace: Workspace,
+    *,
+    panels: list[PanelRef] | None = None,
+    template_id: str,
+    name: str | None = None,
+    plot_id: str | None = None,
+) -> PlotDocument:
+    """Create and persist a 油藏综合图 document (≥1 PanelRef; Phase-2 T9)."""
+    panel_list = list(panels or [])
+    if not panel_list:
+        raise WorkspaceError("综合图至少需要 1 个面板（PanelRef）")
+    pid = plot_id or str(uuid.uuid4())
+    doc = PlotDocument(
+        id=pid,
+        name=name or "油藏综合图",
+        type="composite",
+        well_ids=[],
+        template_id=template_id,
+        path=_plot_rel_path(pid),
+        panels=panel_list,
+    )
+    save_plot_document(workspace, doc)
+    return doc
+
+
+def find_plot_entry(workspace: Workspace, plot_id: str) -> PlotCatalogEntry | None:
+    return next((p for p in workspace.plots if p.id == plot_id), None)
