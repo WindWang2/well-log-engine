@@ -314,6 +314,11 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_new_composite.setObjectName("Action_NewCompositePlot")
         self._act_new_composite.triggered.connect(self._on_new_composite_plot)
         self._act_new_composite.setEnabled(False)
+        # P2-B (FRS §4.2): section line → buffer pick → correlation plot.
+        self._act_section_from_line = plot_menu.addAction("平面画线生成剖面…")
+        self._act_section_from_line.setObjectName("Action_NewSectionFromLine")
+        self._act_section_from_line.triggered.connect(self._on_section_from_line)
+        self._act_section_from_line.setEnabled(False)
         plot_menu.addSeparator()
         self._act_add_leaf_to_plot = plot_menu.addAction("将选中井道加入当前井图")
         self._act_add_leaf_to_plot.setObjectName("Action_AddLeafToPlot")
@@ -1344,6 +1349,14 @@ class WellLogWorkstationWindow(QMainWindow):
             )
         self._act_new_section.setEnabled(ws is not None)
         self._act_new_composite.setEnabled(ws is not None)
+        # P2-B: section-from-line needs ≥2 wells with coordinates.
+        coord_wells = sum(
+            1 for w in (ws.wells if ws is not None else [])
+            if w.lng is not None and w.lat is not None
+        )
+        self._act_section_from_line.setEnabled(
+            ws is not None and coord_wells >= 2
+        )
         self._act_set_crs.setEnabled(ws is not None)
         self._refresh_tree()
         self._refresh_tops_list()
@@ -4895,6 +4908,53 @@ class WellLogWorkstationWindow(QMainWindow):
             QMessageBox.warning(self, "新建油藏剖面失败", str(exc))
         except OSError as exc:
             QMessageBox.warning(self, "新建油藏剖面失败", str(exc))
+
+    def _on_section_from_line(self) -> None:
+        """Pick wells along a section line and create a correlation plot.
+
+        FRS §4.2 workflow 1: the user defines a section line (endpoints +
+        buffer); wells inside the buffer are ordered by their projection along
+        the line and fed into a correlation plot.
+        """
+        if self._workspace is None:
+            QMessageBox.information(self, "平面画线生成剖面", "请先打开工区。")
+            return
+        from well_log_workstation.section_line import pick_wells_along_line
+        from well_log_workstation.section_line_dialog import SectionLineDialog
+
+        dlg = SectionLineDialog(self._workspace.wells, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        value = dlg.value()
+        if value is None:
+            return
+        p0, p1, buffer_deg = value
+        picked = pick_wells_along_line(
+            self._workspace.wells, p0, p1, buffer_deg=buffer_deg
+        )
+        if len(picked) < 2:
+            QMessageBox.information(
+                self,
+                "平面画线生成剖面",
+                f"缓冲带内仅 {len(picked)} 口井，需要 ≥2 口才能生成剖面。",
+            )
+            return
+        template_id = self._current_template_id() or "std-gr-rt-den"
+        well_ids = [w.id for w in picked]
+        try:
+            plot = self.create_correlation_plot_document(
+                well_ids, template_id,
+                name=f"沿线剖面 {len(well_ids)}井",
+            )
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "生成剖面失败", str(exc))
+            return
+        names = "、".join(w.name for w in picked[:4])
+        if len(picked) > 4:
+            names += "…"
+        self.statusBar().showMessage(
+            f"已沿剖面线选取 {len(picked)} 口井生成对比图：{names}", 5000
+        )
 
     def _on_edit_section_faults(self) -> None:
         """Edit the active section plot's faults (FRS §3.3 / P1-A)."""

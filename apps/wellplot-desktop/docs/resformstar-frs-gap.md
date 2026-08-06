@@ -54,7 +54,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | FRS 需求 | 状态 | 现状 | 缺口 → 归属 |
 |---|---|---|---|
 | 剖面选井/排序/增删/镜像 | 🟡 | correlation 列排序/间隙持久化 (`test_..._correlation_layout.py`) | 镜像翻转 → Desktop |
-| 平面画线自动取井生成剖面 | ❌ | `plane_map_view` 仅井位散点（无选井/切线） | → Desktop(平面交互) |
+| 平面画线生成剖面 | 🟡 | `section_line.py` 缓冲带选井（点到线段距离 + 沿线投影排序）+ `SectionLineDialog`（端点/缓冲输入 + 井选取端点 + 实时预览井数）+ 一键生成地层对比图（工作流 1 ✅）；平面图切线可视化（PaleoMapCanvas 无 overlay API）、剖面修正刷新平面（需等厚图）、光标同步（工作流 2/3）仍缺 | **P2(工作流1✅)/后续**: 工作流 2/3 → Desktop(联动) |
 | 高程剖面 (MSL) / 拉平剖面 | 🟡 | `datum/well_section_datum.py:19-79` md/tvdss/horizon；tvdss 为 -kb 近似（非真海拔） | 真 TVDSS（需测斜+KB）→ SDK(轨迹) |
 | 斜井 TVD 剖面 / 沿轨迹展布 (Unfolded) | 🟡 | `survey.py` 最小曲率法 + datum tvd 模式 + **地理井距展布**（井列按测斜闭合位移投影摆放 + 井内弯曲轨迹线，`well_spacing="geographic"`）；Unfolded（沿 MD 展布剖面类型）仍缺 | **P1(计算+datum+展布✅)/后续**: Unfolded 剖面类型 |
 | 实际井距/等井距、纵横比例尺解耦 | ❌ | correlation 等距列 | → Desktop(画布布局) |
@@ -123,7 +123,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 切片 | SDK | Desktop |
 |---|---|---|
 | **P2-A 公式计算器** ✅ | — | 已交付：`formula.py` 递归下降解析器 + 数组求值（null 传播/标量广播）；`formulas.json` 存储（对称 tops）；`_apply_derived_curves` 运行时附加派生曲线道；`FormulaDialog` 编辑器（语法预校验） | 解析器优先级/错误、VSH 数值、null 传播、集成附加/替换/诊断 |
-| **P2-B 平面-剖面联动** | — | 平面切线选井 → 生成剖面；剖面修正 → 平面刷新（事件总线） |
+| **P2-B 平面-剖面联动** | — | 部分交付（工作流 1）：`section_line.py` 缓冲带选井（距离/投影排序）+ `SectionLineDialog` + 「平面画线生成剖面」菜单 → 一键生成沿线排序的地层对比图；工作流 2（剖面修正刷新平面，需等厚图/构造图）与工作流 3（光标同步）留后续 | 几何/排序/截断单测 + dialog 解析 + 集成井序 |
 | **P2-C 出版整饰** | 剪切线；per-track PDF layer | 图例栏、接合图、责任表图框生成 |
 
 ---
