@@ -11,7 +11,6 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from well_log_workstation.datum.well_section_datum import WellSectionDatum  # noqa: E402
-from well_log_workstation.section_geometry.fault_2d import curtain_slice_fault  # noqa: E402
 from well_log_workstation.section_geometry.contact_2d import contact_polyline  # noqa: E402
 from well_log_workstation.section_geometry.tie_polygons import tie_quads  # noqa: E402
 
@@ -47,23 +46,9 @@ def test_datum_rejects_tvd():
 
 
 # --- fault_2d (T4) ---
-
-def test_fault_curtain_slice_projects_3d_to_2d():
-    fault_pts = [[0.0, 0.0, 500.0], [100.0, 0.0, 600.0], [200.0, 0.0, 700.0]]
-    well_pos = [(0.0, 0.0), (100.0, 0.0), (200.0, 0.0)]
-    segs = curtain_slice_fault(fault_pts, well_pos)
-    assert len(segs) == 1
-    seg = segs[0]
-    assert seg.color == "#dc2626"  # red family (T4)
-    assert seg.points.ndim == 2 and seg.points.shape[1] == 2
-
-
-def test_fault_requires_two_wells():
-    assert curtain_slice_fault([[0, 0, 1], [1, 0, 2]], [(0.0, 0.0)]) == []
-
-
-def test_fault_requires_two_points():
-    assert curtain_slice_fault([[0, 0, 1]], [(0.0, 0.0), (1.0, 0.0)]) == []
+# The legacy 3D-CRS curtain_slice_fault path was retired in P1-A in favour of
+# the section 2D position+throw model. Coverage of the new model lives in
+# test_well_log_workstation_fault_section.py.
 
 
 # --- contact_2d (T4) ---

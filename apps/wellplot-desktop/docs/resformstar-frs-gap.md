@@ -61,7 +61,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 分层线拖拽吸附 (Snap Picking) | 🟡 | link 拾取 10px 容差 (`correlation_canvas.py:162-202`)；无曲线极值吸附 | → Desktop(磁吸) |
 | 曲线形态自动对比 | 🟡 | 仅名字匹配 (`correlation_links.match_tops_by_name:88-132`) | → Desktop(相似度) + SDK(信号处理) |
 | **地层尖灭/透镜体/剥蚀超覆** | 🟡 | `interwell_fill.py` 支持单井区间的线性楔形尖灭（FRS §3.3，P0-C 已交付）；`interwell_fill.py:35-88` 同名分层直四边形；透镜体手绘、剥蚀/超覆截断仍缺 | **P0(楔形✅)/P1(透镜体·截断)**: Desktop(几何 numpy, section_geometry 模式) + SDK(多边形/三角化复用) |
-| 断层错断/落差 | ❌ | `section_geometry/fault_2d.py:31-91` 曲线切片存在，但 `PlotDocument` 无字段、shell 读死字段 (`shell.py:2443-2452`) → 恒空；无 UI | **P1: 数据模型+几何 → Desktop；渲染复用 SDK custom layers** |
+| 断层错断/落差 | 🟡 | `section_geometry/fault_section.py` 2D 位置+落差模型（替换原 3D CRS 死代码）：`SectionFault2D`（井间位置 + 顶/底深 + throw 正断>0/逆断<0）+ `fault_polyline` + `apply_fault_throw_to_quad`（下盘角点位移）；`PlotDocument.faults` 持久化；section 画布渲染 + 编辑对话框；真多边形切割（上/下盘拆分）仍缺 | **P1(落差位移✅)/P2(多边形切割)**: Desktop(几何) |
 | 流体界面 OWC/GOC + 复合充填 | ❌ | `contact_2d.py:35-91` 折线几何存在，同样无持久化/UI | **P1: 同上** |
 | 磁吸/手绘平滑 | ❌ | 无 | → Desktop(交互) |
 | 全局撤销/重做 | 🟡 | SDK session 命令栈 (`session/session.hpp`); Desktop 对 datum/link 有撤销 (`tops_history.py`) | 扩展覆盖新编辑 → Desktop |
@@ -112,7 +112,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 
 | 切片 | SDK | Desktop |
 |---|---|---|
-| **P1-A 断层错断** | 多边形切割基元（上/下盘） | `PlotDocument` fault 字段 + 编辑 UI + 渲染（错断多边形、落差） |
+| **P1-A 断层错断** ✅ | — | 已交付：`section_geometry/fault_section.py` 2D 位置+落差模型（替换 3D CRS 死代码）；`SectionFault2D` + `fault_polyline` + `apply_fault_throw_to_quad`（下盘角点位移，正断降/逆断升）；`PlotDocument.faults` 持久化；section 画布渲染断层线 + 错断 quad；「编辑断层」对话框；旧 3D 测试迁移 | 几何单测（位移/反向/边界）；render smoke；持久化往返 |
 | **P1-B 流体界面** | 界面切割多边形 | OWC/GOC 持久化 + UI + 油水双色/过渡带渲染 |
 | **P1-C 挂井与展布** | 测斜→TVD/TVDSS/ΔN/ΔE 计算；真 TST | 测斜导入 (MD/Inc/Az) + datum tvd 模式 + Unfolded 展布 |
 

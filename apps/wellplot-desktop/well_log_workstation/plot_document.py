@@ -137,6 +137,9 @@ class PlotDocument:
     # Lithology pattern map (FRS §2.3 / P0-B): top/horizon name → SY/T 5615
     # pattern id. Optional; empty means solid-color fills only.
     litho_pattern_map: dict[str, str] = field(default_factory=dict)
+    # Section faults (FRS §3.3 / P1-A): list of serialized SectionFault2D
+    # dicts (position+throw model). Optional; empty for fault-free sections.
+    faults: list[dict] = field(default_factory=list)
 
     def absolute_path(self, workspace: Workspace) -> Path:
         return workspace.root / self.path
@@ -206,6 +209,8 @@ def _to_json(doc: PlotDocument) -> dict[str, Any]:
         payload["litho_pattern_map"] = {
             str(k): str(v) for k, v in doc.litho_pattern_map.items() if k and v
         }
+    if doc.type == "section" or doc.faults:
+        payload["faults"] = [dict(f) for f in doc.faults if isinstance(f, dict)]
     return payload
 
 
@@ -339,6 +344,12 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
             ks, vs = str(k).strip(), str(v).strip()
             if ks and vs:
                 litho_pattern_map[ks] = vs
+    raw_faults = data.get("faults")
+    faults: list[dict] = []
+    if isinstance(raw_faults, list):
+        for f in raw_faults:
+            if isinstance(f, dict):
+                faults.append(dict(f))
     return PlotDocument(
         id=str(data["id"]),
         name=str(data.get("name") or data["id"]),
@@ -362,6 +373,7 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         pinchout_factor=pinchout_factor,
         pinchout_smooth=pinchout_smooth,
         litho_pattern_map=litho_pattern_map,
+        faults=faults,
     )
 
 
@@ -444,6 +456,7 @@ def load_plot_document(workspace: Workspace, plot_id: str) -> PlotDocument:
             pinchout_factor=doc.pinchout_factor,
             pinchout_smooth=doc.pinchout_smooth,
             litho_pattern_map=dict(doc.litho_pattern_map),
+            faults=list(doc.faults),
         )
     # Lazy import: keep this module importable without PySide6 (see save).
     from well_log_workstation.events import restore_plot_revision

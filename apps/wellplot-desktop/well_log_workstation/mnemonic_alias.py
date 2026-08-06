@@ -37,8 +37,10 @@ class AliasMap:
     """
 
     def __init__(self, mapping: Mapping[str, Iterable[str]] | None = None) -> None:
-        # canonical_norm → set of alias norms
-        self._canon_to_aliases: dict[str, set[str]] = {}
+        # canonical_norm → ordered, deduped aliases (insertion order preserved
+        # so expand() is deterministic; sets would iterate nondeterministically
+        # across hash seeds).
+        self._canon_to_aliases: dict[str, list[str]] = {}
         # alias_norm → canonical_norm
         self._alias_to_canon: dict[str, str] = {}
         if mapping:
@@ -49,12 +51,14 @@ class AliasMap:
         canon = _norm(canonical)
         if not canon:
             return
-        bucket = self._canon_to_aliases.setdefault(canon, set())
+        bucket = self._canon_to_aliases.setdefault(canon, [])
+        existing = set(bucket)
         for alias in aliases:
             an = _norm(alias)
-            if not an or an == canon:
+            if not an or an == canon or an in existing:
                 continue
-            bucket.add(an)
+            existing.add(an)
+            bucket.append(an)
             # Last writer wins for a shared alias; acceptable for a small dict.
             self._alias_to_canon[an] = canon
 

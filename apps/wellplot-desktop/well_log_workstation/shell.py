@@ -119,10 +119,10 @@ from well_log_workstation.qt_platform import effective_qt_platform_hint
 from well_log_workstation.section_canvas import SectionCanvas
 from well_log_workstation.section_geometry import (
     ContactSegment2D,
-    FaultSegment2D,
+    SectionFault2D,
     TieQuad2D,
     contact_polyline,
-    curtain_slice_fault,
+    faults_from_json,
     tie_quads,
 )
 from well_log_workstation.session_store import HostSessionStore
@@ -726,6 +726,15 @@ class WellLogWorkstationWindow(QMainWindow):
         )
         self.section_caption.setObjectName("SectionCaption")
         sl.addWidget(self.section_caption)
+        # Section fault editor (FRS §3.3 / P1-A): edit the plot's faults.
+        self.section_fault_btn = QPushButton("编辑断层…")
+        self.section_fault_btn.setObjectName("Button_EditSectionFaults")
+        self.section_fault_btn.setToolTip(
+            "为当前油藏剖面添加/编辑断层（位置 + 落差，正断>0 下盘降 / 逆断<0 下盘升）。"
+        )
+        self.section_fault_btn.setEnabled(False)
+        self.section_fault_btn.clicked.connect(self._on_edit_section_faults)
+        sl.addWidget(self.section_fault_btn)
         self.section_canvas = SectionCanvas()
         sl.addWidget(self.section_canvas, 1)
         self.document_tabs.addTab(self._section_host, "油藏剖面")
@@ -2496,14 +2505,12 @@ class WellLogWorkstationWindow(QMainWindow):
         ]
         shifts = datum.compute_shifts(well_dicts)
 
-        # Section geometry (T4): faults / contacts / tie quads from user
-        # annotations in the catalog (defaults: none -> empty overlays).
-        faults: list[FaultSegment2D] = []
+        # Section geometry (T4): faults / contacts / tie quads.
+        faults: list[SectionFault2D] = faults_from_json(
+            getattr(plot, "faults", None) or []
+        )
         contacts: list[ContactSegment2D] = []
         quads: list[TieQuad2D] = []
-        fault_pts = getattr(plot, "fault_annotations", None)
-        if fault_pts:
-            faults = curtain_slice_fault(fault_pts, well_positions, shifts)
         contact_depths = getattr(plot, "contact_annotations", None)
         if contact_depths:
             contacts = contact_polyline(
@@ -2548,6 +2555,7 @@ class WellLogWorkstationWindow(QMainWindow):
             f"油藏剖面 · {names} · 基准 {datum_mode} · "
             f"断层 {len(faults)} · 接触 {len(contacts)} · 充填 {len(quads)}"
         )
+        self.section_fault_btn.setEnabled(True)
         self.document_tabs.setCurrentWidget(self._section_host)
         emit_plot_changed(plot.id)
         self._update_status()
@@ -4616,6 +4624,43 @@ class WellLogWorkstationWindow(QMainWindow):
             QMessageBox.warning(self, "新建油藏剖面失败", str(exc))
         except OSError as exc:
             QMessageBox.warning(self, "新建油藏剖面失败", str(exc))
+
+    def _on_edit_section_faults(self) -> None:
+        """Edit the active section plot's faults (FRS §3.3 / P1-A)."""
+        if (
+            self._workspace is None
+            or self._active_plot_type != "section"
+            or not self._active_plot_id
+        ):
+            return
+        from well_log_workstation.section_geometry.fault_dialog import (
+            SectionFaultDialog,
+        )
+        from well_log_workstation.section_geometry import faults_to_json
+
+        try:
+            plot = load_plot_document(self._workspace, self._active_plot_id)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "加载图件失败", str(exc))
+            return
+        well_count = max(2, len(plot.well_ids))
+        dlg = SectionFaultDialog(
+            current=faults_from_json(plot.faults),
+            well_count=well_count,
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_faults = dlg.value()
+        plot.faults = faults_to_json(new_faults)
+        try:
+            save_plot_document(self._workspace, plot)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "保存断层失败", str(exc))
+            return
+        # Re-render with the updated faults.
+        self._show_section(plot)
+        self.statusBar().showMessage(f"已更新断层（{len(new_faults)} 条）", 4000)
 
     def _on_new_composite_plot(self) -> None:
         """Create + open a composite figure (Phase-2 T7)."""

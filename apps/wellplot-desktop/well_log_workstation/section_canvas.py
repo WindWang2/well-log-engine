@@ -24,8 +24,10 @@ from PySide6.QtWidgets import QWidget
 from well_log_workstation.correlation_links import HorizonLink
 from well_log_workstation.section_geometry import (
     ContactSegment2D,
-    FaultSegment2D,
+    SectionFault2D,
     TieQuad2D,
+    apply_faults_to_quad,
+    fault_polyline,
 )
 from well_log_workstation.template_model import HostPresentation
 from well_log_workstation.tops_model import FormationTop
@@ -43,7 +45,7 @@ class SectionCanvas(QWidget):
         self.setStyleSheet("background: #ffffff;")
         self._columns: list[HostPresentation] = []
         self._tops_per_column: list[list[FormationTop]] = []
-        self._faults: list[FaultSegment2D] = []
+        self._faults: list[SectionFault2D] = []
         self._contacts: list[ContactSegment2D] = []
         self._tie_quads: list[TieQuad2D] = []
         self._d0: float | None = None
@@ -58,7 +60,7 @@ class SectionCanvas(QWidget):
         self,
         presentations: list[HostPresentation],
         tops_per_column: list[list[FormationTop]] | None = None,
-        faults: list[FaultSegment2D] | None = None,
+        faults: list[SectionFault2D] | None = None,
         contacts: list[ContactSegment2D] | None = None,
         tie_quads: list[TieQuad2D] | None = None,
     ) -> None:
@@ -171,17 +173,23 @@ class SectionCanvas(QWidget):
         def x_well(i: int) -> float:
             return 8 + i * (col_w + gap) + col_w / 2
 
-        # 0. Tie quads (under everything)
+        # 0. Tie quads (under everything). Apply fault throws to the corners
+        # so quads crossing a fault plane show the down-dip offset.
         for quad in self._tie_quads:
+            eff = (
+                apply_faults_to_quad(quad, self._faults, n)
+                if self._faults
+                else quad
+            )
             poly = QPolygonF()
-            for (qx, qy) in quad.corners:
+            for (qx, qy) in eff.corners:
                 # corners are in section-space (x = well index scaled);
                 # map x back to column center via fraction of n.
                 xi = min(max(qx / max(1.0, n - 1), 0.0), float(n - 1))
                 cx = 8 + xi * (col_w + gap) + col_w / 2
                 poly.append(QPointF(cx, y_map(qy)))
             p.setPen(Qt.PenStyle.NoPen)
-            if quad.pattern_id:
+            if eff.pattern_id:
                 # Real vector lithology pattern (SY/T 5615). Falls back to a
                 # solid color when the id is not in the builtin catalog.
                 from well_log_workstation.litho_pattern_lib import (
@@ -189,14 +197,14 @@ class SectionCanvas(QWidget):
                     make_qbrush,
                 )
 
-                pat = get_pattern(quad.pattern_id)
+                pat = get_pattern(eff.pattern_id)
                 brush = (
-                    make_qbrush(pat, quad.fill_color)
+                    make_qbrush(pat, eff.fill_color)
                     if pat is not None
-                    else QBrush(QColor(quad.fill_color))
+                    else QBrush(QColor(eff.fill_color))
                 )
             else:
-                brush = QBrush(QColor(quad.fill_color))
+                brush = QBrush(QColor(eff.fill_color))
             p.setBrush(brush)
             p.drawPolygon(poly)
 
@@ -249,14 +257,17 @@ class SectionCanvas(QWidget):
                     p.drawLine(int(prev[0]), int(prev[1]), int(xx), int(yy))
                 prev = (xx, yy)
 
-        # 2. Fault polylines (red, dashed per ADR 0050)
+        # 2. Fault polylines (red, dashed — FRS §3.3 standard for faults).
         for fault in self._faults:
+            pts = fault_polyline(fault, n)
+            if pts.shape[0] < 2:
+                continue
             pen = QPen(QColor(fault.color), 1.4, Qt.PenStyle.SolidLine)
             if fault.dash_pattern:
                 pen.setDashPattern(list(fault.dash_pattern))
             p.setPen(pen)
             prev = None
-            for (fx, fy) in fault.points:
+            for (fx, fy) in pts:
                 xi = min(max(fx / max(1.0, n - 1), 0.0), float(n - 1))
                 cx = 8 + xi * (col_w + gap) + col_w / 2
                 yy = y_map(fy)
