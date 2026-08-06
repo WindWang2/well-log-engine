@@ -63,19 +63,26 @@ def contact_depth_at(contact: FluidContact2D, well_idx: int) -> float | None:
         return None
 
 
-def contact_segment_2d(
-    contact: FluidContact2D, well_count: int
+def segment_by_depths(
+    depths: Mapping[int, float], well_count: int
 ) -> list[np.ndarray]:
-    """Return contact line segments in section 2D space (x = well index, y = MD).
+    """Depth-line segments in section 2D space (x = well index, y = MD).
 
-    Only contiguous runs of adjacent wells that both define the contact are
+    Only contiguous runs of adjacent wells that both define a depth are
     connected; each run becomes one ``(N, 2)`` array. Empty list when fewer
-    than two adjacent wells define the contact.
+    than two adjacent wells define the depth. Shared by fluid contacts and
+    erosion surfaces.
     """
     segments: list[np.ndarray] = []
     run: list[tuple[float, float]] = []
     for i in range(well_count):
-        d = contact_depth_at(contact, i)
+        raw = depths.get(int(i))
+        d: float | None = None
+        if raw is not None:
+            try:
+                d = float(raw)
+            except (TypeError, ValueError):
+                d = None
         if d is None:
             if len(run) >= 2:
                 segments.append(np.asarray(run, dtype=np.float64))
@@ -87,24 +94,45 @@ def contact_segment_2d(
     return segments
 
 
-def _interpolate_depth(
-    contact: FluidContact2D, x: float
+def contact_segment_2d(
+    contact: FluidContact2D, well_count: int
+) -> list[np.ndarray]:
+    """Return contact line segments in section 2D space (x = well index, y = MD).
+
+    Only contiguous runs of adjacent wells that both define the contact are
+    connected; each run becomes one ``(N, 2)`` array. Empty list when fewer
+    than two adjacent wells define the contact.
+    """
+    return segment_by_depths(contact.depths, well_count)
+
+
+def interpolate_depth_at(
+    depths: Mapping[int, float], x: float
 ) -> float | None:
-    """Linear-interpolate the contact depth at section-x (well-index space).
+    """Linear-interpolate a per-well depth at section-x (well-index space).
 
     ``x`` is a fractional well index; returns None if either bounding well
-    lacks a contact depth.
+    lacks a depth. Shared by fluid contacts and erosion surfaces.
     """
     lo = int(np.floor(x))
     hi = int(np.ceil(x))
+    raw = depths.get(lo)
+    d_lo = float(raw) if raw is not None else None
     if lo == hi:
-        return contact_depth_at(contact, lo)
-    d_lo = contact_depth_at(contact, lo)
-    d_hi = contact_depth_at(contact, hi)
+        return d_lo
+    raw_hi = depths.get(hi)
+    d_hi = float(raw_hi) if raw_hi is not None else None
     if d_lo is None or d_hi is None:
         return None
     frac = x - lo
     return d_lo + frac * (d_hi - d_lo)
+
+
+def _interpolate_depth(
+    contact: FluidContact2D, x: float
+) -> float | None:
+    """Linear-interpolate the contact depth at section-x (well-index space)."""
+    return interpolate_depth_at(contact.depths, x)
 
 
 def split_quad_by_contact(
@@ -242,30 +270,44 @@ def split_quad_composite(
     faults: Iterable[Any],
     contacts: Iterable[FluidContact2D],
     well_count: int,
+    surfaces: Iterable[Any] | None = None,
 ) -> list[TieQuad2D]:
-    """Split a tie-quad by faults then fluid contacts (FRS §3.x composite).
+    """Split a tie-quad by surfaces, then faults, then fluid contacts.
 
-    A structural fault split comes first (hanging/foot-wall halves, first
-    fault crossing the quad wins), then each half may be split again by the
-    first contact crossing it. Because a contact depth is defined per well,
-    its line breaks where the fault offsets the wells — the halves split
-    independently, producing the natural offset at the fault plane.
+    A structural surface truncation comes first (erosion keeps below, onlap
+    keeps above; first surface crossing the quad wins), then the fault split
+    (hanging/foot-wall halves, first fault crossing wins), then each piece
+    may be split again by the first contact crossing it. Because a contact
+    depth is defined per well, its line breaks where the fault offsets the
+    wells — the halves split independently, producing the natural offset at
+    the fault plane.
 
-    Returns 1..4 pieces in paint order (fault left then right; each contact
-    split emits the above piece before the below piece). No faults/contacts
-    → the quad itself.
+    Returns 1..4 pieces in paint order (surface-truncated piece; fault left
+    then right; each contact split emits the above piece before the below
+    piece). No faults/contacts/surfaces → the quad itself.
     """
+    from well_log_workstation.section_geometry.erosion_surface import (
+        truncate_quad_by_surface,
+    )
     from well_log_workstation.section_geometry.fault_section import (
         apply_faults_to_quad,
         split_quad_by_fault,
     )
 
+    surfaces_list = list(surfaces or [])
     faults_list = list(faults or [])
     contacts_list = list(contacts or [])
+    base = quad
+    if surfaces_list:
+        for surface in surfaces_list:
+            kept = truncate_quad_by_surface(base, surface, well_count)
+            if kept is not None:
+                base = kept
+                break
     eff = (
-        apply_faults_to_quad(quad, faults_list, well_count)
+        apply_faults_to_quad(base, faults_list, well_count)
         if faults_list
-        else quad
+        else base
     )
     pieces = [eff]
     if faults_list:

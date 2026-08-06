@@ -777,6 +777,17 @@ class WellLogWorkstationWindow(QMainWindow):
         self.section_contact_btn.setEnabled(False)
         self.section_contact_btn.clicked.connect(self._on_edit_section_contacts)
         sl.addWidget(self.section_contact_btn)
+        # Section erosion/onlap surface editor (FRS §3.x / P1): per-well
+        # unconformity depth; erosion keeps below, onlap keeps above.
+        self.section_surface_btn = QPushButton("编辑剥蚀/超覆面…")
+        self.section_surface_btn.setObjectName("Button_EditSectionSurfaces")
+        self.section_surface_btn.setToolTip(
+            "为当前油藏剖面添加/编辑不整合/剥蚀面（各井深度 + 模式）。"
+            "剥蚀保留面下部、超覆保留面上部；先于断层/界面作用于充填多边形。"
+        )
+        self.section_surface_btn.setEnabled(False)
+        self.section_surface_btn.clicked.connect(self._on_edit_section_surfaces)
+        sl.addWidget(self.section_surface_btn)
         # Section well spacing (FRS §3.1 / P1-C): equal vs geographic (survey).
         spacing_row = QHBoxLayout()
         spacing_row.addWidget(QLabel("井距模式"))
@@ -2747,13 +2758,18 @@ class WellLogWorkstationWindow(QMainWindow):
         self.section_canvas.set_well_x_offsets(well_x_offsets)
         self.section_canvas.set_well_trajectories(well_trajectories)
 
-        # Section geometry (T4): faults / contacts / tie quads.
+        # Section geometry (T4): faults / contacts / surfaces / tie quads.
         faults: list[SectionFault2D] = faults_from_json(
             getattr(plot, "faults", None) or []
         )
         contacts: list[FluidContact2D] = contacts_from_json(
             getattr(plot, "contacts", None) or []
         )
+        from well_log_workstation.section_geometry.erosion_surface import (
+            surfaces_from_json,
+        )
+
+        surfaces = surfaces_from_json(getattr(plot, "surfaces", None) or [])
         quads: list[TieQuad2D] = []
         tops_as_dicts = [
             [{"name": ft.name, "depth": ft.depth} for ft in col]
@@ -2784,15 +2800,18 @@ class WellLogWorkstationWindow(QMainWindow):
             tops_cols,
             faults=faults,
             contacts=contacts,
+            surfaces=surfaces,
             tie_quads=quads,
         )
         names = " · ".join(p.well_name for p in presentations[:4])
         self.section_caption.setText(
             f"油藏剖面 · {names} · 基准 {datum_mode} · "
-            f"断层 {len(faults)} · 接触 {len(contacts)} · 充填 {len(quads)}"
+            f"断层 {len(faults)} · 接触 {len(contacts)} · "
+            f"剥蚀/超覆 {len(surfaces)} · 充填 {len(quads)}"
         )
         self.section_fault_btn.setEnabled(True)
         self.section_contact_btn.setEnabled(True)
+        self.section_surface_btn.setEnabled(True)
         # Sync the spacing combo from the plot doc (guarded against re-entry).
         self._section_spacing_guard = True
         try:
@@ -5186,6 +5205,52 @@ class WellLogWorkstationWindow(QMainWindow):
         self._show_section(plot)
         self.statusBar().showMessage(
             f"已更新流体界面（{len(new_contacts)} 条）", 4000
+        )
+
+    def _on_edit_section_surfaces(self) -> None:
+        """Edit the active section plot's erosion/onlap surfaces (FRS §3.x P1)."""
+        if (
+            self._workspace is None
+            or self._active_plot_type != "section"
+            or not self._active_plot_id
+        ):
+            return
+        from well_log_workstation.section_geometry.erosion_surface import (
+            surfaces_from_json,
+            surfaces_to_json,
+        )
+        from well_log_workstation.section_geometry.erosion_surface_dialog import (
+            SectionErosionSurfaceDialog,
+        )
+
+        try:
+            plot = load_plot_document(self._workspace, self._active_plot_id)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "加载图件失败", str(exc))
+            return
+        well_count = max(2, len(plot.well_ids))
+        well_names = [
+            (next((w.name for w in self._workspace.wells if w.id == wid), wid[:8]))
+            for wid in plot.well_ids
+        ]
+        dlg = SectionErosionSurfaceDialog(
+            current=surfaces_from_json(plot.surfaces),
+            well_count=well_count,
+            well_names=well_names,
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_surfaces = dlg.value()
+        plot.surfaces = surfaces_to_json(new_surfaces)
+        try:
+            save_plot_document(self._workspace, plot)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "保存剥蚀/超覆面失败", str(exc))
+            return
+        self._show_section(plot)
+        self.statusBar().showMessage(
+            f"已更新剥蚀/超覆面（{len(new_surfaces)} 条）", 4000
         )
 
     def _on_section_spacing_changed(self, _idx: int = -1) -> None:

@@ -48,6 +48,7 @@ class SectionCanvas(QWidget):
         self._tops_per_column: list[list[FormationTop]] = []
         self._faults: list[SectionFault2D] = []
         self._contacts: list[FluidContact2D] = []
+        self._surfaces: list[Any] = []
         self._tie_quads: list[TieQuad2D] = []
         self._d0: float | None = None
         self._d1: float | None = None
@@ -72,11 +73,13 @@ class SectionCanvas(QWidget):
         faults: list[SectionFault2D] | None = None,
         contacts: list[FluidContact2D] | None = None,
         tie_quads: list[TieQuad2D] | None = None,
+        surfaces: list[Any] | None = None,
     ) -> None:
         self._columns = list(presentations)
         self._tops_per_column = list(tops_per_column or [])
         self._faults = list(faults or [])
         self._contacts = list(contacts or [])
+        self._surfaces = list(surfaces or [])
         self._tie_quads = list(tie_quads or [])
         self._fit_depth()
         self.update()
@@ -403,6 +406,28 @@ class SectionCanvas(QWidget):
                         p.drawLine(int(prev[0]), int(prev[1]), int(cx), int(yy))
                     prev = (cx, yy)
 
+        # 5. Erosion/onlap surface lines (FRS §3.x P1): dark brown dash-dot.
+        if self._surfaces:
+            from well_log_workstation.section_geometry.erosion_surface import (
+                surface_segment_2d,
+            )
+
+            pen = QPen(QColor("#92400e"), 1.4, Qt.PenStyle.SolidLine)
+            pen.setDashPattern([3.0, 1.5, 0.5, 1.5])  # dash-dot — unconformity
+            p.setPen(pen)
+            for surface in self._surfaces:
+                for seg in surface_segment_2d(surface, n):
+                    prev = None
+                    for (sx, sy) in seg:
+                        xi = min(max(sx / max(1.0, n - 1), 0.0), float(n - 1))
+                        cx = x_unit(xi)
+                        yy = y_map(sy)
+                        if prev is not None:
+                            p.drawLine(
+                                int(prev[0]), int(prev[1]), int(cx), int(yy)
+                            )
+                        prev = (cx, yy)
+
         spacing_note = "地理井距" if self._well_x_offsets else "等井距"
         p.setPen(QColor("#555"))
         p.drawText(
@@ -410,6 +435,7 @@ class SectionCanvas(QWidget):
             h - 6,
             f"油藏剖面 · {n} 井 · {spacing_note} · 共享深度 {d0:.1f}–{d1:.1f} · "
             f"断层 {len(self._faults)} · 接触 {len(self._contacts)} · "
+            f"剥蚀/超覆 {len(self._surfaces)} · "
             f"充填 {len(self._tie_quads)} · 滚轮缩放 / 拖动平移",
         )
 

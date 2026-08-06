@@ -24,7 +24,8 @@ from well_log_workstation.workspace import (
 # v6: display_set (leaf ids on plot; samples stay on well — model A)
 # v7: data_bindings — each leaf-on-plot has binding_id + plot/well identity
 # v8: track_order — persisted single-well track id order (canvas drag reorder)
-PLOT_SCHEMA_VERSION = 8
+# v9: surfaces — section erosion/onlap surfaces (FRS §3.x 尖灭行 P1)
+PLOT_SCHEMA_VERSION = 9
 
 
 @dataclass
@@ -147,6 +148,9 @@ class PlotDocument:
     # Section fluid contacts (FRS §3.3 / P1-B): list of serialized
     # FluidContact2D dicts (OWC/GOC per-well depth). Optional; empty = none.
     contacts: list[dict] = field(default_factory=list)
+    # Section erosion/onlap surfaces (FRS §3.x / P1): list of serialized
+    # ErosionSurface2D dicts (per-well depth + mode). Optional; empty = none.
+    surfaces: list[dict] = field(default_factory=list)
     # Section well spacing (FRS §3.1 / P1-C): "equal" = fixed column interval,
     # "geographic" = wells placed by survey closure projected on the section
     # azimuth (+ curved trajectory polylines). Optional; default equal.
@@ -229,6 +233,8 @@ def _to_json(doc: PlotDocument) -> dict[str, Any]:
         payload["faults"] = [dict(f) for f in doc.faults if isinstance(f, dict)]
     if doc.type == "section" or doc.contacts:
         payload["contacts"] = [dict(c) for c in doc.contacts if isinstance(c, dict)]
+    if doc.type == "section" or doc.surfaces:
+        payload["surfaces"] = [dict(s) for s in doc.surfaces if isinstance(s, dict)]
     if doc.type == "section" or doc.well_spacing != "equal":
         payload["well_spacing"] = str(doc.well_spacing)
     if doc.type == "section" or doc.ornaments:
@@ -272,6 +278,11 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         # v7 -> v8 additive: track_order for canvas drag reorder (FRS §2.x).
         data = dict(data)
         data.setdefault("track_order", [])
+        version = 8
+    if version == 8:
+        # v8 -> v9 additive: section erosion/onlap surfaces (FRS §3.x P1).
+        data = dict(data)
+        data.setdefault("surfaces", [])
         version = PLOT_SCHEMA_VERSION
     if version != PLOT_SCHEMA_VERSION:
         raise WorkspaceError(
@@ -388,6 +399,12 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         for c in raw_contacts:
             if isinstance(c, dict):
                 contacts.append(dict(c))
+    raw_surfaces = data.get("surfaces")
+    surfaces: list[dict] = []
+    if isinstance(raw_surfaces, list):
+        for s in raw_surfaces:
+            if isinstance(s, dict):
+                surfaces.append(dict(s))
     well_spacing = str(data.get("well_spacing") or "equal")
     if well_spacing not in ("equal", "geographic"):
         well_spacing = "equal"
@@ -418,6 +435,7 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         litho_pattern_map=litho_pattern_map,
         faults=faults,
         contacts=contacts,
+        surfaces=surfaces,
         well_spacing=well_spacing,
         ornaments=ornaments,
     )
@@ -504,6 +522,7 @@ def load_plot_document(workspace: Workspace, plot_id: str) -> PlotDocument:
             litho_pattern_map=dict(doc.litho_pattern_map),
             faults=list(doc.faults),
             contacts=list(doc.contacts),
+            surfaces=list(doc.surfaces),
             well_spacing=doc.well_spacing,
             ornaments=doc.ornaments,
         )

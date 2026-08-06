@@ -16,6 +16,13 @@ from well_log_workstation.section_geometry.contact_section import (
     split_quad_by_contact,
     split_quad_composite,
 )
+from well_log_workstation.section_geometry.erosion_surface import (
+    ErosionSurface2D,
+    surface_segment_2d,
+    surfaces_from_json,
+    surfaces_to_json,
+    truncate_quad_by_surface,
+)
 from well_log_workstation.section_geometry.fault_section import (
     SectionFault2D,
     apply_fault_throw_to_quad,
@@ -61,6 +68,12 @@ __all__ = [
     "contacts_to_json",
     "TieQuad2D",
     "tie_quads",
+    # Erosion/onlap surfaces — per-well depth truncation (FRS §3.x P1).
+    "ErosionSurface2D",
+    "surface_segment_2d",
+    "surfaces_from_json",
+    "surfaces_to_json",
+    "truncate_quad_by_surface",
     "project_trajectory_2d",
     "project_closure_to_section",
     "normalize_offsets",
