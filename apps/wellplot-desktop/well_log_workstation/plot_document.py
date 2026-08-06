@@ -21,9 +21,51 @@ from well_log_workstation.workspace import (
     save_workspace,
 )
 
-# v6: single-well display_set (checked track leaf ids) — data stays on well;
-# plot only records which leaves participate (model A: import→well, checks→plot).
-PLOT_SCHEMA_VERSION = 6
+# v6: display_set (leaf ids on plot; samples stay on well — model A)
+# v7: data_bindings — each leaf-on-plot has binding_id + plot/well identity
+PLOT_SCHEMA_VERSION = 7
+
+
+@dataclass
+class PlotDataBinding:
+    """One well-track linked into a plot (identity only; no samples).
+
+    ``binding_id`` uniquely identifies this plot↔data association so imports
+    and multi-plot sharing can refer to the link without embedding curves.
+    """
+
+    binding_id: str
+    plot_id: str
+    well_id: str
+    leaf_id: str
+    mnemonic: str = ""
+    source_id: str = ""
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "binding_id": self.binding_id,
+            "plot_id": self.plot_id,
+            "well_id": self.well_id,
+            "leaf_id": self.leaf_id,
+            "mnemonic": self.mnemonic,
+            "source_id": self.source_id,
+        }
+
+    @staticmethod
+    def from_json(raw: dict[str, Any], *, default_plot_id: str = "") -> PlotDataBinding | None:
+        leaf_id = str(raw.get("leaf_id") or "").strip()
+        well_id = str(raw.get("well_id") or "").strip()
+        if not leaf_id or not well_id:
+            return None
+        bid = str(raw.get("binding_id") or "").strip() or str(uuid.uuid4())
+        return PlotDataBinding(
+            binding_id=bid,
+            plot_id=str(raw.get("plot_id") or default_plot_id),
+            well_id=well_id,
+            leaf_id=leaf_id,
+            mnemonic=str(raw.get("mnemonic") or ""),
+            source_id=str(raw.get("source_id") or ""),
+        )
 
 
 @dataclass
@@ -74,6 +116,9 @@ class PlotDocument:
     # content tree (import source → tracks). Empty = use template defaults
     # on first open. Does not store curve samples — data lives under wells/.
     display_set: list[str] = field(default_factory=list)
+    # Explicit plot↔data links (schema v7). Each entry has binding_id so
+    # "imported into this plot" is identifiable; samples remain on the well.
+    data_bindings: list[PlotDataBinding] = field(default_factory=list)
     # Correlation column gap in pixels (#295 / T7). Optional field; default 6.
     # Well order is the existing ``well_ids`` list order.
     column_gap_px: int = 6
@@ -128,6 +173,8 @@ def _to_json(doc: PlotDocument) -> dict[str, Any]:
         }
     if doc.type == "single_well" or doc.display_set:
         payload["display_set"] = [str(x) for x in doc.display_set]
+    if doc.type == "single_well" or doc.data_bindings:
+        payload["data_bindings"] = [b.to_json() for b in doc.data_bindings]
     # Correlation layout (T7/T8): write when correlation so re-open is stable.
     if doc.type == "correlation" or doc.column_gap_px != 6:
         payload["column_gap_px"] = int(doc.column_gap_px)
@@ -169,6 +216,11 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         # v5 -> v6 additive: plot-level display_set (leaf ids; data stays on well).
         data = dict(data)
         data.setdefault("display_set", [])
+        version = 6
+    if version == 6:
+        # v6 -> v7 additive: data_bindings with per-link binding_id.
+        data = dict(data)
+        data.setdefault("data_bindings", [])
         version = PLOT_SCHEMA_VERSION
     if version != PLOT_SCHEMA_VERSION:
         raise WorkspaceError(
@@ -216,6 +268,28 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         s = str(raw_leaf).strip()
         if s:
             display_set.append(s)
+    plot_id_hint = str(data.get("id") or "")
+    data_bindings: list[PlotDataBinding] = []
+    for raw_b in data.get("data_bindings") or []:
+        if isinstance(raw_b, dict):
+            b = PlotDataBinding.from_json(raw_b, default_plot_id=plot_id_hint)
+            if b is not None:
+                data_bindings.append(b)
+    # If only display_set present (v6 files), synthesize bindings without ids
+    if not data_bindings and display_set:
+        well_hint = ""
+        wids = data.get("well_ids") or []
+        if wids:
+            well_hint = str(wids[0])
+        for lid in display_set:
+            data_bindings.append(
+                PlotDataBinding(
+                    binding_id=str(uuid.uuid4()),
+                    plot_id=plot_id_hint,
+                    well_id=well_hint,
+                    leaf_id=lid,
+                )
+            )
     try:
         column_gap_px = int(data.get("column_gap_px", 6))
     except (TypeError, ValueError):
@@ -243,6 +317,7 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         revision=max(0, int(data.get("revision") or 0)),
         track_overrides=track_overrides,
         display_set=display_set,
+        data_bindings=data_bindings,
         column_gap_px=column_gap_px,
         datum_mode=datum_mode,
         datum_horizon=datum_horizon,
@@ -319,6 +394,8 @@ def load_plot_document(workspace: Workspace, plot_id: str) -> PlotDocument:
             free_graphics=list(doc.free_graphics),
             revision=doc.revision,
             track_overrides=dict(doc.track_overrides),
+            display_set=list(doc.display_set),
+            data_bindings=list(doc.data_bindings),
             column_gap_px=doc.column_gap_px,
             datum_mode=doc.datum_mode,
             datum_horizon=doc.datum_horizon,
@@ -332,6 +409,50 @@ def load_plot_document(workspace: Workspace, plot_id: str) -> PlotDocument:
     # above (with/without id-mismatch rebuild) share this single restore.
     restore_plot_revision(doc.id, doc.revision)
     return doc
+
+
+def sync_data_bindings(
+    doc: PlotDocument,
+    *,
+    well_id: str,
+    leaf_ids: list[str] | tuple[str, ...] | set[str],
+    leaf_meta: dict[str, dict[str, str]] | None = None,
+) -> None:
+    """Align ``display_set`` + ``data_bindings``; preserve binding_id when possible.
+
+    ``leaf_meta[leaf_id]`` may include mnemonic / source_id.
+    """
+    meta = leaf_meta or {}
+    existing = {b.leaf_id: b for b in doc.data_bindings}
+    ordered = [str(x) for x in leaf_ids]
+    doc.display_set = list(ordered)
+    new_bindings: list[PlotDataBinding] = []
+    for lid in ordered:
+        m = meta.get(lid) or {}
+        if lid in existing:
+            b = existing[lid]
+            new_bindings.append(
+                PlotDataBinding(
+                    binding_id=b.binding_id,
+                    plot_id=doc.id,
+                    well_id=well_id or b.well_id,
+                    leaf_id=lid,
+                    mnemonic=str(m.get("mnemonic") or b.mnemonic),
+                    source_id=str(m.get("source_id") or b.source_id),
+                )
+            )
+        else:
+            new_bindings.append(
+                PlotDataBinding(
+                    binding_id=str(uuid.uuid4()),
+                    plot_id=doc.id,
+                    well_id=well_id,
+                    leaf_id=lid,
+                    mnemonic=str(m.get("mnemonic") or ""),
+                    source_id=str(m.get("source_id") or ""),
+                )
+            )
+    doc.data_bindings = new_bindings
 
 
 def create_single_well_plot(

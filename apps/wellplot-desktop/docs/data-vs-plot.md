@@ -36,4 +36,20 @@
 
 - 曲线样点：井数据文件  
 - `display_set`：单井图 schema v6 字段（leaf id 列表）  
+- `data_bindings`（schema v7）：每条「图↔井道」链接有 **`binding_id`** + `plot_id` + `well_id` + `leaf_id`  
 - 未打开图件时勾选仅会话缓存（`well:<id>`）
+
+## 从数据区到图区
+
+- 双击树中井道叶子，或 **图件 → 将选中井道加入当前井图**  
+- 只增加绑定标识，**不复制样点**  
+- LAS 仍 **导入到井**（文件菜单：导入 LAS 到井…）
+
+## 图定义 XML / Excel
+
+| 动作 | 菜单 |
+|------|------|
+| 导出 | 图件 → 导出井图定义 XML / Excel |
+| 导入 | 文件 → 导入井图定义 XML / Excel |
+
+导入的是 **图的结构与绑定**（well_id、leaf_id、binding_id、图版…），要求井数据已在工区中。

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import math
 import uuid
+import zipfile
 from pathlib import Path
 from typing import AbstractSet, Any, Iterable
+from xml.etree import ElementTree as ET
 
 import numpy as np
 from PySide6.QtCore import QRectF, Qt, QTimer
@@ -105,6 +107,13 @@ from well_log_workstation.plot_document import (
     create_single_well_plot,
     load_plot_document,
     save_plot_document,
+    sync_data_bindings,
+)
+from well_log_workstation.plot_io import (
+    export_plot_excel,
+    export_plot_xml,
+    import_plot_excel,
+    import_plot_xml,
 )
 from well_log_workstation.qt_platform import effective_qt_platform_hint
 from well_log_workstation.section_canvas import SectionCanvas
@@ -243,10 +252,18 @@ class WellLogWorkstationWindow(QMainWindow):
         act_open.setObjectName("Action_OpenWorkspace")
         act_open.triggered.connect(self._on_open_workspace)
         file_menu.addSeparator()
-        self._act_import_las = file_menu.addAction("导入 LAS…")
+        self._act_import_las = file_menu.addAction("导入 LAS 到井…")
         self._act_import_las.setObjectName("Action_ImportLas")
         self._act_import_las.triggered.connect(self._on_import_las)
         self._act_import_las.setEnabled(False)
+        self._act_import_plot_xml = file_menu.addAction("导入井图定义 XML…")
+        self._act_import_plot_xml.setObjectName("Action_ImportPlotXml")
+        self._act_import_plot_xml.triggered.connect(self._on_import_plot_xml)
+        self._act_import_plot_xml.setEnabled(False)
+        self._act_import_plot_xlsx = file_menu.addAction("导入井图定义 Excel…")
+        self._act_import_plot_xlsx.setObjectName("Action_ImportPlotXlsx")
+        self._act_import_plot_xlsx.triggered.connect(self._on_import_plot_xlsx)
+        self._act_import_plot_xlsx.setEnabled(False)
         file_menu.addSeparator()
         act_quit = file_menu.addAction("退出")
         act_quit.triggered.connect(self.close)
@@ -279,6 +296,19 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_new_composite.setObjectName("Action_NewCompositePlot")
         self._act_new_composite.triggered.connect(self._on_new_composite_plot)
         self._act_new_composite.setEnabled(False)
+        plot_menu.addSeparator()
+        self._act_add_leaf_to_plot = plot_menu.addAction("将选中井道加入当前井图")
+        self._act_add_leaf_to_plot.setObjectName("Action_AddLeafToPlot")
+        self._act_add_leaf_to_plot.triggered.connect(self._on_add_selected_leaf_to_plot)
+        self._act_add_leaf_to_plot.setEnabled(False)
+        self._act_export_plot_xml = plot_menu.addAction("导出井图定义 XML…")
+        self._act_export_plot_xml.setObjectName("Action_ExportPlotXml")
+        self._act_export_plot_xml.triggered.connect(self._on_export_plot_xml)
+        self._act_export_plot_xml.setEnabled(False)
+        self._act_export_plot_xlsx = plot_menu.addAction("导出井图定义 Excel…")
+        self._act_export_plot_xlsx.setObjectName("Action_ExportPlotXlsx")
+        self._act_export_plot_xlsx.triggered.connect(self._on_export_plot_xlsx)
+        self._act_export_plot_xlsx.setEnabled(False)
         plot_menu.addSeparator()
         self._act_set_crs = plot_menu.addAction("坐标系设置（CRS）…")
         self._act_set_crs.setObjectName("Action_SetCoordinateReference")
@@ -904,6 +934,14 @@ class WellLogWorkstationWindow(QMainWindow):
         self.apply_btn.setEnabled(ok)
         self._act_apply_template.setEnabled(ok)
         self._act_new_single_plot.setEnabled(ok)
+        has_sw_plot = (
+            self._workspace is not None
+            and self._active_plot_id is not None
+            and self._active_plot_type == "single_well"
+        )
+        self._act_add_leaf_to_plot.setEnabled(has_sw_plot and has_well)
+        self._act_export_plot_xml.setEnabled(has_sw_plot)
+        self._act_export_plot_xlsx.setEnabled(has_sw_plot)
 
         n_wells = len(self._workspace.wells) if self._workspace else 0
         can_corr = (
@@ -1193,6 +1231,8 @@ class WellLogWorkstationWindow(QMainWindow):
             self.document_tabs.setTabText(1, "地层对比图-lite")
             self.document_tabs.setCurrentIndex(0)
         self._act_import_las.setEnabled(ws is not None)
+        self._act_import_plot_xml.setEnabled(ws is not None)
+        self._act_import_plot_xlsx.setEnabled(ws is not None)
         # Phase-2 PR-C: new plot-type menu items (fence_3d needs 3D).
         self._act_new_plane_map.setEnabled(ws is not None)
         self._act_new_fence_3d.setEnabled(
@@ -2017,12 +2057,29 @@ class WellLogWorkstationWindow(QMainWindow):
         key = self._display_set_key(well_id, plot_id=effective_plot_id)
         checked = frozenset(str(x) for x in leaf_ids)
         self._display_sets[key] = checked
-        # Persist on plot document when bound (data stays on well — model A).
+        # Persist display_set + data_bindings on plot (samples stay on well).
         if effective_plot_id and self._workspace is not None:
             try:
                 plot_doc = load_plot_document(self._workspace, effective_plot_id)
                 if plot_doc.type == "single_well":
-                    plot_doc.display_set = sorted(checked)
+                    meta: dict[str, dict[str, str]] = {}
+                    try:
+                        wdoc = self.session.ensure_well_loaded(
+                            self._workspace, well_id
+                        )
+                        for leaf in leaves_from_document(wdoc):
+                            meta[leaf.id] = {
+                                "mnemonic": leaf.mnemonic,
+                                "source_id": leaf.source_id,
+                            }
+                    except Exception:  # noqa: BLE001
+                        pass
+                    sync_data_bindings(
+                        plot_doc,
+                        well_id=well_id,
+                        leaf_ids=sorted(checked),
+                        leaf_meta=meta,
+                    )
                     save_plot_document(self._workspace, plot_doc)
             except WorkspaceError:
                 pass
@@ -2078,7 +2135,19 @@ class WellLogWorkstationWindow(QMainWindow):
                             self._workspace, effective_plot_id
                         )
                         if plot_doc.type == "single_well" and not plot_doc.display_set:
-                            plot_doc.display_set = sorted(self._display_sets[key])
+                            meta = {
+                                leaf.id: {
+                                    "mnemonic": leaf.mnemonic,
+                                    "source_id": leaf.source_id,
+                                }
+                                for leaf in leaves
+                            }
+                            sync_data_bindings(
+                                plot_doc,
+                                well_id=well_id,
+                                leaf_ids=sorted(self._display_sets[key]),
+                                leaf_meta=meta,
+                            )
                             save_plot_document(self._workspace, plot_doc)
                     except WorkspaceError:
                         pass
@@ -3163,7 +3232,15 @@ class WellLogWorkstationWindow(QMainWindow):
 
     def _on_tree_double_click(self, item: QTreeWidgetItem, _column: int) -> None:
         data = item.data(0, Qt.ItemDataRole.UserRole) or {}
-        if data.get("kind") != "plot":
+        kind = data.get("kind")
+        # Double-click a track leaf → import that data into the current plot
+        if kind == "leaf":
+            try:
+                self.import_leaf_to_active_plot(str(data.get("id") or ""))
+            except WorkspaceError as exc:
+                QMessageBox.warning(self, "加入井图失败", str(exc))
+            return
+        if kind != "plot":
             return
         plot_id = str(data.get("id") or "")
         if not plot_id:
@@ -3172,6 +3249,129 @@ class WellLogWorkstationWindow(QMainWindow):
             self.open_plot_document(plot_id)
         except WorkspaceError as exc:
             QMessageBox.warning(self, "打开图件失败", str(exc))
+
+    def import_leaf_to_active_plot(self, leaf_id: str) -> HostPresentation:
+        """从数据区把井道挂到当前井图（写 binding_id，不复制样点）。"""
+        if self._workspace is None:
+            raise WorkspaceError("请先打开工区")
+        if (
+            not self._active_plot_id
+            or self._active_plot_type != "single_well"
+            or not self._selected_well_id
+        ):
+            raise WorkspaceError("请先打开一张单井分析图，再从数据区加入井道")
+        leaf_id = str(leaf_id).strip()
+        if not leaf_id:
+            raise WorkspaceError("未指定井道")
+        well_id = self._selected_well_id
+        current = set(self.display_set_for(well_id) or frozenset())
+        current.add(leaf_id)
+        tid = self._current_template_id() or "std-gr-rt-den"
+        return self.set_display_set(
+            well_id,
+            current,
+            template_id=tid,
+            plot_id=self._active_plot_id,
+        )
+
+    def _on_add_selected_leaf_to_plot(self) -> None:
+        item = self.workspace_tree.currentItem()
+        if item is None:
+            QMessageBox.information(self, "加入井图", "请在树中选中一个井道叶子。")
+            return
+        data = item.data(0, Qt.ItemDataRole.UserRole) or {}
+        if data.get("kind") != "leaf":
+            QMessageBox.information(self, "加入井图", "请选中井道叶子（数据源下的曲线）。")
+            return
+        try:
+            self.import_leaf_to_active_plot(str(data.get("id") or ""))
+            QMessageBox.information(
+                self,
+                "已加入井图",
+                f"井道已绑定到当前图（含 binding 标识）。\n"
+                f"leaf={data.get('id')}",
+            )
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "加入井图失败", str(exc))
+
+    def _on_export_plot_xml(self) -> None:
+        if self._workspace is None or not self._active_plot_id:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出井图定义 XML", "", "XML (*.xml)"
+        )
+        if not path:
+            return
+        try:
+            doc = load_plot_document(self._workspace, self._active_plot_id)
+            export_plot_xml(doc, path)
+            QMessageBox.information(self, "导出完成", f"已写入\n{path}")
+        except (WorkspaceError, OSError) as exc:
+            QMessageBox.warning(self, "导出失败", str(exc))
+
+    def _on_export_plot_xlsx(self) -> None:
+        if self._workspace is None or not self._active_plot_id:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出井图定义 Excel", "", "Excel (*.xlsx)"
+        )
+        if not path:
+            return
+        try:
+            doc = load_plot_document(self._workspace, self._active_plot_id)
+            if not path.lower().endswith(".xlsx"):
+                path = path + ".xlsx"
+            export_plot_excel(doc, path)
+            QMessageBox.information(self, "导出完成", f"已写入\n{path}")
+        except (WorkspaceError, OSError) as exc:
+            QMessageBox.warning(self, "导出失败", str(exc))
+
+    def _on_import_plot_xml(self) -> None:
+        if self._workspace is None:
+            QMessageBox.information(self, "导入井图", "请先打开工区。")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入井图定义 XML", "", "XML (*.xml)"
+        )
+        if not path:
+            return
+        try:
+            doc = import_plot_xml(self._workspace, path)
+            self.open_plot_document(doc.id)
+            self._refresh_tree()
+            QMessageBox.information(
+                self,
+                "导入完成",
+                f"已创建/更新井图「{doc.name}」\n"
+                f"绑定井道 {len(doc.data_bindings)} 条（样点仍在井数据中）",
+            )
+        except (WorkspaceError, OSError, ET.ParseError) as exc:
+            QMessageBox.warning(self, "导入失败", str(exc))
+
+    def _on_import_plot_xlsx(self) -> None:
+        if self._workspace is None:
+            QMessageBox.information(self, "导入井图", "请先打开工区。")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "导入井图定义 Excel",
+            "",
+            "Excel/CSV (*.xlsx *.csv)",
+        )
+        if not path:
+            return
+        try:
+            doc = import_plot_excel(self._workspace, path)
+            self.open_plot_document(doc.id)
+            self._refresh_tree()
+            QMessageBox.information(
+                self,
+                "导入完成",
+                f"已创建/更新井图「{doc.name}」\n"
+                f"绑定井道 {len(doc.data_bindings)} 条",
+            )
+        except (WorkspaceError, OSError, KeyError, zipfile.BadZipFile) as exc:
+            QMessageBox.warning(self, "导入失败", str(exc))
 
     def _refresh_tree(self) -> None:
         """Single tree: workspace → wells (with data→tracks) → plots."""
