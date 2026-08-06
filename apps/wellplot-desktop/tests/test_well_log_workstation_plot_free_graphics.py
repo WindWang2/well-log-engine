@@ -20,10 +20,10 @@ def _shape() -> dict:
 
 
 def test_schema_version_current() -> None:
-    """Current plot schema is v7 (v6 display_set, v7 data_bindings)."""
+    """Current plot schema is v8 (v7 data_bindings, v8 track_order)."""
     from well_log_workstation.plot_document import PLOT_SCHEMA_VERSION
 
-    assert PLOT_SCHEMA_VERSION == 7
+    assert PLOT_SCHEMA_VERSION == 8
 
 
 def test_v3_upgrades_to_v4_with_empty_free_graphics() -> None:
@@ -104,7 +104,7 @@ def test_to_json_emits_free_graphics_for_composite() -> None:
         free_graphics=[shape],
     )
     payload = _to_json(doc)
-    assert payload["schemaVersion"] == PLOT_SCHEMA_VERSION == 7
+    assert payload["schemaVersion"] == PLOT_SCHEMA_VERSION == 8
     assert payload["free_graphics"] == [shape]
 
 

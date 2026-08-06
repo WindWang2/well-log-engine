@@ -23,7 +23,8 @@ from well_log_workstation.workspace import (
 
 # v6: display_set (leaf ids on plot; samples stay on well — model A)
 # v7: data_bindings — each leaf-on-plot has binding_id + plot/well identity
-PLOT_SCHEMA_VERSION = 7
+# v8: track_order — persisted single-well track id order (canvas drag reorder)
+PLOT_SCHEMA_VERSION = 8
 
 
 @dataclass
@@ -116,6 +117,9 @@ class PlotDocument:
     # content tree (import source → tracks). Empty = use template defaults
     # on first open. Does not store curve samples — data lives under wells/.
     display_set: list[str] = field(default_factory=list)
+    # Single-well track order (schema v8, FRS §2.x): track ids in presentation
+    # order after canvas drag reorder. Empty = template default order.
+    track_order: list[str] = field(default_factory=list)
     # Explicit plot↔data links (schema v7). Each entry has binding_id so
     # "imported into this plot" is identifiable; samples remain on the well.
     data_bindings: list[PlotDataBinding] = field(default_factory=list)
@@ -193,6 +197,8 @@ def _to_json(doc: PlotDocument) -> dict[str, Any]:
         payload["track_overrides"] = {
             str(k): dict(v) for k, v in doc.track_overrides.items() if isinstance(v, dict)
         }
+    if doc.type == "single_well" or doc.track_order:
+        payload["track_order"] = [str(x) for x in doc.track_order]
     if doc.type == "single_well" or doc.display_set:
         payload["display_set"] = [str(x) for x in doc.display_set]
     if doc.type == "single_well" or doc.data_bindings:
@@ -261,6 +267,11 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         # v6 -> v7 additive: data_bindings with per-link binding_id.
         data = dict(data)
         data.setdefault("data_bindings", [])
+        version = 7
+    if version == 7:
+        # v7 -> v8 additive: track_order for canvas drag reorder (FRS §2.x).
+        data = dict(data)
+        data.setdefault("track_order", [])
         version = PLOT_SCHEMA_VERSION
     if version != PLOT_SCHEMA_VERSION:
         raise WorkspaceError(
@@ -303,6 +314,11 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         for tid, props in raw_ov.items():
             if isinstance(props, dict):
                 track_overrides[str(tid)] = dict(props)
+    track_order: list[str] = []
+    for raw_id in data.get("track_order") or []:
+        s = str(raw_id).strip()
+        if s:
+            track_order.append(s)
     display_set: list[str] = []
     for raw_leaf in data.get("display_set") or []:
         s = str(raw_leaf).strip()
@@ -388,6 +404,7 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         free_graphics=free_graphics,
         revision=max(0, int(data.get("revision") or 0)),
         track_overrides=track_overrides,
+        track_order=track_order,
         display_set=display_set,
         data_bindings=data_bindings,
         column_gap_px=column_gap_px,

@@ -150,9 +150,11 @@ from well_log_workstation.template_model import (
     HostPresentation,
     PlotTemplate,
     apply_template,
+    apply_track_order,
     apply_track_overrides,
     get_builtin_template,
     list_builtin_templates,
+    track_order_from_presentation,
     track_overrides_snapshot,
 )
 from well_log_workstation.three_d_bridge import probe_3d
@@ -566,6 +568,10 @@ class WellLogWorkstationWindow(QMainWindow):
         self.multi_track_canvas.top_pick_requested.connect(self._on_canvas_top_pick)
         self.multi_track_canvas.sample_selected.connect(
             self._on_canvas_sample_selected
+        )
+        # Track-header drag reorder (FRS §2.x): persist the new order.
+        self.multi_track_canvas.track_order_changed.connect(
+            lambda _order: self._persist_track_overrides()
         )
         self.single_well_stack.addWidget(self.multi_track_canvas)  # index 0 host
 
@@ -1769,6 +1775,8 @@ class WellLogWorkstationWindow(QMainWindow):
         except WorkspaceError:
             return
         plot.track_overrides = track_overrides_snapshot(self._presentation)
+        # Canvas drag reorder (FRS §2.x): persist the id order too.
+        plot.track_order = track_order_from_presentation(self._presentation)
         save_plot_document(self._workspace, plot)
 
     def _display_set_key(
@@ -2293,6 +2301,7 @@ class WellLogWorkstationWindow(QMainWindow):
             try:
                 plot_doc = load_plot_document(self._workspace, effective_plot_id)
                 apply_track_overrides(presentation, plot_doc.track_overrides)
+                apply_track_order(presentation, plot_doc.track_order)
             except WorkspaceError:
                 pass
         self._selected_well_id = well_id

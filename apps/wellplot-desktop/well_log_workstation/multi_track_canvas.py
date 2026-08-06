@@ -10,12 +10,61 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
 from well_log_workstation.template_model import HostPresentation
 from well_log_workstation.tops_model import FormationTop
+
+
+def track_band(pres: HostPresentation, height: int) -> tuple[int, int]:
+    """(top, bottom) of the track band for a presentation (mirrors _plot_band)."""
+    hdr = getattr(pres, "header", None)
+    if hdr is None:
+        n_lines = 1
+    else:
+        n_lines = max(
+            1,
+            len(
+                hdr.header_lines(
+                    well_name=pres.well_name,
+                    template_name=pres.template_name,
+                    depth_unit=pres.depth_unit or "m",
+                    scale_summary=pres.scale_summary(),
+                )
+            ),
+        )
+    title_h = 6 + n_lines * 16
+    return title_h + 26, height - 18
+
+
+def track_header_rects(
+    pres: HostPresentation, width: int, height: int
+) -> tuple[list[tuple], tuple[int, int]]:
+    """Per-visible-track ``(track, header_rect, body_rect)`` in paint order.
+
+    Shared by paintEvent and the header drag hit-test so both use the same
+    width arithmetic (FRS §2.x canvas drag reorder).
+    """
+    top, bottom = track_band(pres, height)
+    left_margin = 8
+    usable_w = max(40, width - left_margin - 8)
+    paint_tracks = list(pres.visible_tracks)
+    total_frac = sum(max(0.05, t.width_fraction) for t in paint_tracks) or 1.0
+    entries: list[tuple] = []
+    x = left_margin
+    for track in paint_tracks:
+        tw = max(24, int(usable_w * (max(0.05, track.width_fraction) / total_frac)))
+        entries.append(
+            (
+                track,
+                QRect(x, top - 26, tw - 4, 24),
+                QRect(x, top, tw - 4, bottom - top),
+            )
+        )
+        x += tw
+    return entries, (top, bottom)
 
 
 def paint_litho_bands(
@@ -85,6 +134,9 @@ class MultiTrackCanvas(QWidget):
     top_pick_requested = Signal(float)
     # Semantic sample pick (Reference Depth) for graph↔table selection (T5)
     sample_selected = Signal(float)
+    # Emitted after a track-header drag reorder (FRS §2.x): the new track id
+    # order of the presentation. The shell persists it on the plot document.
+    track_order_changed = Signal(list)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -99,6 +151,10 @@ class MultiTrackCanvas(QWidget):
         self._drag_y: int | None = None
         self._drag_d0: float | None = None
         self._drag_d1: float | None = None
+        # Track-header drag reorder (FRS §2.x): visible-track index being
+        # dragged and the current insertion target (0..len(visible)).
+        self._drag_track_index: int | None = None
+        self._drag_track_target: int | None = None
         self._pick_mode = False
         self._press_y: int | None = None
         self._press_x: int | None = None
@@ -229,6 +285,22 @@ class MultiTrackCanvas(QWidget):
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
+            # Track-header hit-test first (FRS §2.x drag reorder); the header
+            # drag takes precedence over the pan gesture below.
+            if self._presentation is not None and self._presentation.tracks:
+                entries, _band = track_header_rects(
+                    self._presentation, self.width(), self.height()
+                )
+                pos = event.position()
+                for i, (_track, header, _body) in enumerate(entries):
+                    if header.contains(int(pos.x()), int(pos.y())):
+                        self._drag_track_index = i
+                        self._drag_track_target = i
+                        self._press_x = int(pos.x())
+                        self._press_y = int(pos.y())
+                        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                        event.accept()
+                        return
             self._press_y = int(event.position().y())
             self._press_x = int(event.position().x())
             self._did_drag = False
@@ -237,6 +309,23 @@ class MultiTrackCanvas(QWidget):
             event.accept()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        # Track-header drag: recompute the insertion target from the cursor x
+        # (header-centre boundaries), update the indicator, no depth pan.
+        if self._drag_track_index is not None and self._presentation is not None:
+            entries, _band = track_header_rects(
+                self._presentation, self.width(), self.height()
+            )
+            x = float(event.position().x())
+            target = len(entries)
+            for i, (_track, header, _body) in enumerate(entries):
+                if x < header.center().x():
+                    target = i
+                    break
+            if target != self._drag_track_target:
+                self._drag_track_target = target
+                self.update()
+            event.accept()
+            return
         if (
             self._drag_y is None
             or self._drag_d0 is None
@@ -267,6 +356,45 @@ class MultiTrackCanvas(QWidget):
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        # Track-header drag release: reorder the presentation and report the
+        # new id order so the shell can persist it (FRS §2.x).
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._drag_track_index is not None
+            and self._presentation is not None
+        ):
+            src = self._drag_track_index
+            target = (
+                self._drag_track_target
+                if self._drag_track_target is not None
+                else src
+            )
+            self._drag_track_index = None
+            self._drag_track_target = None
+            self.unsetCursor()
+            self.update()
+            vis = list(self._presentation.visible_tracks)
+            if (
+                0 <= src < len(vis)
+                and target != src
+                and target != src + 1  # same spot, no reorder
+                and target <= len(vis)
+            ):
+                src_track = vis[src]
+                moved_to_end = target == len(vis)
+                anchor = vis[-1] if moved_to_end else vis[target]
+                tracks = self._presentation.tracks
+                if anchor is not src_track:
+                    tracks.remove(src_track)
+                    anchor_pos = tracks.index(anchor)
+                    tracks.insert(
+                        anchor_pos + 1 if moved_to_end else anchor_pos, src_track
+                    )
+                    self.track_order_changed.emit(
+                        [t.id for t in tracks]
+                    )
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             y = float(event.position().y())
             shift_held = bool(
@@ -388,11 +516,8 @@ class MultiTrackCanvas(QWidget):
             p.drawText(8, y_text, line[:120])
             y_text += 16 if i == 0 else 14
 
-        top, bottom = self._plot_band()
-        left_margin = 8
-        usable_w = max(40, w - left_margin - 8)
-        paint_tracks = list(pres.visible_tracks)
-        if not paint_tracks:
+        entries, (top, bottom) = track_header_rects(pres, w, h)
+        if not entries:
             p.setPen(QColor("#888"))
             p.drawText(
                 self.rect(),
@@ -401,22 +526,19 @@ class MultiTrackCanvas(QWidget):
             )
             p.end()
             return
-        total_frac = sum(max(0.05, t.width_fraction) for t in paint_tracks) or 1.0
+        track_left = entries[0][2].left()
+        track_right = entries[-1][2].right()
 
-        track_hdr_y = top - 26
-        x = left_margin
-        track_left = left_margin
-        track_right = left_margin
-        for track in paint_tracks:
-            tw = max(24, int(usable_w * (max(0.05, track.width_fraction) / total_frac)))
+        for track, header, body in entries:
+            x, tw = body.x(), body.width()
             # per-track column header
             p.setPen(QPen(QColor("#333"), 1))
-            p.drawRect(x, track_hdr_y, tw - 4, 24)
-            p.drawText(x + 4, track_hdr_y + 16, track.title[:12])
+            p.drawRect(header)
+            p.drawText(header.x() + 4, header.y() + 16, track.title[:12])
 
             # track body
             p.setPen(QPen(QColor("#bbbbbb"), 1))
-            p.drawRect(x, top, tw - 4, bottom - top)
+            p.drawRect(body)
 
             if track.role == "depth":
                 p.setPen(QColor("#444"))
@@ -427,7 +549,7 @@ class MultiTrackCanvas(QWidget):
                     p.drawText(x + 8, yy + 4, f"{depth_v:.1f}")
             elif track.role == "litho":
                 paint_litho_bands(
-                    p, x, top, tw - 4, bottom - top, d0, d1, track
+                    p, x, top, tw, bottom - top, d0, d1, track
                 )
             else:
                 for layer in track.layers:
@@ -447,8 +569,20 @@ class MultiTrackCanvas(QWidget):
                         track.scale.mode if track.scale else "linear",
                         QColor(layer.color),
                     )
-            track_right = x + tw - 4
-            x += tw
+
+        # Track-header drag insertion indicator (FRS §2.x): a vertical line at
+        # the target insertion boundary, spanning header + body band.
+        if (
+            self._drag_track_index is not None
+            and self._drag_track_target is not None
+        ):
+            target = self._drag_track_target
+            if target < len(entries):
+                x_line = entries[target][1].x()
+            else:
+                x_line = entries[-1][1].x() + entries[-1][1].width()
+            p.setPen(QPen(QColor("#e74c3c"), 2))
+            p.drawLine(x_line, top - 26, x_line, bottom)
 
         # Formation tops as depth markers across tracks
         if self._tops:

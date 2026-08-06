@@ -317,6 +317,44 @@ def apply_template(
     )
 
 
+def track_order_from_presentation(presentation: HostPresentation) -> list[str]:
+    """Serialize the visible track order as an id list (canvas drag reorder).
+
+    Persisted alongside track_overrides (plot document schema v8) so the
+    presentation order survives reopens.
+    """
+    return [t.id for t in presentation.tracks]
+
+
+def apply_track_order(
+    presentation: HostPresentation,
+    order: list[str] | None,
+) -> HostPresentation:
+    """Reorder presentation.tracks in place from a persisted id list.
+
+    Only tracks whose id appears in ``order`` move (in the order given);
+    unknown ids keep their relative order and trail the reordered ones.
+    ``None`` / empty → no change. Returns the same object (like
+    apply_track_overrides).
+    """
+    if not order:
+        return presentation
+    by_id = {t.id: t for t in presentation.tracks}
+    moved: list[BoundTrack] = []
+    seen: set[str] = set()
+    for track_id in order:
+        track = by_id.get(track_id)
+        if track is None or track_id in seen:
+            continue
+        moved.append(track)
+        seen.add(track_id)
+    if not moved:
+        return presentation
+    remaining = [t for t in presentation.tracks if t.id not in seen]
+    presentation.tracks = moved + remaining
+    return presentation
+
+
 def track_overrides_snapshot(presentation: HostPresentation) -> dict[str, dict[str, Any]]:
     """Serialize editable track props for plot-document persistence (#292)."""
     out: dict[str, dict[str, Any]] = {}
