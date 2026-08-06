@@ -7,9 +7,13 @@ cumulative distance, y = depth). No Qt imports - pytest-runnable headless.
 
 from __future__ import annotations
 
-from well_log_workstation.section_geometry.contact_2d import (
-    ContactSegment2D,
-    contact_polyline,
+from well_log_workstation.section_geometry.contact_section import (
+    FluidContact2D,
+    contact_depth_at,
+    contact_segment_2d,
+    contacts_from_json,
+    contacts_to_json,
+    split_quad_by_contact,
 )
 from well_log_workstation.section_geometry.fault_section import (
     SectionFault2D,
@@ -39,8 +43,15 @@ __all__ = [
     "fault_x",
     "faults_from_json",
     "faults_to_json",
-    "ContactSegment2D",
-    "contact_polyline",
+    # Fluid contacts — 2D per-well depth model (FRS §3.3 / P1-B). The legacy
+    # 3D-CRS ``contact_polyline`` is kept in contact_2d.py but no longer
+    # exported.
+    "FluidContact2D",
+    "contact_depth_at",
+    "contact_segment_2d",
+    "split_quad_by_contact",
+    "contacts_from_json",
+    "contacts_to_json",
     "TieQuad2D",
     "tie_quads",
     "project_trajectory_2d",

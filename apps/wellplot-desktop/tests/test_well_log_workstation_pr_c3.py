@@ -11,7 +11,6 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from well_log_workstation.datum.well_section_datum import WellSectionDatum  # noqa: E402
-from well_log_workstation.section_geometry.contact_2d import contact_polyline  # noqa: E402
 from well_log_workstation.section_geometry.tie_polygons import tie_quads  # noqa: E402
 
 
@@ -52,31 +51,9 @@ def test_datum_rejects_tvd():
 
 
 # --- contact_2d (T4) ---
-
-def test_contact_owc_polyline_blue():
-    well_pos = [(0.0, 0.0), (100.0, 0.0), (200.0, 0.0)]
-    cs = contact_polyline(
-        [{"depth": 800.0}, {"depth": 810.0}, {"depth": None}],
-        well_pos,
-        fluid_type="owc",
-    )
-    assert len(cs) == 1
-    assert cs[0].color == "#2563eb"  # OWC blue
-    assert cs[0].points.shape[0] == 2  # gap truncates to first run
-
-
-def test_contact_goc_orange():
-    well_pos = [(0.0, 0.0), (100.0, 0.0)]
-    cs = contact_polyline(
-        [{"depth": 500.0}, {"depth": 520.0}], well_pos, fluid_type="goc"
-    )
-    assert len(cs) == 1
-    assert cs[0].color == "#f59e0b"
-
-
-def test_contact_requires_two_depths():
-    well_pos = [(0.0, 0.0), (100.0, 0.0)]
-    assert contact_polyline([{"depth": 500.0}, {"depth": None}], well_pos) == []
+# The legacy 3D-CRS contact_polyline path was retired in P1-B in favour of
+# the section 2D per-well-depth model. Coverage of the new model lives in
+# test_well_log_workstation_contact_section.py.
 
 
 # --- tie_polygons (T4) ---

@@ -140,6 +140,9 @@ class PlotDocument:
     # Section faults (FRS §3.3 / P1-A): list of serialized SectionFault2D
     # dicts (position+throw model). Optional; empty for fault-free sections.
     faults: list[dict] = field(default_factory=list)
+    # Section fluid contacts (FRS §3.3 / P1-B): list of serialized
+    # FluidContact2D dicts (OWC/GOC per-well depth). Optional; empty = none.
+    contacts: list[dict] = field(default_factory=list)
 
     def absolute_path(self, workspace: Workspace) -> Path:
         return workspace.root / self.path
@@ -211,6 +214,8 @@ def _to_json(doc: PlotDocument) -> dict[str, Any]:
         }
     if doc.type == "section" or doc.faults:
         payload["faults"] = [dict(f) for f in doc.faults if isinstance(f, dict)]
+    if doc.type == "section" or doc.contacts:
+        payload["contacts"] = [dict(c) for c in doc.contacts if isinstance(c, dict)]
     return payload
 
 
@@ -350,6 +355,12 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         for f in raw_faults:
             if isinstance(f, dict):
                 faults.append(dict(f))
+    raw_contacts = data.get("contacts")
+    contacts: list[dict] = []
+    if isinstance(raw_contacts, list):
+        for c in raw_contacts:
+            if isinstance(c, dict):
+                contacts.append(dict(c))
     return PlotDocument(
         id=str(data["id"]),
         name=str(data.get("name") or data["id"]),
@@ -374,6 +385,7 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         pinchout_smooth=pinchout_smooth,
         litho_pattern_map=litho_pattern_map,
         faults=faults,
+        contacts=contacts,
     )
 
 
@@ -457,6 +469,7 @@ def load_plot_document(workspace: Workspace, plot_id: str) -> PlotDocument:
             pinchout_smooth=doc.pinchout_smooth,
             litho_pattern_map=dict(doc.litho_pattern_map),
             faults=list(doc.faults),
+            contacts=list(doc.contacts),
         )
     # Lazy import: keep this module importable without PySide6 (see save).
     from well_log_workstation.events import restore_plot_revision

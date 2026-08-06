@@ -118,10 +118,10 @@ from well_log_workstation.plot_io import (
 from well_log_workstation.qt_platform import effective_qt_platform_hint
 from well_log_workstation.section_canvas import SectionCanvas
 from well_log_workstation.section_geometry import (
-    ContactSegment2D,
+    FluidContact2D,
     SectionFault2D,
     TieQuad2D,
-    contact_polyline,
+    contacts_from_json,
     faults_from_json,
     tie_quads,
 )
@@ -735,6 +735,16 @@ class WellLogWorkstationWindow(QMainWindow):
         self.section_fault_btn.setEnabled(False)
         self.section_fault_btn.clicked.connect(self._on_edit_section_faults)
         sl.addWidget(self.section_fault_btn)
+        # Section fluid-contact editor (FRS §3.3 / P1-B): OWC/GOC per-well.
+        self.section_contact_btn = QPushButton("编辑流体界面…")
+        self.section_contact_btn.setObjectName("Button_EditSectionContacts")
+        self.section_contact_btn.setToolTip(
+            "为当前油藏剖面添加/编辑油水/气油界面（OWC/GOC，各井深度）。"
+            "界面切割充填多边形：上部油/气、下部水。"
+        )
+        self.section_contact_btn.setEnabled(False)
+        self.section_contact_btn.clicked.connect(self._on_edit_section_contacts)
+        sl.addWidget(self.section_contact_btn)
         self.section_canvas = SectionCanvas()
         sl.addWidget(self.section_canvas, 1)
         self.document_tabs.addTab(self._section_host, "油藏剖面")
@@ -2509,16 +2519,10 @@ class WellLogWorkstationWindow(QMainWindow):
         faults: list[SectionFault2D] = faults_from_json(
             getattr(plot, "faults", None) or []
         )
-        contacts: list[ContactSegment2D] = []
+        contacts: list[FluidContact2D] = contacts_from_json(
+            getattr(plot, "contacts", None) or []
+        )
         quads: list[TieQuad2D] = []
-        contact_depths = getattr(plot, "contact_annotations", None)
-        if contact_depths:
-            contacts = contact_polyline(
-                [{"depth": d} for d in contact_depths],
-                well_positions,
-                fluid_type="owc",
-                datum_shifts=shifts,
-            )
         tops_as_dicts = [
             [{"name": ft.name, "depth": ft.depth} for ft in col]
             for col in tops_cols
@@ -2556,6 +2560,7 @@ class WellLogWorkstationWindow(QMainWindow):
             f"断层 {len(faults)} · 接触 {len(contacts)} · 充填 {len(quads)}"
         )
         self.section_fault_btn.setEnabled(True)
+        self.section_contact_btn.setEnabled(True)
         self.document_tabs.setCurrentWidget(self._section_host)
         emit_plot_changed(plot.id)
         self._update_status()
@@ -4661,6 +4666,49 @@ class WellLogWorkstationWindow(QMainWindow):
         # Re-render with the updated faults.
         self._show_section(plot)
         self.statusBar().showMessage(f"已更新断层（{len(new_faults)} 条）", 4000)
+
+    def _on_edit_section_contacts(self) -> None:
+        """Edit the active section plot's fluid contacts (FRS §3.3 / P1-B)."""
+        if (
+            self._workspace is None
+            or self._active_plot_type != "section"
+            or not self._active_plot_id
+        ):
+            return
+        from well_log_workstation.section_geometry import contacts_to_json
+        from well_log_workstation.section_geometry.contact_dialog import (
+            SectionContactDialog,
+        )
+
+        try:
+            plot = load_plot_document(self._workspace, self._active_plot_id)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "加载图件失败", str(exc))
+            return
+        well_count = max(2, len(plot.well_ids))
+        well_names = [
+            (next((w.name for w in self._workspace.wells if w.id == wid), wid[:8]))
+            for wid in plot.well_ids
+        ]
+        dlg = SectionContactDialog(
+            current=contacts_from_json(plot.contacts),
+            well_count=well_count,
+            well_names=well_names,
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_contacts = dlg.value()
+        plot.contacts = contacts_to_json(new_contacts)
+        try:
+            save_plot_document(self._workspace, plot)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "保存流体界面失败", str(exc))
+            return
+        self._show_section(plot)
+        self.statusBar().showMessage(
+            f"已更新流体界面（{len(new_contacts)} 条）", 4000
+        )
 
     def _on_new_composite_plot(self) -> None:
         """Create + open a composite figure (Phase-2 T7)."""

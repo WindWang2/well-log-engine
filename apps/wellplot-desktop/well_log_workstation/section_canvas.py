@@ -23,11 +23,13 @@ from PySide6.QtWidgets import QWidget
 
 from well_log_workstation.correlation_links import HorizonLink
 from well_log_workstation.section_geometry import (
-    ContactSegment2D,
+    FluidContact2D,
     SectionFault2D,
     TieQuad2D,
     apply_faults_to_quad,
+    contact_segment_2d,
     fault_polyline,
+    split_quad_by_contact,
 )
 from well_log_workstation.template_model import HostPresentation
 from well_log_workstation.tops_model import FormationTop
@@ -46,7 +48,7 @@ class SectionCanvas(QWidget):
         self._columns: list[HostPresentation] = []
         self._tops_per_column: list[list[FormationTop]] = []
         self._faults: list[SectionFault2D] = []
-        self._contacts: list[ContactSegment2D] = []
+        self._contacts: list[FluidContact2D] = []
         self._tie_quads: list[TieQuad2D] = []
         self._d0: float | None = None
         self._d1: float | None = None
@@ -61,7 +63,7 @@ class SectionCanvas(QWidget):
         presentations: list[HostPresentation],
         tops_per_column: list[list[FormationTop]] | None = None,
         faults: list[SectionFault2D] | None = None,
-        contacts: list[ContactSegment2D] | None = None,
+        contacts: list[FluidContact2D] | None = None,
         tie_quads: list[TieQuad2D] | None = None,
     ) -> None:
         self._columns = list(presentations)
@@ -174,39 +176,54 @@ class SectionCanvas(QWidget):
             return 8 + i * (col_w + gap) + col_w / 2
 
         # 0. Tie quads (under everything). Apply fault throws to the corners
-        # so quads crossing a fault plane show the down-dip offset.
+        # so quads crossing a fault plane show the down-dip offset; then split
+        # by any fluid contact that passes through (dual oil/gas vs water fill).
+        from well_log_workstation.litho_pattern_lib import (
+            get_pattern,
+            make_qbrush,
+        )
+
+        def _paint_quad(item: TieQuad2D) -> None:
+            poly = QPolygonF()
+            for (qx, qy) in item.corners:
+                xi = min(max(qx / max(1.0, n - 1), 0.0), float(n - 1))
+                cx = 8 + xi * (col_w + gap) + col_w / 2
+                poly.append(QPointF(cx, y_map(qy)))
+            p.setPen(Qt.PenStyle.NoPen)
+            if item.pattern_id:
+                pat = get_pattern(item.pattern_id)
+                brush = (
+                    make_qbrush(pat, item.fill_color)
+                    if pat is not None
+                    else QBrush(QColor(item.fill_color))
+                )
+            else:
+                brush = QBrush(QColor(item.fill_color))
+            p.setBrush(brush)
+            p.drawPolygon(poly)
+
         for quad in self._tie_quads:
             eff = (
                 apply_faults_to_quad(quad, self._faults, n)
                 if self._faults
                 else quad
             )
-            poly = QPolygonF()
-            for (qx, qy) in eff.corners:
-                # corners are in section-space (x = well index scaled);
-                # map x back to column center via fraction of n.
-                xi = min(max(qx / max(1.0, n - 1), 0.0), float(n - 1))
-                cx = 8 + xi * (col_w + gap) + col_w / 2
-                poly.append(QPointF(cx, y_map(qy)))
-            p.setPen(Qt.PenStyle.NoPen)
-            if eff.pattern_id:
-                # Real vector lithology pattern (SY/T 5615). Falls back to a
-                # solid color when the id is not in the builtin catalog.
-                from well_log_workstation.litho_pattern_lib import (
-                    get_pattern,
-                    make_qbrush,
-                )
-
-                pat = get_pattern(eff.pattern_id)
-                brush = (
-                    make_qbrush(pat, eff.fill_color)
-                    if pat is not None
-                    else QBrush(QColor(eff.fill_color))
-                )
+            # Try each contact; the first one that splits this quad wins
+            # (contacts rarely overlap inside one quad; multi-contact split is
+            # left to a future iteration).
+            split: tuple[TieQuad2D, TieQuad2D] | None = None
+            if self._contacts:
+                for contact in self._contacts:
+                    candidate = split_quad_by_contact(eff, contact, n)
+                    if candidate is not None:
+                        split = candidate
+                        break
+            if split is not None:
+                _paint_quad(split[0])  # above (oil/gas)
+                _paint_quad(split[1])  # below (water)
             else:
-                brush = QBrush(QColor(eff.fill_color))
-            p.setBrush(brush)
-            p.drawPolygon(poly)
+                _paint_quad(eff)
+        p.setBrush(Qt.BrushStyle.NoBrush)
 
         # 1. Well columns + curves (mirror CorrelationCanvas)
         for i, pres in enumerate(self._columns):
@@ -277,18 +294,18 @@ class SectionCanvas(QWidget):
 
         # 3. Contact polylines (OWC blue / GOC orange, dotted per ADR 0050)
         for contact in self._contacts:
-            pen = QPen(QColor(contact.color), 1.4, Qt.PenStyle.SolidLine)
-            if contact.dash_pattern:
-                pen.setDashPattern(list(contact.dash_pattern))
+            pen = QPen(QColor(contact.resolved_color()), 1.4, Qt.PenStyle.SolidLine)
+            pen.setDashPattern([1.0, 1.0])  # dotted — fluid-contact convention
             p.setPen(pen)
-            prev = None
-            for (cx0, cy) in contact.points:
-                xi = min(max(cx0 / max(1.0, n - 1), 0.0), float(n - 1))
-                cx = 8 + xi * (col_w + gap) + col_w / 2
-                yy = y_map(cy)
-                if prev is not None:
-                    p.drawLine(int(prev[0]), int(prev[1]), int(cx), int(yy))
-                prev = (cx, yy)
+            for seg in contact_segment_2d(contact, n):
+                prev = None
+                for (cx0, cy) in seg:
+                    xi = min(max(cx0 / max(1.0, n - 1), 0.0), float(n - 1))
+                    cx = 8 + xi * (col_w + gap) + col_w / 2
+                    yy = y_map(cy)
+                    if prev is not None:
+                        p.drawLine(int(prev[0]), int(prev[1]), int(cx), int(yy))
+                    prev = (cx, yy)
 
         p.setPen(QColor("#555"))
         p.drawText(
