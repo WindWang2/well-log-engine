@@ -702,3 +702,76 @@ def test_pdf_export_options_dialog_value(qtbot) -> None:
     )
     qtbot.addWidget(dlg2)
     assert dlg2.value() == ("searchable", True, True)
+
+
+# ---------------------------------------------------------------------------
+# FRS §5: Qt fallback crop marks (engine parity)
+# ---------------------------------------------------------------------------
+
+
+def test_qt_svg_crop_marks_add_eight_lines(tmp_path: Path) -> None:
+    """The Qt fallback draws the same 8 crop-mark lines as the engine.
+
+    QSvgGenerator emits drawLine as <polyline> elements — 8 for the four
+    two-line corner marks.
+    """
+    from PySide6.QtGui import QColor
+
+    plot_doc = _minimal_single_well_doc("pd-qt-crop", "Qt crop marks")
+
+    def _paint(painter, rect):
+        painter.fillRect(rect, QColor("#ffffff"))
+
+    plain = export_plot(
+        plot_doc, "svg", backend="qt", paint_fn=_paint,
+        path=str(tmp_path / "plain.svg"),
+    )
+    marked = export_plot(
+        plot_doc, "svg", backend="qt", paint_fn=_paint,
+        path=str(tmp_path / "marked.svg"), crop_marks=True,
+    )
+    plain_text = plain.read_text(encoding="utf-8")
+    marked_text = marked.read_text(encoding="utf-8")
+    assert (
+        marked_text.count("<polyline") == plain_text.count("<polyline") + 8
+    )
+
+
+def test_qt_svg_default_matches_explicit_off(tmp_path: Path) -> None:
+    """No kwarg == crop_marks=False byte-for-byte (backward compatible)."""
+    from PySide6.QtGui import QColor
+
+    plot_doc = _minimal_single_well_doc("pd-qt-plain", "Qt plain")
+
+    def _paint(painter, rect):
+        painter.fillRect(rect, QColor("#ffffff"))
+
+    default = export_plot(
+        plot_doc, "svg", backend="qt", paint_fn=_paint,
+        path=str(tmp_path / "default.svg"),
+    )
+    explicit_off = export_plot(
+        plot_doc, "svg", backend="qt", paint_fn=_paint,
+        path=str(tmp_path / "off.svg"), crop_marks=False,
+    )
+    assert default.read_bytes() == explicit_off.read_bytes()
+
+
+def test_qt_pdf_crop_marks_grow_output(tmp_path: Path) -> None:
+    """PDF crop marks add vector content (size check; PDF is not text-parseable)."""
+    from PySide6.QtGui import QColor
+
+    plot_doc = _minimal_single_well_doc("pd-qt-pdf-crop", "Qt PDF crop")
+
+    def _paint(painter, rect):
+        painter.fillRect(rect, QColor("#ffffff"))
+
+    plain = export_plot(
+        plot_doc, "pdf", backend="qt", paint_fn=_paint,
+        path=str(tmp_path / "plain.pdf"),
+    )
+    marked = export_plot(
+        plot_doc, "pdf", backend="qt", paint_fn=_paint,
+        path=str(tmp_path / "marked.pdf"), crop_marks=True,
+    )
+    assert marked.stat().st_size > plain.stat().st_size

@@ -5380,17 +5380,24 @@ class WellLogWorkstationWindow(QMainWindow):
                         kwargs["document_id"] = doc_id
                         if fmt == "pdf":
                             kwargs["pdf_text_mode"] = pdf_text_mode
-                            # FRS §5 export options (engine-only; the Qt
-                            # fallback path has no OCG/crop-mark support).
+                            # FRS §5 export options (engine): crop marks +
+                            # layered PDF. layered_pdf is engine-only (the Qt
+                            # fallback has no OCG); crop_marks is honoured by
+                            # the Qt path too (see below).
                             kwargs["crop_marks"] = pdf_crop_marks
                             kwargs["layered_pdf"] = pdf_layered
                     except (EngineUnavailable, EngineSubmitError, ExportError):
                         kwargs["backend"] = "qt"
                         kwargs["paint_fn"] = self._paint_active_plot
                         backend_note = "（引擎不可用，已回退 Qt）"
+                        if fmt == "pdf":
+                            # Qt fallback honours crop marks (FRS §5 parity).
+                            kwargs["crop_marks"] = pdf_crop_marks
                 else:
                     kwargs["backend"] = "qt"
                     kwargs["paint_fn"] = self._paint_active_plot
+                    if fmt == "pdf":
+                        kwargs["crop_marks"] = pdf_crop_marks
             elif plot.type == "correlation":
                 # B0 (#300): Qt paint for SVG/PDF; PNG prefers widget grab for
                 # links/datum fidelity, with paint_fn fallback.

@@ -286,6 +286,40 @@ def _engine_export(
 # -- per-type backends ---------------------------------------------------
 
 
+def _draw_qt_crop_marks(
+    painter,
+    rect,
+    *,
+    margin_mm: float,
+    mark_mm: float,
+    mm_per_unit: float,
+) -> None:
+    """Four-corner registration marks for the Qt fallback export (FRS §5).
+
+    Mirrors the engine crop marks (5 mm marks just inside the 10 mm margins,
+    8 lines per page) so the Qt and engine backends look consistent on the
+    printed page. ``rect`` units are mm (SVG/PNG) or device pixels (PDF at
+    150 dpi); ``mm_per_unit`` converts.
+    """
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QColor, QPen
+
+    m = margin_mm * mm_per_unit
+    ln = mark_mm * mm_per_unit
+    x0, y0 = rect.x(), rect.y()
+    w, h = rect.width(), rect.height()
+    painter.setPen(QPen(QColor("#000000"), max(1.0, 0.3 * mm_per_unit)))
+    corners = (
+        (x0 + m, y0 + m, -1.0, -1.0),  # top-left: extend left/up
+        (x0 + w - m, y0 + m, 1.0, -1.0),  # top-right: right/up
+        (x0 + m, y0 + h - m, -1.0, 1.0),  # bottom-left: left/down
+        (x0 + w - m, y0 + h - m, 1.0, 1.0),  # bottom-right: right/down
+    )
+    for cx, cy, sx, sy in corners:
+        painter.drawLine(QPointF(cx, cy), QPointF(cx + sx * ln, cy))
+        painter.drawLine(QPointF(cx, cy), QPointF(cx, cy + sy * ln))
+
+
 def _qt_paint_export(
     plot_doc: PlotDocument,
     fmt: ExportFormat,
@@ -296,12 +330,15 @@ def _qt_paint_export(
 
     Requires a ``paint_fn(painter, rect)`` in kwargs (the host renders the
     presentation(s)); wraps it in the requested format. PNG via QPixmap.
+    ``crop_marks=True`` draws the four-corner registration marks (FRS §5,
+    matching the engine backend geometry).
     """
     paint_fn = kwargs.get("paint_fn")
     if paint_fn is None:
         raise ExportError(f"{plot_doc.type} 导出需要 paint_fn 回调")
     out = Path(kwargs.get("path") or f"export_{plot_doc.id}.{fmt}")
     out.parent.mkdir(parents=True, exist_ok=True)
+    crop_marks = bool(kwargs.get("crop_marks", False))
 
     if fmt == "svg":
         from PySide6.QtSvg import QSvgGenerator
@@ -323,6 +360,14 @@ def _qt_paint_export(
         try:
             painter.fillRect(QRectF(0, 0, w_mm, h_mm), QColor("#ffffff"))
             paint_fn(painter, QRectF(0, 0, w_mm, h_mm))
+            if crop_marks:
+                _draw_qt_crop_marks(
+                    painter,
+                    QRectF(0, 0, w_mm, h_mm),
+                    margin_mm=10.0,
+                    mark_mm=5.0,
+                    mm_per_unit=1.0,
+                )
         finally:
             painter.end()
     elif fmt == "pdf":
@@ -342,6 +387,15 @@ def _qt_paint_export(
             page = painter.viewport()
             painter.fillRect(page, QColor("#ffffff"))
             paint_fn(painter, QRectF(page.x(), page.y(), page.width(), page.height()))
+            if crop_marks:
+                # PDF paints in device pixels at the writer resolution (150 dpi).
+                _draw_qt_crop_marks(
+                    painter,
+                    QRectF(page.x(), page.y(), page.width(), page.height()),
+                    margin_mm=10.0,
+                    mark_mm=5.0,
+                    mm_per_unit=150.0 / 25.4,
+                )
         finally:
             painter.end()
     else:  # png
