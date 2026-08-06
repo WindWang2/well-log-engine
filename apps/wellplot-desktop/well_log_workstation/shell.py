@@ -5457,8 +5457,11 @@ class WellLogWorkstationWindow(QMainWindow):
                 painter, rect, depth_range=depth_range
             )
         elif self._active_plot_type == "section":
-            # Section: paint the section canvas into the rect.
-            self.section_canvas.render(painter)
+            # Section: paint the section canvas into the rect (WYSIWYG
+            # export; depth_range enables per-page print-preview slices).
+            self.section_canvas.render_to(
+                painter, rect, depth_range=depth_range
+            )
             # Publication ornaments (FRS §5 / P2-C): full-size layer on export.
             if self.section_canvas.show_ornaments():
                 from well_log_workstation.ornament import draw_ornaments
@@ -5710,11 +5713,42 @@ class WellLogWorkstationWindow(QMainWindow):
             QMessageBox.warning(self, "导出 CGM 失败", str(exc))
 
     def open_print_preview(self, *, show: bool = True):
-        """Open WYSIWYG print preview for the active single-well or correlation.
+        """Open WYSIWYG print preview for the active plot (single-well /
+        correlation / section).
 
         Returns PrintPreviewInfo for tests, or None if nothing to preview.
         ``show=False`` builds info (and optionally dialog) without modal exec.
         """
+        # Section first: opening a section may leave a stale single-well
+        # _presentation behind, so the active plot type wins.
+        if (
+            self._active_plot_type == "section"
+            and self.section_canvas.column_count() >= 2
+        ):
+            dr = self.section_canvas.depth_range()
+            if dr is not None:
+                d0, d1 = dr
+                unit = "m"
+                columns = self.section_canvas.columns()
+                if columns:
+                    unit = columns[0].depth_unit or unit
+                page_spec = PageSpec(orientation="landscape")
+                info = compute_print_preview(
+                    plot_name="油藏剖面",
+                    depth_top=d0,
+                    depth_bottom=d1,
+                    depth_unit=unit,
+                    page_spec=page_spec,
+                )
+                if show:
+                    dlg = PrintPreviewDialog(
+                        info,
+                        paint_fn=self._paint_active_plot,
+                        page_spec=page_spec,
+                        parent=self,
+                    )
+                    dlg.exec()
+                return info
         if self._presentation is not None and self._presentation.track_count > 0:
             d0, d1 = depth_range_from_presentation(self._presentation)
             vr = self.multi_track_canvas.depth_range()

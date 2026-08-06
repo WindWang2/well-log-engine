@@ -203,15 +203,51 @@ class SectionCanvas(QWidget):
         super().paintEvent(event)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
+        self._paint(p, self.width(), self.height())
+        p.end()
+
+    def render_to(
+        self,
+        painter: QPainter,
+        rect: QRectF,
+        *,
+        depth_range: tuple[float, float] | None = None,
+    ) -> None:
+        """Paint the section into ``rect`` for export/preview (WYSIWYG).
+
+        ``depth_range`` optionally restricts the depth window (per-page print
+        preview); geometry crossing the window edges is clipped by the clip
+        rect, consistent with the curve-segment break at the window edge. The
+        interactive viewport is restored afterwards.
+        """
+        saved = (self._d0, self._d1)
+        if depth_range is not None:
+            d0, d1 = float(depth_range[0]), float(depth_range[1])
+            if d1 > d0:
+                self._d0, self._d1 = d0, d1
+        try:
+            painter.save()
+            painter.translate(rect.x(), rect.y())
+            painter.setClipRect(0.0, 0.0, rect.width(), rect.height())
+            self._paint(painter, int(rect.width()), int(rect.height()))
+        finally:
+            painter.restore()
+            self._d0, self._d1 = saved
+
+    def _paint(self, p: QPainter, width: int, height: int) -> None:
+        """Paint the section into ``(0, 0, width, height)``.
+
+        Shared by the interactive paintEvent and render_to (export/preview);
+        the painter is owned by the caller.
+        """
+        w, h = width, height
         if not self._columns or self._d0 is None or self._d1 is None:
             p.setPen(QColor("#888"))
             p.drawText(
-                self.rect(),
+                QRectF(0, 0, w, h),
                 Qt.AlignmentFlag.AlignCenter,
                 "创建油藏剖面（≥2 口井）",
             )
-            p.end()
             return
 
         n = len(self._columns)
@@ -407,7 +443,6 @@ class SectionCanvas(QWidget):
                     QRectF(w - ow - 8, h - oh - 26, ow, oh),
                     data,
                 )
-        p.end()
 
     def unit_to_pixel(self, u: float, col_w: int, gap: int) -> float:
         """Map a well-index unit (0..n-1, possibly fractional) to pixels.
