@@ -22,11 +22,13 @@ import pytest
 
 from well_log_workstation.section_geometry import (
     FluidContact2D,
+    SectionFault2D,
     TieQuad2D,
     contact_segment_2d,
     contacts_from_json,
     contacts_to_json,
     split_quad_by_contact,
+    split_quad_composite,
 )
 
 
@@ -275,3 +277,132 @@ def test_legacy_section_json_without_contacts(tmp_path: Path) -> None:
     )
     loaded = load_plot_document(ws, plot.id)
     assert loaded.contacts == []
+
+
+# ---------------------------------------------------------------------------
+# Composite split: faults then contacts (FRS §3.x P2 × P1-B)
+# ---------------------------------------------------------------------------
+
+
+def test_split_composite_nothing_returns_quad() -> None:
+    q = _quad(0.0, 1005.0, 1095.0)
+    pieces = split_quad_composite(q, [], [], 3)
+    assert len(pieces) == 1
+    assert pieces[0] is q
+
+
+def test_split_composite_contact_only() -> None:
+    q = _quad(0.0, 1005.0, 1095.0)
+    c = FluidContact2D(fluid_type="owc", depths={0: 1050.0, 1: 1050.0})
+    pieces = split_quad_composite(q, [], [c], 3)
+    assert len(pieces) == 2
+    assert pieces[0].fill_color == "#dc2626"  # above = oil
+    assert pieces[1].fill_color == "#2563eb"  # below = water
+
+
+def test_split_composite_fault_only() -> None:
+    q = _quad(0.0, 1005.0, 1095.0)
+    f = SectionFault2D(
+        name="F", between=(0, 1), x_frac=0.5, top_depth=1000, bottom_depth=1100
+    )
+    pieces = split_quad_composite(q, [f], [], 3)
+    assert len(pieces) == 2
+    # Structural split keeps the quad's fill (no recolouring).
+    assert pieces[0].fill_color == "#aaa"
+    assert pieces[1].fill_color == "#aaa"
+
+
+def test_split_composite_fault_then_contact_four_pieces() -> None:
+    """A fault at x=0.5 with differing per-well contact depths → the contact
+    line offsets at the fault plane: each half splits independently."""
+    q = _quad(0.0, 1005.0, 1095.0)
+    f = SectionFault2D(
+        name="F", between=(0, 1), x_frac=0.5, top_depth=1000, bottom_depth=1100
+    )
+    # Contact at 1050 on well 0 (left half) and 1030 on well 1 (right half),
+    # both inside their halves' depth extent.
+    c = FluidContact2D(fluid_type="owc", depths={0: 1050.0, 1: 1030.0})
+    pieces = split_quad_composite(q, [f], [c], 3)
+    assert len(pieces) == 4
+    for piece in pieces:
+        assert piece.fill_color in ("#dc2626", "#2563eb")
+    assert pieces[0].fill_color == "#dc2626"  # left half above
+    assert pieces[1].fill_color == "#2563eb"  # left half below
+    assert pieces[2].fill_color == "#dc2626"  # right half above
+    assert pieces[3].fill_color == "#2563eb"  # right half below
+    # Contact depths differ per side → the line offsets at the fault plane.
+    assert pieces[0].corners[3, 1] == pytest.approx(1050.0)
+    assert pieces[2].corners[2, 1] == pytest.approx(1030.0)
+
+
+def test_split_composite_contact_crosses_one_half() -> None:
+    """A contact inside only the left half leaves the right half whole → 3."""
+    q = _quad(0.0, 1005.0, 1095.0)
+    f = SectionFault2D(
+        name="F", between=(0, 1), x_frac=0.5, top_depth=1000, bottom_depth=1100
+    )
+    # Well-1 depth 1000 sits above the right half's top (1005) → no split
+    # there; well-0 depth 1050 splits the left half.
+    c = FluidContact2D(fluid_type="owc", depths={0: 1050.0, 1: 1000.0})
+    pieces = split_quad_composite(q, [f], [c], 3)
+    assert len(pieces) == 3
+    assert pieces[0].fill_color == "#dc2626"
+    assert pieces[1].fill_color == "#2563eb"
+    assert pieces[2].fill_color == "#aaa"  # right half unsplit
+
+
+def test_section_canvas_fault_and_contact_composite_render(qtbot) -> None:
+    from PySide6.QtGui import QImage
+
+    from well_log_workstation.section_canvas import SectionCanvas
+    from well_log_workstation.section_geometry import SectionFault2D
+    from well_log_workstation.template_model import HostPresentation
+
+    canvas = SectionCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(600, 480)
+
+    depth = np.array([1000.0, 1100.0])
+
+    class _Layer:
+        color = "#1f77b4"
+        values = np.array([10.0, 30.0])
+        null_mask = np.array([False, False])
+
+    class _Scale:
+        mode = "linear"
+        min = 0.0
+        max = 100.0
+
+    class _Track:
+        role = "curve"
+        layers = [_Layer()]
+        scale = _Scale()
+
+    pres = HostPresentation(
+        template_id="t", template_name="T", well_document_id="w1",
+        well_name="W1", depth=depth, depth_unit="m",
+        tracks=[_Track()],  # type: ignore[arg-type]
+    )
+    quad = _quad(0.0, 1005.0, 1095.0)
+    fault = SectionFault2D(
+        name="F", between=(0, 1), x_frac=0.5, top_depth=1000,
+        bottom_depth=1100, throw=20.0,
+    )
+    contact = FluidContact2D(fluid_type="owc", depths={0: 1050.0, 1: 1050.0})
+
+    def grab(faults, contacts) -> QImage:
+        img = QImage(canvas.size(), QImage.Format.Format_ARGB32)
+        img.fill(0)
+        canvas.set_section(
+            [pres, pres], [[], []], faults=faults, contacts=contacts,
+            tie_quads=[quad],
+        )
+        canvas.render(img)
+        return img
+
+    fault_only = grab([fault], [])
+    composite = grab([fault], [contact])
+    assert composite.constBits() != fault_only.constBits()
+    contact_only = grab([], [contact])
+    assert composite.constBits() != contact_only.constBits()

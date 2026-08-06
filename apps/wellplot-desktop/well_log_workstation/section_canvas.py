@@ -26,11 +26,9 @@ from well_log_workstation.section_geometry import (
     FluidContact2D,
     SectionFault2D,
     TieQuad2D,
-    apply_faults_to_quad,
     contact_segment_2d,
     fault_polyline,
-    split_quad_by_contact,
-    split_quad_by_fault,
+    split_quad_composite,
 )
 from well_log_workstation.template_model import HostPresentation
 from well_log_workstation.tops_model import FormationTop
@@ -294,35 +292,15 @@ class SectionCanvas(QWidget):
             p.drawPolygon(poly)
 
         for quad in self._tie_quads:
-            eff = (
-                apply_faults_to_quad(quad, self._faults, n)
-                if self._faults
-                else quad
-            )
-            # Try each contact; the first one that splits this quad wins
-            # (contacts rarely overlap inside one quad; multi-contact split is
-            # left to a future iteration). A fault-plane split is tried next
-            # (FRS §3.x P2: hanging/foot-wall halves) so a quad crossed by a
-            # fault with no contact still shows the structural break; the
-            # first matching geometric split wins.
-            split: tuple[TieQuad2D, TieQuad2D] | None = None
-            if self._contacts:
-                for contact in self._contacts:
-                    candidate = split_quad_by_contact(eff, contact, n)
-                    if candidate is not None:
-                        split = candidate
-                        break
-            if split is None and self._faults:
-                for fault in self._faults:
-                    candidate = split_quad_by_fault(eff, fault, n)
-                    if candidate is not None:
-                        split = candidate
-                        break
-            if split is not None:
-                _paint_quad(split[0])  # above (oil/gas)
-                _paint_quad(split[1])  # below (water)
-            else:
-                _paint_quad(eff)
+            # Composite split (FRS §3.x): structural fault split first
+            # (hanging/foot-wall halves, throw applied inside), then each
+            # half by the first fluid contact crossing it — a contact depth
+            # is per-well, so its line offsets naturally where the fault
+            # displaces the wells. 1..4 pieces painted in order.
+            for piece in split_quad_composite(
+                quad, self._faults, self._contacts, n
+            ):
+                _paint_quad(piece)
         p.setBrush(Qt.BrushStyle.NoBrush)
 
         # 1. Well columns + curves (mirror CorrelationCanvas)

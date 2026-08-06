@@ -235,3 +235,57 @@ def contacts_from_json(raw: Any) -> list[FluidContact2D]:
         if c is not None:
             out.append(c)
     return out
+
+
+def split_quad_composite(
+    quad: TieQuad2D,
+    faults: Iterable[Any],
+    contacts: Iterable[FluidContact2D],
+    well_count: int,
+) -> list[TieQuad2D]:
+    """Split a tie-quad by faults then fluid contacts (FRS §3.x composite).
+
+    A structural fault split comes first (hanging/foot-wall halves, first
+    fault crossing the quad wins), then each half may be split again by the
+    first contact crossing it. Because a contact depth is defined per well,
+    its line breaks where the fault offsets the wells — the halves split
+    independently, producing the natural offset at the fault plane.
+
+    Returns 1..4 pieces in paint order (fault left then right; each contact
+    split emits the above piece before the below piece). No faults/contacts
+    → the quad itself.
+    """
+    from well_log_workstation.section_geometry.fault_section import (
+        apply_faults_to_quad,
+        split_quad_by_fault,
+    )
+
+    faults_list = list(faults or [])
+    contacts_list = list(contacts or [])
+    eff = (
+        apply_faults_to_quad(quad, faults_list, well_count)
+        if faults_list
+        else quad
+    )
+    pieces = [eff]
+    if faults_list:
+        for fault in faults_list:
+            candidate = split_quad_by_fault(eff, fault, well_count)
+            if candidate is not None:
+                pieces = [candidate[0], candidate[1]]
+                break
+    if contacts_list:
+        split_pieces: list[TieQuad2D] = []
+        for piece in pieces:
+            split = None
+            for contact in contacts_list:
+                candidate = split_quad_by_contact(piece, contact, well_count)
+                if candidate is not None:
+                    split = candidate
+                    break
+            if split is not None:
+                split_pieces.extend(split)
+            else:
+                split_pieces.append(piece)
+        pieces = split_pieces
+    return pieces

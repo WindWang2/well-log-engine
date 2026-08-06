@@ -14,6 +14,7 @@ from well_log_workstation.section_geometry.contact_section import (
     contacts_from_json,
     contacts_to_json,
     split_quad_by_contact,
+    split_quad_composite,
 )
 from well_log_workstation.section_geometry.fault_section import (
     SectionFault2D,
@@ -55,6 +56,7 @@ __all__ = [
     "contact_depth_at",
     "contact_segment_2d",
     "split_quad_by_contact",
+    "split_quad_composite",
     "contacts_from_json",
     "contacts_to_json",
     "TieQuad2D",
