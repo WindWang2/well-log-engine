@@ -40,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
     app.setOrganizationName(ORGANIZATION_NAME)
 
     window = WellLogWorkstationWindow()
+    # Direct to main shell with last/default storage (no workspace chooser).
+    window.open_default_session()
     window.show()
     return app.exec()
 

@@ -10,7 +10,7 @@ from typing import AbstractSet, Any, Iterable
 from xml.etree import ElementTree as ET
 
 import numpy as np
-from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtCore import QPoint, QRectF, Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -37,7 +38,6 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QTableView,
     QTabWidget,
-    QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -165,12 +165,13 @@ from well_log_workstation.tops_model import (
     make_stub_tops,
     save_tops_for_well,
 )
+from well_log_workstation.nav_tree import NavTreeWidget
 from well_log_workstation.recent_workspaces import add_recent, remove_recent
-from well_log_workstation.startup_page import StartupPage
 from well_log_workstation.workspace import (
     Workspace,
     WorkspaceError,
     create_workspace,
+    ensure_startup_workspace,
     open_workspace,
 )
 
@@ -420,16 +421,7 @@ class WellLogWorkstationWindow(QMainWindow):
         act_about.triggered.connect(self._on_about)
 
     def _build_body(self) -> None:
-        # Stack: [0] startup welcome (no workspace) · [1] main L-shell (#291)
-        self._main_stack = QStackedWidget()
-        self._main_stack.setObjectName("MainStack")
-
-        self.startup_page = StartupPage()
-        self.startup_page.new_requested.connect(self._on_new_workspace)
-        self.startup_page.open_requested.connect(self._on_open_workspace)
-        self.startup_page.recent_open_requested.connect(self._on_open_recent_workspace)
-        self._main_stack.addWidget(self.startup_page)
-
+        # Main L-shell only — no startup workspace chooser.
         shell_root = QWidget()
         shell_root.setObjectName("ShellRoot")
         outer = QVBoxLayout(shell_root)
@@ -447,38 +439,47 @@ class WellLogWorkstationWindow(QMainWindow):
         split.setStretchFactor(2, 0)
         outer.addWidget(split, 1)
 
+        # Keep a single-page stack for API stability with older tests.
+        self._main_stack = QStackedWidget()
+        self._main_stack.setObjectName("MainStack")
         self._main_stack.addWidget(shell_root)
         self.setCentralWidget(self._main_stack)
-        self._main_stack.setCurrentIndex(0)  # cold start: welcome
+        self._main_stack.setCurrentIndex(0)
 
     def _build_left(self) -> QWidget:
-        """Single left tree: 工区 → 井 → 导入源 → 井道(可勾选) + 图件.
+        """Single left tree: 数据 (wells→sources→tracks) + 图件.
 
-        No dual tabs — data tracks live under each well so a new plot uses
-        the same tree (model A: data on well, checks drive current plot).
+        No dual tabs, no workspace root node — only the two product concepts.
         """
         pane = QWidget()
         pane.setObjectName("LeftPane")
         layout = QVBoxLayout(pane)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        self.left_title = QLabel("工区")
+        self.left_title = QLabel("数据与图件")
         self.left_title.setObjectName("LeftPaneTitle")
         layout.addWidget(self.left_title)
 
         self.well_content_hint = QLabel(
-            "树：井 → 数据源 → 井道；勾选=进当前井图（数据在井上，不在图里）"
+            "数据→图件可拖放；右键菜单 · 双击井道加入当前图"
         )
         self.well_content_hint.setObjectName("WellContentHint")
         self.well_content_hint.setWordWrap(True)
         layout.addWidget(self.well_content_hint)
 
-        self.workspace_tree = QTreeWidget()
+        self.workspace_tree = NavTreeWidget()
         self.workspace_tree.setObjectName("WorkspaceTree")
         # Alias: content checks live on the same tree (no second tab/tree).
         self.well_content_tree = self.workspace_tree
         self.workspace_tree.setHeaderLabels(["名称"])
         self.workspace_tree.setRootIsDecorated(True)
+        self.workspace_tree.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.workspace_tree.customContextMenuRequested.connect(
+            self._on_tree_context_menu
+        )
+        self.workspace_tree.nav_drop.connect(self._on_nav_drop)
         self.workspace_tree.currentItemChanged.connect(self._on_tree_selection)
         self.workspace_tree.itemDoubleClicked.connect(self._on_tree_double_click)
         self.workspace_tree.itemChanged.connect(self._on_well_content_item_changed)
@@ -1255,16 +1256,17 @@ class WellLogWorkstationWindow(QMainWindow):
                 add_recent(ws.root)
             except OSError:
                 pass
-            if hasattr(self, "_main_stack"):
-                self._main_stack.setCurrentIndex(1)
-            if hasattr(self, "startup_page"):
-                self.startup_page.refresh_recent()
         else:
             self.setWindowTitle(window_title())
-            if hasattr(self, "_main_stack"):
-                self._main_stack.setCurrentIndex(0)
-            if hasattr(self, "startup_page"):
-                self.startup_page.refresh_recent()
+        if hasattr(self, "_main_stack"):
+            self._main_stack.setCurrentIndex(0)
+
+    def open_default_session(self) -> Workspace:
+        """Cold-start: open last/default storage and stay on main shell."""
+        ws = ensure_startup_workspace()
+        self.set_workspace(ws)
+        return ws
+
     def import_las_path(self, las_path: Path | str) -> str:
         if self._workspace is None:
             raise WorkspaceError("请先打开或新建工区")
@@ -2120,6 +2122,7 @@ class WellLogWorkstationWindow(QMainWindow):
                     plot_doc = load_plot_document(
                         self._workspace, effective_plot_id
                     )
+                    # User / prior explicit display_set wins (may exceed default cap).
                     if plot_doc.display_set:
                         loaded = frozenset(str(x) for x in plot_doc.display_set)
                 except WorkspaceError:
@@ -2127,6 +2130,7 @@ class WellLogWorkstationWindow(QMainWindow):
             if loaded is not None:
                 self._display_sets[key] = loaded
             else:
+                # First open / empty plot: batch of preferred tracks, ≤10.
                 self._display_sets[key] = default_checks(leaves, template)
                 # Seed plot document so re-open is stable
                 if effective_plot_id is not None:
@@ -3197,7 +3201,11 @@ class WellLogWorkstationWindow(QMainWindow):
     def _select_well_in_tree(self, well_id: str) -> None:
         def walk(item: QTreeWidgetItem) -> QTreeWidgetItem | None:
             data = item.data(0, Qt.ItemDataRole.UserRole) or {}
-            if data.get("kind") == "well" and data.get("id") == well_id:
+            kind = data.get("kind")
+            # Data tree is data-unit (source) based; also match legacy well nodes.
+            if kind == "well" and data.get("id") == well_id:
+                return item
+            if kind == "source" and str(data.get("well_id") or "") == well_id:
                 return item
             for i in range(item.childCount()):
                 hit = walk(item.child(i))
@@ -3218,8 +3226,8 @@ class WellLogWorkstationWindow(QMainWindow):
             return
         data = cur.data(0, Qt.ItemDataRole.UserRole) or {}
         kind = data.get("kind")
-        # Selecting well / its data source / a track leaf focuses that well
-        if kind in ("well", "source", "leaf"):
+        # Selecting well / source / data leaf / plot track focuses that well
+        if kind in ("well", "source", "leaf", "plot_track", "plot_well"):
             well_id = data.get("well_id") or data.get("id")
             if kind == "well":
                 well_id = data.get("id")
@@ -3252,27 +3260,306 @@ class WellLogWorkstationWindow(QMainWindow):
 
     def import_leaf_to_active_plot(self, leaf_id: str) -> HostPresentation:
         """从数据区把井道挂到当前井图（写 binding_id，不复制样点）。"""
+        if not self._selected_well_id:
+            raise WorkspaceError("请先选择数据井道所属井")
+        return self.import_leaves_to_plot(
+            [leaf_id],
+            well_id=self._selected_well_id,
+            plot_id=self._active_plot_id,
+        )
+
+    def import_leaves_to_plot(
+        self,
+        leaf_ids: Iterable[str],
+        *,
+        well_id: str,
+        plot_id: str | None = None,
+        open_plot: bool = True,
+    ) -> HostPresentation:
+        """Bind one or more data leaves onto a single-well plot (no sample copy)."""
         if self._workspace is None:
             raise WorkspaceError("请先打开工区")
-        if (
-            not self._active_plot_id
-            or self._active_plot_type != "single_well"
-            or not self._selected_well_id
-        ):
-            raise WorkspaceError("请先打开一张单井分析图，再从数据区加入井道")
-        leaf_id = str(leaf_id).strip()
-        if not leaf_id:
+        well_id = str(well_id).strip()
+        if not well_id:
+            raise WorkspaceError("未指定井")
+        ordered = [str(x).strip() for x in leaf_ids if str(x).strip()]
+        if not ordered:
             raise WorkspaceError("未指定井道")
-        well_id = self._selected_well_id
-        current = set(self.display_set_for(well_id) or frozenset())
-        current.add(leaf_id)
-        tid = self._current_template_id() or "std-gr-rt-den"
+        pid = str(plot_id or self._active_plot_id or "").strip()
+        if not pid:
+            raise WorkspaceError("请先指定或打开一张单井分析图")
+        try:
+            pdoc = load_plot_document(self._workspace, pid)
+        except WorkspaceError as exc:
+            raise WorkspaceError(f"无法打开图件: {exc}") from exc
+        if pdoc.type != "single_well":
+            raise WorkspaceError("仅单井分析图支持拖入/绑定井道")
+        if open_plot and self._active_plot_id != pid:
+            self.open_plot_document(pid)
+        key = self._display_set_key(well_id, plot_id=pid)
+        current = set(self._display_sets.get(key) or frozenset())
+        if not current and pdoc.display_set:
+            current = {str(x) for x in pdoc.display_set}
+        current.update(ordered)
+        tid = pdoc.template_id or self._current_template_id() or "std-gr-rt-den"
+        self._selected_well_id = well_id
         return self.set_display_set(
             well_id,
             current,
             template_id=tid,
-            plot_id=self._active_plot_id,
+            plot_id=pid,
         )
+
+    def remove_leaves_from_plot(
+        self,
+        leaf_ids: Iterable[str],
+        *,
+        well_id: str,
+        plot_id: str,
+    ) -> HostPresentation:
+        """Remove bound leaves from a single-well plot display set."""
+        if self._workspace is None:
+            raise WorkspaceError("请先打开工区")
+        pid = str(plot_id).strip()
+        well_id = str(well_id).strip()
+        drop = {str(x).strip() for x in leaf_ids if str(x).strip()}
+        pdoc = load_plot_document(self._workspace, pid)
+        if pdoc.type != "single_well":
+            raise WorkspaceError("仅单井分析图支持移出井道")
+        key = self._display_set_key(well_id, plot_id=pid)
+        current = set(self._display_sets.get(key) or frozenset())
+        if not current:
+            current = {str(x) for x in pdoc.display_set}
+        current -= drop
+        if self._active_plot_id != pid:
+            self.open_plot_document(pid)
+        tid = pdoc.template_id or self._current_template_id() or "std-gr-rt-den"
+        return self.set_display_set(
+            well_id, current, template_id=tid, plot_id=pid
+        )
+
+    def _on_nav_drop(self, payload: dict[str, Any], plot_id: str) -> None:
+        """Handle data→plot drag/drop from NavTreeWidget."""
+        try:
+            well_id = str(payload.get("well_id") or "").strip()
+            kind = payload.get("kind")
+            if kind == "leaf":
+                lids = [str(payload.get("leaf_id") or "")]
+            elif kind == "data":
+                lids = [str(x) for x in (payload.get("leaf_ids") or [])]
+            else:
+                return
+            self.import_leaves_to_plot(lids, well_id=well_id, plot_id=plot_id)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "拖放到图件失败", str(exc))
+
+    def _on_tree_context_menu(self, pos: QPoint) -> None:
+        tree = self.workspace_tree
+        item = tree.itemAt(pos)
+        menu = QMenu(self)
+        menu.setObjectName("NavTreeContextMenu")
+        data = (item.data(0, Qt.ItemDataRole.UserRole) or {}) if item else {}
+        kind = data.get("kind")
+
+        def _add(label: str, slot, *, object_name: str = "") -> None:
+            act = menu.addAction(label)
+            if object_name:
+                act.setObjectName(object_name)
+            act.triggered.connect(slot)
+
+        if kind in (None, "wells_folder"):
+            _add(
+                "导入 LAS…",
+                self._on_import_las,
+                object_name="Ctx_ImportLas",
+            )
+        elif kind == "source":
+            well_id = str(data.get("well_id") or "")
+            _add(
+                "新建单井分析图…",
+                lambda: self._ctx_new_plot_for_well(well_id),
+                object_name="Ctx_NewPlotFromData",
+            )
+            _add(
+                "全部井道加入当前井图",
+                lambda: self._ctx_add_all_leaves_of_source(item),
+                object_name="Ctx_AddAllLeavesToActive",
+            )
+            self._add_plot_target_submenu(
+                menu, "全部井道加入到图件", item, mode="data"
+            )
+        elif kind == "leaf":
+            leaf_id = str(data.get("id") or "")
+            well_id = str(data.get("well_id") or "")
+            _add(
+                "加入当前井图",
+                lambda: self._ctx_add_leaf(leaf_id, well_id, None),
+                object_name="Ctx_AddLeafToActive",
+            )
+            self._add_plot_target_submenu(
+                menu,
+                "加入到图件",
+                item,
+                mode="leaf",
+                leaf_id=leaf_id,
+                well_id=well_id,
+            )
+            _add(
+                "新建单井分析图并加入此井道",
+                lambda: self._ctx_new_plot_with_leaf(leaf_id, well_id),
+                object_name="Ctx_NewPlotWithLeaf",
+            )
+        elif kind == "plots_folder":
+            _add(
+                "新建单井分析图…",
+                self._on_new_single_well_plot,
+                object_name="Ctx_NewPlotFromFolder",
+            )
+        elif kind == "plot":
+            plot_id = str(data.get("id") or "")
+            _add(
+                "打开",
+                lambda: self._ctx_open_plot(plot_id),
+                object_name="Ctx_OpenPlot",
+            )
+            _add(
+                "导出井图定义 XML…",
+                lambda: self._ctx_export_plot(plot_id, "xml"),
+                object_name="Ctx_ExportPlotXml",
+            )
+            _add(
+                "导出井图定义 Excel…",
+                lambda: self._ctx_export_plot(plot_id, "xlsx"),
+                object_name="Ctx_ExportPlotXlsx",
+            )
+        elif kind == "plot_track":
+            leaf_id = str(data.get("id") or "")
+            well_id = str(data.get("well_id") or "")
+            plot_id = str(data.get("plot_id") or "")
+            _add(
+                "从本图移除",
+                lambda: self._ctx_remove_plot_track(leaf_id, well_id, plot_id),
+                object_name="Ctx_RemovePlotTrack",
+            )
+        else:
+            return
+
+        if menu.isEmpty():
+            return
+        menu.exec(tree.global_pos_for_menu(pos))
+
+    def _add_plot_target_submenu(
+        self,
+        menu: QMenu,
+        title: str,
+        item: QTreeWidgetItem,
+        *,
+        mode: str,
+        leaf_id: str = "",
+        well_id: str = "",
+    ) -> None:
+        if self._workspace is None:
+            return
+        single = [p for p in self._workspace.plots if p.type == "single_well"]
+        if not single:
+            return
+        sub = menu.addMenu(title)
+        sub.setObjectName("Ctx_PlotTargetSubmenu")
+        for plot in single:
+            act = sub.addAction(plot.name)
+            pid = plot.id
+            if mode == "leaf":
+                act.triggered.connect(
+                    lambda _=False, l=leaf_id, w=well_id, p=pid: self._ctx_add_leaf(
+                        l, w, p
+                    )
+                )
+            else:
+                act.triggered.connect(
+                    lambda _=False, it=item, p=pid: self._ctx_add_all_leaves_of_source(
+                        it, plot_id=p
+                    )
+                )
+
+    def _ctx_add_leaf(
+        self, leaf_id: str, well_id: str, plot_id: str | None
+    ) -> None:
+        try:
+            self.import_leaves_to_plot(
+                [leaf_id], well_id=well_id, plot_id=plot_id
+            )
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "加入井图失败", str(exc))
+
+    def _ctx_add_all_leaves_of_source(
+        self, item: QTreeWidgetItem | None, *, plot_id: str | None = None
+    ) -> None:
+        if item is None:
+            return
+        data = item.data(0, Qt.ItemDataRole.UserRole) or {}
+        well_id = str(data.get("well_id") or "")
+        leaf_ids: list[str] = []
+        for i in range(item.childCount()):
+            cdata = item.child(i).data(0, Qt.ItemDataRole.UserRole) or {}
+            if cdata.get("kind") == "leaf":
+                lid = str(cdata.get("id") or "")
+                if lid:
+                    leaf_ids.append(lid)
+        try:
+            self.import_leaves_to_plot(
+                leaf_ids, well_id=well_id, plot_id=plot_id
+            )
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "加入井图失败", str(exc))
+
+    def _ctx_new_plot_for_well(self, well_id: str) -> None:
+        if not well_id:
+            QMessageBox.information(self, "新建单井分析图", "未指定井。")
+            return
+        self._selected_well_id = well_id
+        self._on_new_single_well_plot()
+
+    def _ctx_new_plot_with_leaf(self, leaf_id: str, well_id: str) -> None:
+        if not well_id or not leaf_id:
+            return
+        self._selected_well_id = well_id
+        template_id = self._current_template_id() or "std-gr-rt-den"
+        try:
+            plot = self.create_single_well_plot_document(well_id, template_id)
+            self.import_leaves_to_plot(
+                [leaf_id], well_id=well_id, plot_id=plot.id
+            )
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "新建图件失败", str(exc))
+
+    def _ctx_open_plot(self, plot_id: str) -> None:
+        try:
+            self.open_plot_document(plot_id)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "打开图件失败", str(exc))
+
+    def _ctx_export_plot(self, plot_id: str, fmt: str) -> None:
+        if self._workspace is None or not plot_id:
+            return
+        try:
+            self.open_plot_document(plot_id)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "导出失败", str(exc))
+            return
+        if fmt == "xml":
+            self._on_export_plot_xml()
+        else:
+            self._on_export_plot_xlsx()
+
+    def _ctx_remove_plot_track(
+        self, leaf_id: str, well_id: str, plot_id: str
+    ) -> None:
+        try:
+            self.remove_leaves_from_plot(
+                [leaf_id], well_id=well_id, plot_id=plot_id
+            )
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "移出井道失败", str(exc))
 
     def _on_add_selected_leaf_to_plot(self) -> None:
         item = self.workspace_tree.currentItem()
@@ -3284,7 +3571,11 @@ class WellLogWorkstationWindow(QMainWindow):
             QMessageBox.information(self, "加入井图", "请选中井道叶子（数据源下的曲线）。")
             return
         try:
-            self.import_leaf_to_active_plot(str(data.get("id") or ""))
+            self.import_leaves_to_plot(
+                [str(data.get("id") or "")],
+                well_id=str(data.get("well_id") or self._selected_well_id or ""),
+                plot_id=self._active_plot_id,
+            )
             QMessageBox.information(
                 self,
                 "已加入井图",
@@ -3374,62 +3665,52 @@ class WellLogWorkstationWindow(QMainWindow):
             QMessageBox.warning(self, "导入失败", str(exc))
 
     def _refresh_tree(self) -> None:
-        """Single tree: workspace → wells (with data→tracks) → plots."""
+        """Top-level: 数据 (inventory + refs) and 图件 (plot → tracks)."""
         tree = self.workspace_tree
         self._content_tree_guard = True
         try:
             tree.clear()
+            self.left_title.setText("数据与图件")
+            data_node = QTreeWidgetItem(["数据"])
+            data_node.setData(0, Qt.ItemDataRole.UserRole, {"kind": "wells_folder"})
+            plots_node = QTreeWidgetItem(["图件"])
+            plots_node.setData(0, Qt.ItemDataRole.UserRole, {"kind": "plots_folder"})
+
             if self._workspace is None:
-                self.left_title.setText("工区")
-                self.well_content_hint.setText("请先打开或新建工区")
-                root = QTreeWidgetItem(["（未打开工区）"])
-                root.addChild(QTreeWidgetItem(["井"]))
-                root.addChild(QTreeWidgetItem(["图件"]))
-                tree.addTopLevelItem(root)
+                self.well_content_hint.setText("导入 LAS 到井，或新建图件")
+                empty_w = QTreeWidgetItem(["（无井 · 请导入 LAS）"])
+                empty_w.setDisabled(True)
+                data_node.addChild(empty_w)
+                empty_p = QTreeWidgetItem(["（无图件 · 新建单井分析图）"])
+                empty_p.setDisabled(True)
+                plots_node.addChild(empty_p)
+                tree.addTopLevelItem(data_node)
+                tree.addTopLevelItem(plots_node)
                 tree.expandAll()
                 return
 
             ws = self._workspace
-            self.left_title.setText(f"工区 · {ws.name}")
-            root = QTreeWidgetItem([ws.name])
-            root.setData(0, Qt.ItemDataRole.UserRole, {"kind": "workspace"})
-
-            wells_node = QTreeWidgetItem(["井（数据）"])
-            wells_node.setData(0, Qt.ItemDataRole.UserRole, {"kind": "wells_folder"})
+            leaf_refs = self._leaf_to_plot_names()
             total_leaves = 0
+            # 以数据为单位：每条导入数据一条节点（井道列表无引用标注）
             for well in ws.wells:
-                item = QTreeWidgetItem([well.name])
-                item.setData(
-                    0,
-                    Qt.ItemDataRole.UserRole,
-                    {
-                        "kind": "well",
-                        "id": well.id,
-                        "well_id": well.id,
-                        "path": well.path,
-                    },
-                )
-                item.setToolTip(0, well.path or well.id)
-                n = self._attach_well_data_branch(item, well.id)
+                n = self._attach_data_unit(data_node, well, leaf_refs)
                 total_leaves += n
-                wells_node.addChild(item)
             if not ws.wells:
-                empty = QTreeWidgetItem(["（无井 · 请导入 LAS）"])
+                empty = QTreeWidgetItem(["（无数据 · 请导入 LAS）"])
                 empty.setDisabled(True)
-                wells_node.addChild(empty)
+                data_node.addChild(empty)
 
-            plots_node = QTreeWidgetItem(["图件（绘图）"])
-            plots_node.setData(0, Qt.ItemDataRole.UserRole, {"kind": "plots_folder"})
+            type_labels = {
+                "single_well": "[单井·多图道]",
+                "correlation": "[对比]",
+                "section": "[剖面]",
+                "plane_map": "[平面图]",
+                "fence_3d": "[栅状图]",
+                "composite": "[综合图]",
+            }
             for plot in ws.plots:
                 label = plot.name
-                type_labels = {
-                    "single_well": "[单井·多图道]",
-                    "correlation": "[对比]",
-                    "section": "[剖面]",
-                    "plane_map": "[平面图]",
-                    "fence_3d": "[栅状图]",
-                    "composite": "[综合图]",
-                }
                 suffix = type_labels.get(plot.type, "")
                 if suffix:
                     label = f"{plot.name} {suffix}"
@@ -3439,94 +3720,126 @@ class WellLogWorkstationWindow(QMainWindow):
                     Qt.ItemDataRole.UserRole,
                     {"kind": "plot", "id": plot.id, "type": plot.type},
                 )
+                self._attach_plot_tracks_branch(item, plot)
                 plots_node.addChild(item)
             if not ws.plots:
                 empty = QTreeWidgetItem(["（无图件 · 新建单井分析图）"])
                 empty.setDisabled(True)
                 plots_node.addChild(empty)
 
-            root.addChild(wells_node)
-            root.addChild(plots_node)
-            tree.addTopLevelItem(root)
+            tree.addTopLevelItem(data_node)
+            tree.addTopLevelItem(plots_node)
             tree.expandToDepth(3)
             if self._selected_well_id:
                 self._select_well_in_tree(self._selected_well_id)
             plot_note = (
                 f"当前井图 {self._active_plot_id[:8]}…"
                 if self._active_plot_id and self._active_plot_type == "single_well"
-                else "勾选作用于当前打开的单井图"
+                else "双击数据井道加入当前井图"
             )
             self.well_content_hint.setText(
-                f"井→数据源→井道 · 共 {total_leaves} 井道叶子 · {plot_note}"
+                f"数据=数据单元（名后→标注引用图）· 图件=图→井道 · "
+                f"{total_leaves} 井道 · {plot_note}"
             )
         finally:
             self._content_tree_guard = False
 
-    def _visual_display_set_for_well(self, well_id: str) -> frozenset[str]:
-        """Display Set for tree checkboxes (plot doc / session / template defaults)."""
-        key = self._display_set_key(well_id)
-        existing = self._display_sets.get(key)
-        if existing is not None:
-            return existing
+    def _leaf_to_plot_names(self) -> dict[str, list[str]]:
+        """Map leaf_id → plot display names that reference it (ordered, unique)."""
+        out: dict[str, list[str]] = {}
         if self._workspace is None:
-            return frozenset()
-        # Prefer plot document when a single-well plot is active
-        if self._active_plot_id and self._active_plot_type == "single_well":
+            return out
+        for plot in self._workspace.plots:
             try:
-                plot_doc = load_plot_document(self._workspace, self._active_plot_id)
-                if plot_doc.display_set:
-                    return frozenset(str(x) for x in plot_doc.display_set)
+                pdoc = load_plot_document(self._workspace, plot.id)
             except WorkspaceError:
-                pass
-        try:
-            doc = self.session.ensure_well_loaded(self._workspace, well_id)
-        except Exception:  # noqa: BLE001
-            return frozenset()
-        tid = self._current_template_id() or "std-gr-rt-den"
-        template = get_builtin_template(tid)
-        if template is None:
-            return frozenset()
-        return default_checks(leaves_from_document(doc), template)
+                continue
+            leaf_ids: list[str] = []
+            if pdoc.data_bindings:
+                leaf_ids.extend(str(b.leaf_id) for b in pdoc.data_bindings if b.leaf_id)
+            leaf_ids.extend(str(x) for x in pdoc.display_set if x)
+            for lid in leaf_ids:
+                bucket = out.setdefault(lid, [])
+                if plot.name not in bucket:
+                    bucket.append(plot.name)
+        return out
 
-    def _attach_well_data_branch(self, well_item: QTreeWidgetItem, well_id: str) -> int:
-        """Under a well node: import source → checkable track leaves. Returns leaf count."""
+    def _format_data_unit_label(self, base: str, plot_names: list[str]) -> str:
+        """Data-unit name with optional reference marker (not on track leaves)."""
+        if not plot_names:
+            return base
+        quoted = "、".join(f"「{n}」" for n in plot_names)
+        return f"{base} → {quoted}"
+
+    def _attach_data_unit(
+        self,
+        data_node: QTreeWidgetItem,
+        well: Any,
+        leaf_refs: dict[str, list[str]] | None = None,
+    ) -> int:
+        """One node per imported data unit; children = plain track list.
+
+        Reference annotations go only on the data unit name (→ 「图名」),
+        never on individual track leaves.
+        """
         if self._workspace is None:
             return 0
+        well_id = str(well.id)
+        leaf_refs = leaf_refs if leaf_refs is not None else self._leaf_to_plot_names()
         try:
             doc = self.session.ensure_well_loaded(self._workspace, well_id)
         except Exception as exc:  # noqa: BLE001
-            err = QTreeWidgetItem([f"（数据未加载: {exc}）"])
+            err = QTreeWidgetItem([f"{well.name}（数据未加载: {exc}）"])
             err.setDisabled(True)
-            well_item.addChild(err)
+            err.setData(
+                0,
+                Qt.ItemDataRole.UserRole,
+                {"kind": "well", "id": well_id, "well_id": well_id},
+            )
+            data_node.addChild(err)
             return 0
 
         leaves = leaves_from_document(doc)
-        checked = self._visual_display_set_for_well(well_id)
-        source_label = Path(doc.source_path).name if doc.source_path else "导入源"
-        source_item = QTreeWidgetItem([source_label])
-        source_item.setData(
+        source_name = Path(doc.source_path).name if doc.source_path else "导入源"
+        # Data unit title: prefer file name; keep well name when different
+        if well.name and well.name != source_name and source_name != "导入源":
+            base = f"{source_name}（{well.name}）"
+        else:
+            base = source_name if source_name != "导入源" else (well.name or source_name)
+
+        # Aggregate plot refs at data-unit level (any track from this data)
+        plot_names: list[str] = []
+        seen_plots: set[str] = set()
+        for leaf in leaves:
+            for pname in leaf_refs.get(leaf.id) or []:
+                if pname not in seen_plots:
+                    seen_plots.add(pname)
+                    plot_names.append(pname)
+
+        unit_label = self._format_data_unit_label(base, plot_names)
+        unit_item = QTreeWidgetItem([unit_label])
+        unit_item.setData(
             0,
             Qt.ItemDataRole.UserRole,
             {
                 "kind": "source",
                 "source_id": doc.source_path or doc.document_id,
                 "well_id": well_id,
+                "id": well_id,
             },
         )
-        source_item.setFlags(
-            Qt.ItemFlag.ItemIsEnabled
-            | Qt.ItemFlag.ItemIsSelectable
-            | Qt.ItemFlag.ItemIsUserCheckable
+        unit_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        tip = (
+            f"数据 · 井 {well.name} · {doc.depth_unit or 'm'} · "
+            f"{int(doc.depth.size)} 样点 · {len(leaves)} 井道"
         )
-        source_item.setToolTip(
-            0,
-            f"导入源 · {doc.depth_unit or 'm'} · "
-            f"{int(doc.depth.size)} 样点 · {len(leaves)} 井道",
-        )
+        if plot_names:
+            tip += " · 已被图件引用: " + "、".join(plot_names)
+        unit_item.setToolTip(0, tip)
 
-        n_checked = 0
         for leaf in leaves:
-            child = QTreeWidgetItem([leaf.label or leaf.mnemonic])
+            mnemo = leaf.label or leaf.mnemonic
+            child = QTreeWidgetItem([mnemo])
             child.setData(
                 0,
                 Qt.ItemDataRole.UserRole,
@@ -3537,52 +3850,175 @@ class WellLogWorkstationWindow(QMainWindow):
                     "well_id": well_id,
                 },
             )
-            child.setFlags(
-                Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsSelectable
-                | Qt.ItemFlag.ItemIsUserCheckable
-            )
-            on = leaf.id in checked
-            child.setCheckState(
-                0, Qt.CheckState.Checked if on else Qt.CheckState.Unchecked
-            )
-            if on:
-                n_checked += 1
-            child.setToolTip(0, f"井道 {leaf.mnemonic}")
-            source_item.addChild(child)
+            child.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            child.setToolTip(0, f"井道 {leaf.mnemonic} · 双击加入当前井图")
+            unit_item.addChild(child)
 
         if not leaves:
             none = QTreeWidgetItem(["（无井道）"])
             none.setDisabled(True)
-            source_item.addChild(none)
-        elif n_checked == 0:
-            source_item.setCheckState(0, Qt.CheckState.Unchecked)
-        elif n_checked == len(leaves):
-            source_item.setCheckState(0, Qt.CheckState.Checked)
-        else:
-            source_item.setCheckState(0, Qt.CheckState.PartiallyChecked)
+            unit_item.addChild(none)
 
-        well_item.addChild(source_item)
+        data_node.addChild(unit_item)
         return len(leaves)
+
+    def _attach_plot_tracks_branch(
+        self, plot_item: QTreeWidgetItem, plot_entry: Any
+    ) -> None:
+        """图件 subtree always ends at tracks: 图 → (井) → 井道."""
+        if self._workspace is None:
+            return
+        try:
+            pdoc = load_plot_document(self._workspace, plot_entry.id)
+        except WorkspaceError as exc:
+            err = QTreeWidgetItem([f"（无法加载: {exc}）"])
+            err.setDisabled(True)
+            plot_item.addChild(err)
+            return
+
+        well_name = {w.id: w.name for w in self._workspace.wells}
+
+        if plot_entry.type == "single_well" or pdoc.display_set or pdoc.data_bindings:
+            # Ordered leaf list: prefer data_bindings order, else display_set
+            ordered: list[tuple[str, str, str]] = []  # leaf_id, well_id, mnemonic
+            seen: set[str] = set()
+            for b in pdoc.data_bindings:
+                lid = str(b.leaf_id or "")
+                if not lid or lid in seen:
+                    continue
+                seen.add(lid)
+                ordered.append(
+                    (lid, str(b.well_id or ""), str(b.mnemonic or ""))
+                )
+            for lid in pdoc.display_set:
+                s = str(lid)
+                if not s or s in seen:
+                    continue
+                seen.add(s)
+                wid = ""
+                if pdoc.well_ids:
+                    wid = str(pdoc.well_ids[0])
+                ordered.append((s, wid, ""))
+
+            if not ordered and pdoc.well_ids:
+                # No bindings yet: show wells as placeholders under the plot
+                for wid in pdoc.well_ids:
+                    witem = QTreeWidgetItem(
+                        [well_name.get(wid, wid) + "（未绑定井道）"]
+                    )
+                    witem.setData(
+                        0,
+                        Qt.ItemDataRole.UserRole,
+                        {"kind": "plot_well", "well_id": wid, "plot_id": plot_entry.id},
+                    )
+                    witem.setDisabled(True)
+                    plot_item.addChild(witem)
+                return
+
+            if not ordered:
+                empty = QTreeWidgetItem(["（无井道 · 从数据区双击加入）"])
+                empty.setDisabled(True)
+                plot_item.addChild(empty)
+                return
+
+            # Group by well when multiple wells appear
+            wells_in_order: list[str] = []
+            by_well: dict[str, list[tuple[str, str]]] = {}
+            for lid, wid, mnemo in ordered:
+                key = wid or (pdoc.well_ids[0] if pdoc.well_ids else "")
+                if key not in by_well:
+                    by_well[key] = []
+                    wells_in_order.append(key)
+                by_well[key].append((lid, mnemo))
+
+            multi = len(wells_in_order) > 1
+
+            def _resolve_mnemo(lid: str, mnemo: str, wid: str) -> str:
+                if mnemo:
+                    return mnemo
+                if ":" in lid:
+                    return lid.rsplit(":", 1)[-1]
+                if wid and self._workspace is not None:
+                    try:
+                        doc = self.session.ensure_well_loaded(self._workspace, wid)
+                        for leaf in leaves_from_document(doc):
+                            if leaf.id == lid:
+                                return leaf.mnemonic
+                    except Exception:  # noqa: BLE001
+                        pass
+                return lid
+
+            for wid in wells_in_order:
+                parent = plot_item
+                if multi:
+                    wnode = QTreeWidgetItem([well_name.get(wid, wid or "井")])
+                    wnode.setData(
+                        0,
+                        Qt.ItemDataRole.UserRole,
+                        {
+                            "kind": "plot_well",
+                            "well_id": wid,
+                            "plot_id": plot_entry.id,
+                        },
+                    )
+                    plot_item.addChild(wnode)
+                    parent = wnode
+                for lid, mnemo in by_well[wid]:
+                    label = _resolve_mnemo(lid, mnemo, wid)
+                    child = QTreeWidgetItem([label])
+                    child.setData(
+                        0,
+                        Qt.ItemDataRole.UserRole,
+                        {
+                            "kind": "plot_track",
+                            "id": lid,
+                            "mnemonic": label,
+                            "well_id": wid,
+                            "plot_id": plot_entry.id,
+                        },
+                    )
+                    child.setFlags(
+                        Qt.ItemFlag.ItemIsEnabled
+                        | Qt.ItemFlag.ItemIsSelectable
+                        | Qt.ItemFlag.ItemIsUserCheckable
+                    )
+                    child.setCheckState(0, Qt.CheckState.Checked)
+                    child.setToolTip(0, f"图内井道 {label} · 取消勾选可移出本图")
+                    parent.addChild(child)
+            return
+
+        # Other plot types: 图 → 井
+        if pdoc.well_ids:
+            for wid in pdoc.well_ids:
+                witem = QTreeWidgetItem([well_name.get(wid, wid)])
+                witem.setData(
+                    0,
+                    Qt.ItemDataRole.UserRole,
+                    {
+                        "kind": "plot_well",
+                        "well_id": wid,
+                        "plot_id": plot_entry.id,
+                    },
+                )
+                plot_item.addChild(witem)
+        else:
+            empty = QTreeWidgetItem(["（未绑定井）"])
+            empty.setDisabled(True)
+            plot_item.addChild(empty)
 
     def _refresh_well_content_tree(self) -> None:
         """Compat: content is embedded in workspace_tree — full rebuild."""
         self._refresh_tree()
 
-    def _collect_content_tree_checked_leaves(
-        self, well_id: str | None = None
-    ) -> frozenset[str]:
-        """Collect checked track leaves from the unified workspace tree."""
-        wid = well_id or self._selected_well_id
-        if not wid:
-            return frozenset()
+    def _collect_plot_tree_checked_leaves(self, plot_id: str) -> frozenset[str]:
+        """Collect checked plot_track leaves under a plot node."""
         ids: set[str] = set()
 
         def walk(item: QTreeWidgetItem) -> None:
             data = item.data(0, Qt.ItemDataRole.UserRole) or {}
             if (
-                data.get("kind") == "leaf"
-                and str(data.get("well_id") or "") == wid
+                data.get("kind") == "plot_track"
+                and str(data.get("plot_id") or "") == plot_id
                 and item.checkState(0) == Qt.CheckState.Checked
             ):
                 ids.add(str(data["id"]))
@@ -3597,46 +4033,48 @@ class WellLogWorkstationWindow(QMainWindow):
     def _on_well_content_item_changed(
         self, item: QTreeWidgetItem, _column: int
     ) -> None:
-        """Checkbox toggles on well→source→track leaves (unified tree)."""
+        """Checkbox toggles on 图件 → 井道 (remove/add within that plot)."""
         if self._content_tree_guard:
             return
         data = item.data(0, Qt.ItemDataRole.UserRole) or {}
-        kind = data.get("kind")
-        if kind not in ("leaf", "source"):
+        if data.get("kind") != "plot_track":
             return
+        plot_id = str(data.get("plot_id") or "")
         well_id = str(data.get("well_id") or "")
-        if not well_id:
+        if not plot_id:
             return
-        self._selected_well_id = well_id
-
-        if kind == "source":
-            state = item.checkState(0)
-            if state == Qt.CheckState.PartiallyChecked:
-                return
-            self._content_tree_guard = True
-            try:
-                for j in range(item.childCount()):
-                    child = item.child(j)
-                    cdata = child.data(0, Qt.ItemDataRole.UserRole) or {}
-                    if cdata.get("kind") == "leaf":
-                        child.setCheckState(0, state)
-            finally:
-                self._content_tree_guard = False
-
+        if well_id:
+            self._selected_well_id = well_id
+        # Defer apply so multi-toggle batches (parent won't batch on plot side)
+        self._pending_plot_check_id = plot_id
+        self._pending_plot_check_well = well_id
         if not self._content_apply_pending:
             self._content_apply_pending = True
-            QTimer.singleShot(0, self._flush_content_tree_checks)
+            QTimer.singleShot(0, self._flush_plot_tree_checks)
 
-    def _flush_content_tree_checks(self) -> None:
+    def _flush_plot_tree_checks(self) -> None:
         self._content_apply_pending = False
-        if self._selected_well_id is None or self._workspace is None:
+        if self._workspace is None:
             return
-        well_id = self._selected_well_id
-        checked = self._collect_content_tree_checked_leaves(well_id)
+        plot_id = getattr(self, "_pending_plot_check_id", None) or self._active_plot_id
+        well_id = getattr(self, "_pending_plot_check_well", None) or self._selected_well_id
+        if not plot_id or not well_id:
+            return
+        checked = self._collect_plot_tree_checked_leaves(str(plot_id))
         try:
-            self.set_display_set(well_id, checked)
+            # Keep session active plot aligned when editing that plot's tree
+            if self._active_plot_id != plot_id:
+                try:
+                    self.open_plot_document(str(plot_id))
+                except WorkspaceError:
+                    pass
+            self.set_display_set(
+                str(well_id),
+                checked,
+                plot_id=str(plot_id),
+            )
         except WorkspaceError as exc:
-            QMessageBox.warning(self, "更新显示集失败", str(exc))
+            QMessageBox.warning(self, "更新图件井道失败", str(exc))
             self._refresh_tree()
 
     def _on_new_workspace(self) -> None:
@@ -3664,7 +4102,7 @@ class WellLogWorkstationWindow(QMainWindow):
             QMessageBox.warning(self, "打开工区失败", str(exc))
 
     def _on_open_recent_workspace(self, path: str) -> None:
-        """Open a path from the startup recent list (#291)."""
+        """Open a path from the recent list (menu / API; no startup page)."""
         p = Path(path).expanduser()
         if not p.is_dir():
             QMessageBox.warning(
@@ -3673,24 +4111,18 @@ class WellLogWorkstationWindow(QMainWindow):
                 f"路径不存在或不是目录：\n{path}\n\n已从最近列表移除。",
             )
             remove_recent(path)
-            if hasattr(self, "startup_page"):
-                self.startup_page.refresh_recent()
             return
         try:
             ws = open_workspace(p)
             self.set_workspace(ws)
         except WorkspaceError as exc:
             QMessageBox.warning(self, "打开工区失败", str(exc))
-            # Keep in list if still a dir but invalid workspace? remove if hard fail
             if "不存在" in str(exc) or "workspace" in str(exc).lower():
                 remove_recent(path)
-                if hasattr(self, "startup_page"):
-                    self.startup_page.refresh_recent()
         except OSError as exc:
             QMessageBox.warning(self, "打开工区失败", str(exc))
             remove_recent(path)
-            if hasattr(self, "startup_page"):
-                self.startup_page.refresh_recent()
+
     def _on_import_las(self) -> None:
         if self._workspace is None:
             QMessageBox.information(self, "导入 LAS", "请先打开或新建工区。")

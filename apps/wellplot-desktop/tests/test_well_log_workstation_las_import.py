@@ -169,4 +169,6 @@ def test_shell_import_las_updates_tree(qtbot, tmp_path: Path) -> None:
 
     for i in range(win.workspace_tree.topLevelItemCount()):
         walk(win.workspace_tree.topLevelItem(i))
-    assert "ShellWell" in labels
+    # IA: well name folds onto the data-unit label (no standalone well node)
+    assert "ui.las（ShellWell）" in labels
+    assert {"GR", "RT"} <= set(labels)

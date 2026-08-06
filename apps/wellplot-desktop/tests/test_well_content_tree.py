@@ -1,4 +1,4 @@
-"""Unified left tree: 井 → 数据源 → 井道 (no dual tabs)."""
+"""Left tree: 数据 inventory + 图件 plot→tracks (no dual tabs)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from well_log_workstation.display_set import leaf_id_for_curve
 from well_log_workstation.las_import import import_las_into_workspace
+from well_log_workstation.plot_document import create_single_well_plot
 from well_log_workstation.shell import WellLogWorkstationWindow
 from well_log_workstation.workspace import create_workspace
 
@@ -78,27 +79,12 @@ def _open_win(qtbot, tmp_path: Path, *, single: bool = False):
     return win, result
 
 
-def _leaf_items(tree) -> list[QTreeWidgetItem]:
+def _items_by_kind(tree, kind: str) -> list[QTreeWidgetItem]:
     out: list[QTreeWidgetItem] = []
 
     def walk(item: QTreeWidgetItem) -> None:
         data = item.data(0, Qt.ItemDataRole.UserRole) or {}
-        if data.get("kind") == "leaf":
-            out.append(item)
-        for i in range(item.childCount()):
-            walk(item.child(i))
-
-    for i in range(tree.topLevelItemCount()):
-        walk(tree.topLevelItem(i))
-    return out
-
-
-def _source_items(tree) -> list[QTreeWidgetItem]:
-    out: list[QTreeWidgetItem] = []
-
-    def walk(item: QTreeWidgetItem) -> None:
-        data = item.data(0, Qt.ItemDataRole.UserRole) or {}
-        if data.get("kind") == "source":
+        if data.get("kind") == kind:
             out.append(item)
         for i in range(item.childCount()):
             walk(item.child(i))
@@ -113,69 +99,136 @@ def test_no_dual_tabs_single_workspace_tree(qtbot, tmp_path: Path) -> None:
     assert getattr(win, "left_tabs", None) is None
     assert win.workspace_tree.objectName() == "WorkspaceTree"
     assert win.well_content_tree is win.workspace_tree
-    assert win.workspace_tree.findItems(
-        "井", Qt.MatchFlag.MatchContains | Qt.MatchFlag.MatchRecursive
-    )
-    assert win.workspace_tree.findItems(
-        "图件", Qt.MatchFlag.MatchContains | Qt.MatchFlag.MatchRecursive
-    )
+    tree = win.workspace_tree
+    assert tree.topLevelItemCount() == 2
+    assert tree.topLevelItem(0).text(0) == "数据"
+    assert tree.topLevelItem(1).text(0) == "图件"
+    for i in range(tree.topLevelItemCount()):
+        assert "工区" not in tree.topLevelItem(i).text(0)
 
 
 def test_content_under_well_two_levels(qtbot, tmp_path: Path) -> None:
     win, _ = _open_win(qtbot, tmp_path, single=False)
     tree = win.workspace_tree
-    sources = _source_items(tree)
+    sources = _items_by_kind(tree, "source")
     assert len(sources) >= 1
-    leaves = _leaf_items(tree)
+    leaves = _items_by_kind(tree, "leaf")
     mnemos = {
         (c.data(0, Qt.ItemDataRole.UserRole) or {}).get("mnemonic") for c in leaves
     }
     assert "GR" in mnemos and "AT10" in mnemos and "AT90" in mnemos
     assert "DEPT" not in mnemos
+    # Data leaves are not checkable (inventory only)
+    for leaf in leaves:
+        assert not (leaf.flags() & Qt.ItemFlag.ItemIsUserCheckable)
 
     win2, _ = _open_win(qtbot, tmp_path / "s", single=True)
-    assert len(_leaf_items(win2.workspace_tree)) == 1
+    assert len(_items_by_kind(win2.workspace_tree, "leaf")) == 1
 
 
-def test_check_leaf_live_updates_plot(qtbot, tmp_path: Path) -> None:
+def test_data_unit_shows_plot_ref_not_on_leaves(qtbot, tmp_path: Path) -> None:
+    """Refs are on the data unit name only, not on track leaves."""
     win, result = _open_win(qtbot, tmp_path)
     well_id = result.catalog_well_id
     doc = result.document
-    win.set_display_set(well_id, frozenset(), template_id="std-gr-rt-den")
+    gr = leaf_id_for_curve(doc.document_id, "GR")
+    plot = create_single_well_plot(
+        win.workspace,
+        well_id=well_id,
+        well_name=result.document.well_name or "W",
+        name="引用测试图",
+        template_id="std-gr-rt-den",
+    )
+    win.open_plot_document(plot.id)
+    win.set_display_set(well_id, {gr}, template_id="std-gr-rt-den", plot_id=plot.id)
     win._refresh_tree()
-    assert win.active_presentation is not None
-    assert win.active_presentation.curve_track_count == 0
 
-    gr_id = leaf_id_for_curve(doc.document_id, "GR")
-    leaves = _leaf_items(win.workspace_tree)
+    sources = _items_by_kind(win.workspace_tree, "source")
+    assert sources
+    assert any("引用测试图" in s.text(0) and "→" in s.text(0) for s in sources)
+
+    data_leaves = _items_by_kind(win.workspace_tree, "leaf")
     gr_item = next(
         c
-        for c in leaves
-        if (c.data(0, Qt.ItemDataRole.UserRole) or {}).get("id") == gr_id
+        for c in data_leaves
+        if (c.data(0, Qt.ItemDataRole.UserRole) or {}).get("id") == gr
     )
-    gr_item.setCheckState(0, Qt.CheckState.Checked)
-    QApplication.processEvents()
-    pres = win.active_presentation
-    assert pres is not None
-    assert pres.curve_track_count == 1
-    assert gr_id in (win.display_set_for(well_id) or frozenset())
+    # Leaf stays plain mnemonic — no plot ref suffix
+    assert gr_item.text(0) == "GR"
+    assert "引用测试图" not in gr_item.text(0)
+
+    plot_tracks = _items_by_kind(win.workspace_tree, "plot_track")
+    assert any(
+        (c.data(0, Qt.ItemDataRole.UserRole) or {}).get("id") == gr for c in plot_tracks
+    )
 
 
-def test_parent_source_batch_toggle(qtbot, tmp_path: Path) -> None:
+def test_plot_tree_is_plot_to_tracks(qtbot, tmp_path: Path) -> None:
     win, result = _open_win(qtbot, tmp_path)
     well_id = result.catalog_well_id
-    win.set_display_set(well_id, frozenset(), template_id="std-gr-rt-den")
+    doc = result.document
+    gr = leaf_id_for_curve(doc.document_id, "GR")
+    cal = leaf_id_for_curve(doc.document_id, "CAL")
+    plot = create_single_well_plot(
+        win.workspace,
+        well_id=well_id,
+        well_name=result.document.well_name or "W",
+        name="结构图",
+        template_id="std-gr-rt-den",
+    )
+    win.set_display_set(
+        well_id, {gr, cal}, template_id="std-gr-rt-den", plot_id=plot.id
+    )
     win._refresh_tree()
-    sources = _source_items(win.workspace_tree)
-    assert sources
-    src = sources[0]
-    n_leaves = len(_leaf_items(win.workspace_tree))
-    src.setCheckState(0, Qt.CheckState.Checked)
+
+    plots_folder = win.workspace_tree.topLevelItem(1)
+    assert plots_folder.text(0) == "图件"
+    assert plots_folder.childCount() >= 1
+    plot_item = plots_folder.child(0)
+    assert "结构图" in plot_item.text(0)
+    # Children of plot are tracks (or single well group); not empty
+    assert plot_item.childCount() >= 1
+    track_kinds = set()
+    for i in range(plot_item.childCount()):
+        d = plot_item.child(i).data(0, Qt.ItemDataRole.UserRole) or {}
+        track_kinds.add(d.get("kind"))
+    assert "plot_track" in track_kinds or "plot_well" in track_kinds
+
+
+def test_uncheck_plot_track_updates_display_set(qtbot, tmp_path: Path) -> None:
+    win, result = _open_win(qtbot, tmp_path)
+    well_id = result.catalog_well_id
+    doc = result.document
+    gr = leaf_id_for_curve(doc.document_id, "GR")
+    cal = leaf_id_for_curve(doc.document_id, "CAL")
+    plot = create_single_well_plot(
+        win.workspace,
+        well_id=well_id,
+        well_name=result.document.well_name or "W",
+        name="勾选图",
+        template_id="std-gr-rt-den",
+    )
+    win.open_plot_document(plot.id)
+    win.set_display_set(
+        well_id, {gr, cal}, template_id="std-gr-rt-den", plot_id=plot.id
+    )
+    win._refresh_tree()
+    assert win.active_presentation is not None
+    assert win.active_presentation.curve_track_count == 2
+
+    tracks = _items_by_kind(win.workspace_tree, "plot_track")
+    gr_track = next(
+        c
+        for c in tracks
+        if (c.data(0, Qt.ItemDataRole.UserRole) or {}).get("id") == gr
+    )
+    gr_track.setCheckState(0, Qt.CheckState.Unchecked)
     QApplication.processEvents()
     ds = win.display_set_for(well_id) or frozenset()
-    assert len(ds) == n_leaves
+    assert gr not in ds
+    assert cal in ds
     assert win.active_presentation is not None
-    assert win.active_presentation.curve_track_count == n_leaves
+    assert win.active_presentation.curve_track_count == 1
 
 
 def test_derived_track_list_matches_display_set(qtbot, tmp_path: Path) -> None:

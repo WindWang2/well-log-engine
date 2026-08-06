@@ -112,12 +112,10 @@ def test_shell_tree_labels_six_plot_types(tmp_path: Path):
     tree = win.workspace_tree
     for i in range(tree.topLevelItemCount()):
         item = tree.topLevelItem(i)
-        for j in range(item.childCount()):
-            child = item.child(j)
-            meta = child.data(0, Qt.ItemDataRole.UserRole)
-            if meta and meta.get("kind") == "plots_folder":
-                for k in range(child.childCount()):
-                    labels.append(child.child(k).text(0))
+        meta = item.data(0, Qt.ItemDataRole.UserRole) or {}
+        if meta.get("kind") == "plots_folder":
+            for k in range(item.childCount()):
+                labels.append(item.child(k).text(0))
     joined = " | ".join(labels)
     assert "[剖面]" in joined
     assert "[平面图]" in joined

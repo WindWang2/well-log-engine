@@ -7,6 +7,7 @@ Seam under test: ``default_checks`` + ``compose`` on
 from __future__ import annotations
 
 from well_log_workstation.display_set import (
+    DEFAULT_DISPLAY_MAX,
     DisplayableTrackLeaf,
     StyleSource,
     compose,
@@ -50,16 +51,39 @@ def _std_template() -> PlotTemplate:
     return tpl
 
 
-def test_default_checks_only_template_matches() -> None:
+def test_default_checks_includes_template_then_preferred() -> None:
     leaves = _a2_like_leaves()
     checks = default_checks(leaves, _std_template())
-    assert checks == frozenset({"a2:GR", "a2:RT", "a2:DEN"})
-    assert "a2:AT10" not in checks
-    assert "a2:CAL" not in checks
+    # Template slots first: GR / RT / DEN; then preferred fill (CAL, AT*, CNL)
+    assert {"a2:GR", "a2:RT", "a2:DEN"}.issubset(checks)
+    assert "a2:CAL" in checks
+    assert len(checks) <= DEFAULT_DISPLAY_MAX
+    assert len(checks) == len(leaves)  # only 8 leaves here, under cap
+
+
+def test_default_checks_caps_at_ten() -> None:
+    leaves = [_leaf(f"x:C{i}", f"C{i}") for i in range(25)]
+    # Also sprinkle common names so priority path is exercised
+    leaves[0] = _leaf("x:GR", "GR")
+    leaves[1] = _leaf("x:RT", "RT")
+    leaves[2] = _leaf("x:RHOB", "RHOB")
+    checks = default_checks(leaves, _std_template())
+    assert len(checks) == DEFAULT_DISPLAY_MAX
+    assert "x:GR" in checks
+    assert "x:RT" in checks
+    assert "x:RHOB" in checks
 
 
 def test_default_checks_empty_leaves() -> None:
     assert default_checks([], _std_template()) == frozenset()
+
+
+def test_default_checks_max_tracks_override() -> None:
+    leaves = _a2_like_leaves()
+    checks = default_checks(leaves, _std_template(), max_tracks=2)
+    assert len(checks) == 2
+    # Template order: GR then RT
+    assert checks == frozenset({"a2:GR", "a2:RT"})
 
 
 def test_compose_empty_display_set_yields_empty_list() -> None:
@@ -141,12 +165,11 @@ def test_compose_template_switch_same_display_set_changes_styles_only() -> None:
 
 
 def test_at_leaves_are_independent_for_default_and_compose() -> None:
-    """AT* are separate leaves — no group; RT slot matches RT not AT10 by default."""
+    """AT* are separate leaves — RT slot prefers RT; AT10 may fill as preferred extra."""
     leaves = _a2_like_leaves()
     checks = default_checks(leaves, _std_template())
     assert "a2:RT" in checks
-    assert "a2:AT10" not in checks
-    # Explicitly check AT10 only
+    # Explicitly check AT10 only (independent leaf, not grouped with RT)
     tracks = compose(leaves, frozenset({"a2:AT10"}), _std_template())
     assert len(tracks) == 1
     assert tracks[0].leaf_id == "a2:AT10"

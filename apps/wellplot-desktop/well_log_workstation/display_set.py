@@ -116,20 +116,112 @@ def _leaf_matches_slot(leaf: DisplayableTrackLeaf, slot_mnemos: Sequence[str]) -
     return any(_norm(m) == want for m in slot_mnemos)
 
 
+# Soft cap for first-open / empty-plot defaults. User-saved display_set is never
+# truncated — only the auto default path uses this limit.
+DEFAULT_DISPLAY_MAX = 10
+
+# Preferred mnemonics when filling a default set beyond template slots
+# (common wireline / LWD curves; first match wins per alias group).
+DEFAULT_MNEMONIC_PRIORITY: tuple[str, ...] = (
+    "GR",
+    "GAM",
+    "GAMMA",
+    "SGR",
+    "SP",
+    "CAL",
+    "CALI",
+    "RT",
+    "RD",
+    "LLD",
+    "ILD",
+    "AT90",
+    "AT60",
+    "AT30",
+    "AT20",
+    "AT10",
+    "RHOB",
+    "DEN",
+    "ZDEN",
+    "RHOZ",
+    "NPHI",
+    "CNL",
+    "TNPH",
+    "PHIN",
+    "DT",
+    "AC",
+    "DTC",
+    "PE",
+    "PEF",
+    "RXO",
+    "MSFL",
+    "LLS",
+    "ILM",
+)
+
+
 def default_checks(
     leaves: Sequence[DisplayableTrackLeaf],
     template: PlotTemplate,
+    *,
+    max_tracks: int = DEFAULT_DISPLAY_MAX,
 ) -> frozenset[str]:
-    """Leaf ids the current template can match (one leaf per curve slot)."""
-    remaining = list(leaves)
+    """Default Display Set for first open / empty plot (≤ ``max_tracks``).
+
+    Priority:
+    1. Template curve slots (one leaf per slot)
+    2. Preferred common mnemonics not yet chosen
+    3. Remaining leaves in document order
+
+    Never exceeds ``max_tracks`` (default 10). Callers that load a
+    user-persisted ``display_set`` must use that list as-is instead.
+    """
+    if max_tracks <= 0 or not leaves:
+        return frozenset()
+
     chosen: list[str] = []
+    used: set[str] = set()
+
+    def _take(leaf: DisplayableTrackLeaf) -> bool:
+        if leaf.id in used or len(chosen) >= max_tracks:
+            return False
+        chosen.append(leaf.id)
+        used.add(leaf.id)
+        return True
+
+    # 1) Template-matched slots (template track order)
+    remaining = list(leaves)
     for track in _curve_slots(template):
+        if len(chosen) >= max_tracks:
+            break
         mnemos = _slot_mnemonics(track)
         for i, leaf in enumerate(remaining):
+            if leaf.id in used:
+                continue
             if _leaf_matches_slot(leaf, mnemos):
-                chosen.append(leaf.id)
+                _take(leaf)
                 del remaining[i]
                 break
+
+    # 2) Preferred mnemonics (skip already chosen)
+    by_norm: dict[str, DisplayableTrackLeaf] = {}
+    for leaf in leaves:
+        if leaf.id in used:
+            continue
+        key = _norm(leaf.mnemonic)
+        by_norm.setdefault(key, leaf)
+    for mnemo in DEFAULT_MNEMONIC_PRIORITY:
+        if len(chosen) >= max_tracks:
+            break
+        leaf = by_norm.get(_norm(mnemo))
+        if leaf is not None:
+            _take(leaf)
+
+    # 3) Fill with remaining document-order leaves up to cap
+    for leaf in leaves:
+        if len(chosen) >= max_tracks:
+            break
+        _take(leaf)
+
     return frozenset(chosen)
 
 

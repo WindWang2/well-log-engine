@@ -1,4 +1,4 @@
-"""Startup page + recent workspaces (#291 / T3)."""
+"""Cold-start main shell + recent workspaces (no startup chooser)."""
 
 from __future__ import annotations
 
@@ -9,9 +9,6 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings
-
-from well_log_workstation.branding import ORGANIZATION_NAME, PRODUCT_NAME
 from well_log_workstation.recent_workspaces import (
     add_recent,
     clear_recent,
@@ -19,13 +16,17 @@ from well_log_workstation.recent_workspaces import (
     remove_recent,
 )
 from well_log_workstation.shell import WellLogWorkstationWindow
-from well_log_workstation.workspace import create_workspace
+from well_log_workstation.workspace import (
+    create_workspace,
+    default_workspace_root,
+    ensure_startup_workspace,
+    open_or_create_workspace,
+)
 
 
 @pytest.fixture(autouse=True)
 def _isolate_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Keep QSettings out of the real user config for this suite."""
-    # Point Qt settings to a temp org/app under tmp
     org = f"paleo-test-{tmp_path.name}"
     app = "WellPlotDesktopTest"
     monkeypatch.setattr(
@@ -33,6 +34,11 @@ def _isolate_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setattr(
         "well_log_workstation.recent_workspaces.PRODUCT_NAME", app
+    )
+    # Isolate silent default session path under tmp
+    monkeypatch.setattr(
+        "well_log_workstation.workspace.default_workspace_root",
+        lambda: tmp_path / "default-workspace",
     )
     clear_recent()
     yield
@@ -55,29 +61,49 @@ def test_recent_add_load_remove(tmp_path: Path) -> None:
     assert str(a.resolve()) in recent2
 
 
-def test_cold_start_shows_startup_page(qtbot) -> None:
+def test_cold_start_main_shell_no_startup_page(qtbot) -> None:
     win = WellLogWorkstationWindow()
     qtbot.addWidget(win)
+    win.open_default_session()
     win.show()
     assert win._main_stack.currentIndex() == 0
-    assert win.startup_page.isVisible() or win._main_stack.currentWidget() is win.startup_page
-    assert win.startup_page.objectName() == "StartupPage"
-    assert win.startup_page.new_btn.objectName() == "StartupNewWorkspace"
-    assert win.workspace is None
+    assert getattr(win, "startup_page", None) is None
+    assert win.workspace is not None
+    assert win._main_stack.currentWidget().objectName() == "ShellRoot"
+    # Top-level tree: 数据 + 图件 only
+    tree = win.workspace_tree
+    assert tree.topLevelItemCount() == 2
+    assert tree.topLevelItem(0).text(0) == "数据"
+    assert tree.topLevelItem(1).text(0) == "图件"
 
 
-def test_open_workspace_switches_to_main_shell(qtbot, tmp_path: Path) -> None:
+def test_open_workspace_stays_on_main_shell(qtbot, tmp_path: Path) -> None:
     ws = create_workspace(tmp_path / "live", name="Live")
     win = WellLogWorkstationWindow()
     qtbot.addWidget(win)
     assert win._main_stack.currentIndex() == 0
     win.set_workspace(ws)
-    assert win._main_stack.currentIndex() == 1
+    assert win._main_stack.currentIndex() == 0
     assert win.workspace is not None
     assert win.workspace.name == "Live"
-    # Recent list should include this path
     recent = load_recent()
     assert any(str(ws.root) in p or p.endswith("live") for p in recent)
+
+
+def test_ensure_startup_prefers_recent(tmp_path: Path) -> None:
+    custom = create_workspace(tmp_path / "custom", name="Custom")
+    add_recent(custom.root)
+    ws = ensure_startup_workspace()
+    assert ws.root == custom.root
+    assert ws.name == "Custom"
+
+
+def test_open_or_create_idempotent(tmp_path: Path) -> None:
+    root = tmp_path / "once"
+    a = open_or_create_workspace(root, name="Once")
+    b = open_or_create_workspace(root, name="Ignored")
+    assert a.root == b.root
+    assert b.name == "Once"
 
 
 def test_recent_invalid_path_removes_and_warns(qtbot, tmp_path: Path, monkeypatch) -> None:
@@ -88,8 +114,6 @@ def test_recent_invalid_path_removes_and_warns(qtbot, tmp_path: Path, monkeypatc
 
     win = WellLogWorkstationWindow()
     qtbot.addWidget(win)
-    win.startup_page.refresh_recent()
-    # Double-open path that no longer exists
     warned: list[str] = []
 
     def fake_warning(parent, title, text):  # noqa: ANN001
@@ -102,5 +126,4 @@ def test_recent_invalid_path_removes_and_warns(qtbot, tmp_path: Path, monkeypatc
     win._on_open_recent_workspace(str(missing))
     assert warned
     assert str(missing) not in load_recent()
-    assert win.workspace is None
     assert win._main_stack.currentIndex() == 0

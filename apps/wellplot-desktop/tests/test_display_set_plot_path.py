@@ -65,17 +65,19 @@ def test_presentation_from_display_set_defaults_match_template(tmp_path: Path) -
     assert template is not None
     leaves = leaves_from_document(doc)
     checks = default_checks(leaves, template)
-    # DEN alias RHOB should match den slot
-    assert any(leaf_id_for_curve(doc.document_id, "GR") in checks for _ in [0])
+    # Template slots + preferred fill (≤10); DEN alias RHOB matches den slot
     assert leaf_id_for_curve(doc.document_id, "GR") in checks
     assert leaf_id_for_curve(doc.document_id, "RT") in checks
     assert leaf_id_for_curve(doc.document_id, "RHOB") in checks
-    assert leaf_id_for_curve(doc.document_id, "CAL") not in checks
+    assert leaf_id_for_curve(doc.document_id, "CAL") in checks
+    assert len(checks) <= 10
+    assert len(checks) == len(leaves)  # 5 curves, under cap
 
     pres = presentation_from_display_set(template, doc, checks)
-    assert pres.curve_track_count == 3
+    assert pres.curve_track_count == len(checks)
     titles = [t.title for t in pres.tracks if t.role == "curve"]
-    assert titles == ["GR", "RT", "DEN"]
+    # Template-styled first (GR/RT/DEN), then extras in compose order
+    assert titles[:3] == ["GR", "RT", "DEN"]
 
 
 def test_presentation_empty_display_set_depth_only(tmp_path: Path) -> None:
@@ -98,10 +100,12 @@ def test_shell_apply_defaults_and_live_display_set(qtbot, tmp_path: Path) -> Non
     win._main_stack.setCurrentIndex(1)
 
     pres = win.apply_template_to_well(well_id, "std-gr-rt-den")
-    assert pres.curve_track_count == 3
+    # Default batch: all available curves if ≤10 (MULTI has GR/RT/RHOB/CAL/AT10)
+    assert pres.curve_track_count == 5
     ds = win.display_set_for(well_id)
     assert ds is not None
-    assert len(ds) == 3
+    assert len(ds) == 5
+    assert len(ds) <= 10
 
     # Live: only GR
     gr_id = leaf_id_for_curve(result.document.document_id, "GR")
@@ -109,6 +113,65 @@ def test_shell_apply_defaults_and_live_display_set(qtbot, tmp_path: Path) -> Non
     assert pres2.curve_track_count == 1
     assert [t.title for t in pres2.tracks if t.role == "curve"] == ["GR"]
     assert win.display_set_for(well_id) == frozenset({gr_id})
+
+
+def test_user_display_set_over_ten_not_capped(qtbot, tmp_path: Path) -> None:
+    """Persisted / explicit display_set is never truncated to the default max."""
+    from well_log_workstation.plot_document import create_single_well_plot
+
+    # Build a LAS with many curves
+    body_curves = "\n".join(f"C{i}.U" for i in range(15))
+    body_ascii = "\n".join(
+        " ".join([str(1000 + r)] + [str(i + r) for i in range(15)]) for r in range(3)
+    )
+    las = tmp_path / "many.las"
+    las.write_text(
+        f"""~VERSION INFORMATION
+VERS. 2.0
+WRAP. NO
+~WELL INFORMATION
+STRT.M 1000.0
+STOP.M 1002.0
+STEP.M 1.0
+NULL. -999.25
+WELL. MANY
+~CURVE INFORMATION
+DEPT.M
+{body_curves}
+~ASCII
+{body_ascii}
+""",
+        encoding="utf-8",
+    )
+    ws = create_workspace(tmp_path / "ws-many")
+    result = import_las_into_workspace(ws, las)
+    well_id = result.catalog_well_id
+    leaves = leaves_from_document(result.document)
+    assert len(leaves) >= 12
+    plot = create_single_well_plot(
+        ws,
+        well_id=well_id,
+        well_name="MANY",
+        template_id="std-gr-rt-den",
+        name="多井道图",
+    )
+    all_ids = {leaf.id for leaf in leaves}
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    win.session.put(result.document)
+    # Explicit user set of >10 tracks
+    win.set_display_set(well_id, all_ids, template_id="std-gr-rt-den", plot_id=plot.id)
+    assert len(win.display_set_for(well_id) or ()) > 10
+    # Re-open should keep user set (not re-default to ≤10)
+    win2 = WellLogWorkstationWindow()
+    qtbot.addWidget(win2)
+    win2.set_workspace(ws)
+    win2.session.put(result.document)
+    win2.open_plot_document(plot.id)
+    ds2 = win2.display_set_for(well_id) or frozenset()
+    assert len(ds2) > 10
+    assert ds2 == all_ids
 
 
 def test_shell_empty_display_set_guidance_caption(qtbot, tmp_path: Path) -> None:

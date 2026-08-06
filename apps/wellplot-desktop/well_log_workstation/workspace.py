@@ -262,6 +262,52 @@ def open_workspace(path: Path | str) -> Workspace:
     return ws
 
 
+def open_or_create_workspace(path: Path | str, *, name: str | None = None) -> Workspace:
+    """Open an existing catalog or create a new empty workspace at ``path``."""
+    root = Path(path).expanduser().resolve()
+    if (root / WORKSPACE_FILENAME).is_file():
+        return open_workspace(root)
+    return create_workspace(root, name=name)
+
+
+def default_workspace_root() -> Path:
+    """User-data path for the silent default session storage (no chooser UI)."""
+    base = ""
+    try:
+        from PySide6.QtCore import QStandardPaths
+
+        base = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.AppDataLocation
+        )
+    except Exception:
+        base = ""
+    if not base:
+        # Fallback when Qt is unavailable or AppDataLocation is empty.
+        base = str(Path.home() / ".local" / "share" / "WellPlot Desktop")
+    return Path(base) / "default-workspace"
+
+
+def ensure_startup_workspace() -> Workspace:
+    """Pick last valid recent workspace, else open/create the default session dir.
+
+    Product cold-start goes straight to the main shell — no workspace chooser.
+    Storage still uses a directory + workspace.json under the hood.
+    """
+    try:
+        from well_log_workstation.recent_workspaces import load_recent
+
+        for raw in load_recent():
+            candidate = Path(raw).expanduser()
+            try:
+                if candidate.is_dir() and (candidate / WORKSPACE_FILENAME).is_file():
+                    return open_workspace(candidate)
+            except (WorkspaceError, OSError):
+                continue
+    except Exception:
+        pass
+    return open_or_create_workspace(default_workspace_root(), name="默认")
+
+
 def save_workspace(ws: Workspace) -> None:
     """Write ``workspace.json`` atomically-ish (write temp then replace)."""
     ws.root.mkdir(parents=True, exist_ok=True)

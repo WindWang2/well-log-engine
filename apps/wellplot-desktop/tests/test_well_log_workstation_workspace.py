@@ -182,7 +182,13 @@ def test_shell_tree_shows_catalog(qtbot, tmp_path: Path) -> None:
     for i in range(win.workspace_tree.topLevelItemCount()):
         walk(win.workspace_tree.topLevelItem(i))
 
-    assert any("UI Field" in x or x == "UI Field" for x in labels)
-    assert "Well-X" in labels
+    # IA: top level is 数据/图件 only — no workspace root node
+    tops = [
+        win.workspace_tree.topLevelItem(i).text(0)
+        for i in range(win.workspace_tree.topLevelItemCount())
+    ]
+    assert tops == ["数据", "图件"]
+    assert all("UI Field" not in x for x in labels)
+    assert any("Well-X" in x for x in labels)
     assert any("X 单井" in x for x in labels)
     assert "WellPlot Desktop" in win.windowTitle() or "UI Field" in win.windowTitle()

@@ -71,12 +71,14 @@ def test_build_projection_depth_plus_checked_columns(tmp_path: Path) -> None:
     projs = build_table_projections(doc, checks, tpl)
     assert len(projs) == 1
     p = projs[0]
-    assert p.column_count == 1 + 3  # Depth + GR RT DEN
+    # Default set may include preferred extras beyond template trio (≤10)
+    assert p.column_count == 1 + len(checks)  # Depth + curve columns
+    assert len(checks) <= 10
     assert p.row_count == doc.depth.size
     # On-demand cells
     assert p.cell(0, 0) == pytest.approx(1000.0)
     assert p.header(0).startswith("Depth")
-    assert p.header(1) in ("GR", "RT", "DEN")
+    assert p.header(1) in ("GR", "RT", "DEN", "CAL", "AT10", "RHOB")
 
 
 def test_model_virtualized_no_full_grid_state(tmp_path: Path) -> None:
