@@ -51,9 +51,9 @@ def test_shell_has_l_chrome(qtbot) -> None:
     assert win.objectName() == "WellLogWorkstationWindow"
     assert win.windowTitle() == PRODUCT_NAME
     assert win.workspace_tree.objectName() == "WorkspaceTree"
-    assert win.left_tabs.objectName() == "LeftPaneTabs"
-    assert win.left_tabs.count() == 2
-    assert win.well_content_tree.objectName() == "WellContentTree"
+    # Unified tree: no dual 工区|井内容 tabs; content is under 井 nodes
+    assert getattr(win, "left_tabs", None) is None
+    assert win.well_content_tree is win.workspace_tree
     assert win.document_tabs.objectName() == "DocumentTabs"
     assert win.template_list.objectName() == "TemplateList"
     assert win.tops_list.objectName() == "TopsList"
