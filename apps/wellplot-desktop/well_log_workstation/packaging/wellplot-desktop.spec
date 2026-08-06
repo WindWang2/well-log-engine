@@ -49,7 +49,7 @@ hiddenimports = list(pyside_hidden) + [
     "well_log_workstation.engine_bridge",
     "well_log_workstation.las_import",
     "well_log_workstation.workspace",
-    "well_log_workstation.startup_page",
+    "well_log_workstation.nav_tree",
     "well_log_workstation.print_preview",
     "well_log_workstation.geometry_golden",
     "numpy",
