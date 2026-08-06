@@ -62,7 +62,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 分层线拖拽吸附 (Snap Picking) | 🟡 | link 拾取 10px 容差 (`correlation_canvas.py:162-202`)；无曲线极值吸附 | → Desktop(磁吸) |
 | 曲线形态自动对比 | 🟡 | 仅名字匹配 (`correlation_links.match_tops_by_name:88-132`) | → Desktop(相似度) + SDK(信号处理) |
 | **地层尖灭/透镜体/剥蚀超覆** | 🟡 | `interwell_fill.py` 支持单井区间的线性楔形尖灭（FRS §3.3，P0-C 已交付）；`interwell_fill.py:35-88` 同名分层直四边形；透镜体手绘、剥蚀/超覆截断仍缺 | **P0(楔形✅)/P1(透镜体·截断)**: Desktop(几何 numpy, section_geometry 模式) + SDK(多边形/三角化复用) |
-| 断层错断/落差 | 🟡 | `section_geometry/fault_section.py` 2D 位置+落差模型（替换原 3D CRS 死代码）：`SectionFault2D`（井间位置 + 顶/底深 + throw 正断>0/逆断<0）+ `fault_polyline` + `apply_fault_throw_to_quad`（下盘角点位移）；`PlotDocument.faults` 持久化；section 画布渲染 + 编辑对话框；真多边形切割（上/下盘拆分）仍缺 | **P1(落差位移✅)/P2(多边形切割)**: Desktop(几何) |
+| 断层错断/落差 | ✅ | `section_geometry/fault_section.py` 2D 位置+落差模型（替换原 3D CRS 死代码）：`SectionFault2D`（井间位置 + 顶/底深 + throw 正断>0/逆断<0）+ `fault_polyline` + `apply_fault_throw_to_quad`（下盘角点位移）+ **`split_quad_by_fault`（真多边形切割,上/下盘拆分,FRS §3.x P2）**——断层竖面把 quad 切成左右两块(斜边线性插值交点),结构切分保留花纹/填充,contact 未命中时启用;`PlotDocument.faults` 持久化;section 画布渲染 + 编辑对话框 | **P1(落差位移✅)/P2(多边形切割✅)** |
 | 流体界面 OWC/GOC + 复合充填 | 🟡 | `section_geometry/contact_section.py` 2D 每井深度模型（替换原 3D CRS 死代码）：`FluidContact2D`（owc/goc + 每井深度）+ `contact_segment_2d` + `split_quad_by_contact`（quad 切上油/气下水双色）；`PlotDocument.contacts` 持久化；section 画布渲染 + 编辑对话框；过渡带渐变色仍缺 | **P1(双色切分✅)/后续**: 过渡带渐变 → Desktop(渲染) |
 | 磁吸/手绘平滑 | ❌ | 无 | → Desktop(交互) |
 | 全局撤销/重做 | 🟡 | SDK session 命令栈 (`session/session.hpp`); Desktop 对 datum/link 有撤销 (`tops_history.py`) | 扩展覆盖新编辑 → Desktop |

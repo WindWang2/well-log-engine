@@ -151,6 +151,75 @@ def apply_faults_to_quad(
     return out
 
 
+def split_quad_by_fault(
+    quad: TieQuad2D, fault: SectionFault2D, well_count: int
+) -> tuple[TieQuad2D, TieQuad2D] | None:
+    """Split a tie-quad along a fault plane into hanging/foot-wall halves.
+
+    The fault's vertical plane (``fault_polyline`` x) cuts the quad into a
+    left half (x < fault_x) and a right half (x > fault_x). Because the
+    down-dip corners may already carry the throw displacement
+    (apply_fault_throw_to_quad), the quad's top and bottom edges can be
+    sloped — the intersection points are linearly interpolated along each
+    edge (mirroring ``split_quad_by_contact``'s depth interpolation). Both
+    halves keep the quad's fill/pattern/label: a structural split, unlike
+    the contact's dual-colour fill.
+
+    Returns ``(left, right)`` in ``[left_top, right_top, right_bottom,
+    left_bottom]`` corner order, or None when the fault plane does not
+    strictly cross the quad or the quad is degenerate.
+    """
+    corners = np.asarray(quad.corners, dtype=np.float64)
+    if corners.shape != (4, 2):
+        return None
+    left_top, right_top, right_bottom, left_bottom = corners
+    x_l = float(left_top[0])
+    x_r = float(right_top[0])
+    if x_l == x_r:
+        return None  # zero-width quad; nothing to split
+    fx = fault_x(fault, well_count)
+    if not (x_l < fx < x_r):
+        return None  # fault plane does not cross this quad
+    t = (fx - x_l) / (x_r - x_l)
+    top_i = float(left_top[1]) + t * (float(right_top[1]) - float(left_top[1]))
+    bot_i = (
+        float(left_bottom[1])
+        + t * (float(right_bottom[1]) - float(left_bottom[1]))
+    )
+
+    left_corners = np.array(
+        [
+            [x_l, float(left_top[1])],
+            [fx, top_i],
+            [fx, bot_i],
+            [x_l, float(left_bottom[1])],
+        ],
+        dtype=np.float64,
+    )
+    right_corners = np.array(
+        [
+            [fx, top_i],
+            [x_r, float(right_top[1])],
+            [x_r, float(right_bottom[1])],
+            [fx, bot_i],
+        ],
+        dtype=np.float64,
+    )
+    left = TieQuad2D(
+        corners=left_corners,
+        fill_color=quad.fill_color,
+        label=quad.label,
+        pattern_id=quad.pattern_id,
+    )
+    right = TieQuad2D(
+        corners=right_corners,
+        fill_color=quad.fill_color,
+        label=quad.label,
+        pattern_id=quad.pattern_id,
+    )
+    return left, right
+
+
 # ---------------------------------------------------------------------------
 # Serialization
 # ---------------------------------------------------------------------------

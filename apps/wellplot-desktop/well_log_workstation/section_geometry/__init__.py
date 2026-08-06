@@ -23,6 +23,7 @@ from well_log_workstation.section_geometry.fault_section import (
     fault_x,
     faults_from_json,
     faults_to_json,
+    split_quad_by_fault,
 )
 from well_log_workstation.section_geometry.tie_polygons import (
     TieQuad2D,
@@ -46,6 +47,7 @@ __all__ = [
     "fault_x",
     "faults_from_json",
     "faults_to_json",
+    "split_quad_by_fault",
     # Fluid contacts — 2D per-well depth model (FRS §3.3 / P1-B). The legacy
     # 3D-CRS ``contact_polyline`` is kept in contact_2d.py but no longer
     # exported.

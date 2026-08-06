@@ -28,6 +28,7 @@ from well_log_workstation.section_geometry import (
     fault_x,
     faults_from_json,
     faults_to_json,
+    split_quad_by_fault,
 )
 
 
@@ -309,3 +310,153 @@ def test_legacy_section_json_without_faults(tmp_path: Path) -> None:
     )
     loaded = load_plot_document(ws, plot.id)
     assert loaded.faults == []
+
+
+# ---------------------------------------------------------------------------
+# Fault-plane quad split (FRS §3.x P2: hanging/foot-wall halves)
+# ---------------------------------------------------------------------------
+
+
+def test_split_quad_by_fault_midpoint() -> None:
+    q = _quad(0.0, 1005.0, 1095.0)
+    f = SectionFault2D(
+        name="F", between=(0, 1), x_frac=0.5, top_depth=1000, bottom_depth=1100
+    )
+    halves = split_quad_by_fault(q, f, 3)
+    assert halves is not None
+    left, right = halves
+    # Left half: [lt, (0.5, 1005), (0.5, 1095), lb]
+    assert left.corners[0, 0] == 0.0 and left.corners[0, 1] == 1005.0
+    assert left.corners[1, 0] == pytest.approx(0.5)
+    assert left.corners[1, 1] == 1005.0
+    assert left.corners[2, 0] == pytest.approx(0.5)
+    assert left.corners[2, 1] == 1095.0
+    assert left.corners[3, 0] == 0.0 and left.corners[3, 1] == 1095.0
+    # Right half: [(0.5, 1005), rt, rb, (0.5, 1095)]
+    assert right.corners[0, 0] == pytest.approx(0.5)
+    assert right.corners[0, 1] == 1005.0
+    assert right.corners[1, 0] == 1.0 and right.corners[1, 1] == 1005.0
+    assert right.corners[2, 0] == 1.0 and right.corners[2, 1] == 1095.0
+    assert right.corners[3, 0] == pytest.approx(0.5)
+    assert right.corners[3, 1] == 1095.0
+    # Structural split: both halves keep the quad's fill (not recoloured).
+    assert left.fill_color == right.fill_color == "#aaa"
+
+
+def _polygon_area(corners: np.ndarray) -> float:
+    xs, ys = corners[:, 0], corners[:, 1]
+    return 0.5 * abs(
+        float(np.dot(xs, np.roll(ys, 1)) - np.dot(ys, np.roll(xs, 1)))
+    )
+
+
+def test_split_quad_by_fault_area_preserved() -> None:
+    q = _quad(0.0, 1005.0, 1095.0)
+    f = SectionFault2D(
+        name="F", between=(0, 1), x_frac=0.3, top_depth=1000, bottom_depth=1100
+    )
+    halves = split_quad_by_fault(q, f, 3)
+    assert halves is not None
+    left, right = halves
+    assert _polygon_area(left.corners) + _polygon_area(
+        right.corners
+    ) == pytest.approx(_polygon_area(q.corners))
+
+
+def test_split_quad_by_fault_interpolates_sloped_edges() -> None:
+    """After throw displacement the top/bottom edges are sloped; the split
+    points must interpolate along them (not take the left corner depth)."""
+    q = _quad(0.0, 1005.0, 1095.0)
+    f = SectionFault2D(
+        name="F", between=(0, 1), x_frac=0.5, top_depth=1000,
+        bottom_depth=1100, throw=20.0,
+    )
+    eff = apply_fault_throw_to_quad(q, f, 3)
+    halves = split_quad_by_fault(eff, f, 3)
+    assert halves is not None
+    left, right = halves
+    # Down-dip (right) side dropped by throw: right_top at 1025, so the
+    # midpoint of the sloped top edge is 1015 (interpolated, not 1005).
+    assert right.corners[1, 1] == pytest.approx(1025.0)
+    assert right.corners[0, 1] == pytest.approx(1015.0)
+    assert right.corners[2, 1] == pytest.approx(1115.0)
+    assert right.corners[3, 1] == pytest.approx(1105.0)
+    # Left half: corner depths at x=0 are untouched by the throw; its split
+    # points interpolate the same sloped edges (1015 / 1105).
+    assert left.corners[0, 1] == 1005.0
+    assert left.corners[3, 1] == 1095.0
+    assert left.corners[1, 1] == pytest.approx(1015.0)
+    assert left.corners[2, 1] == pytest.approx(1105.0)
+
+
+def test_split_quad_by_fault_outside_or_edge_returns_none() -> None:
+    q = _quad(0.0, 1005.0, 1095.0)
+    # Fault flush with the left edge → no split.
+    f_left = SectionFault2D(name="F", between=(0, 1), x_frac=0.0)
+    assert split_quad_by_fault(q, f_left, 3) is None
+    # Fault flush with the right edge → no split.
+    f_right = SectionFault2D(name="F", between=(0, 1), x_frac=1.0)
+    assert split_quad_by_fault(q, f_right, 3) is None
+    # Fault between wells far right of the quad → no split.
+    f_far = SectionFault2D(name="F", between=(2, 3))
+    assert split_quad_by_fault(q, f_far, 3) is None
+    # Zero-width quad → no split.
+    degenerate = TieQuad2D(
+        corners=np.array(
+            [[0.0, 1000.0], [0.0, 1000.0], [0.0, 1100.0], [0.0, 1100.0]]
+        ),
+        fill_color="#aaa",
+    )
+    f = SectionFault2D(name="F", between=(0, 1), x_frac=0.5)
+    assert split_quad_by_fault(degenerate, f, 3) is None
+
+
+def test_section_canvas_fault_split_changes_render(qtbot) -> None:
+    from PySide6.QtGui import QImage
+
+    from well_log_workstation.section_canvas import SectionCanvas
+    from well_log_workstation.template_model import HostPresentation
+
+    canvas = SectionCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(600, 480)
+
+    depth = np.array([1000.0, 1100.0])
+
+    class _Layer:
+        color = "#1f77b4"
+        values = np.array([10.0, 30.0])
+        null_mask = np.array([False, False])
+
+    class _Scale:
+        mode = "linear"
+        min = 0.0
+        max = 100.0
+
+    class _Track:
+        role = "curve"
+        layers = [_Layer()]
+        scale = _Scale()
+
+    pres = HostPresentation(
+        template_id="t", template_name="T", well_document_id="w1",
+        well_name="W1", depth=depth, depth_unit="m",
+        tracks=[_Track()],  # type: ignore[arg-type]
+    )
+    quad = _quad(0.0, 1005.0, 1095.0)
+    canvas.set_section([pres, pres], [[], []], tie_quads=[quad])
+
+    def grab() -> QImage:
+        img = QImage(canvas.size(), QImage.Format.Format_ARGB32)
+        img.fill(0)
+        canvas.render(img)
+        return img
+
+    plain = grab()
+    fault = SectionFault2D(
+        name="F", between=(0, 1), x_frac=0.5, top_depth=1000,
+        bottom_depth=1100, throw=20.0,
+    )
+    canvas.set_section([pres, pres], [[], []], faults=[fault], tie_quads=[quad])
+    split = grab()
+    assert split.constBits() != plain.constBits()
