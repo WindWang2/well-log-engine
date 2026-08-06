@@ -561,3 +561,144 @@ def test_cgm_export_page_height_typeerror_fallback(tmp_path: Path) -> None:
     assert out.is_file()
     # Two-arg attempt TypeError → one-arg success.
     assert calls == [1]
+
+
+# ---------------------------------------------------------------------------
+# FRS §5: engine PDF crop marks / layered PDF export options
+# ---------------------------------------------------------------------------
+
+
+def test_engine_pdf_forwards_crop_marks_and_layered_pdf(tmp_path: Path) -> None:
+    """FRS §5: crop_marks / layered_pdf kwargs reach export_scene_pdf."""
+    captured: list[tuple] = []
+
+    class _CapturingView:
+        def export_scene_pdf(
+            self, document_id, export_pixel_height=0, searchable_text=False,
+            crop_marks=False, layered_pdf=False,
+        ):
+            captured.append(
+                (document_id, export_pixel_height, searchable_text, crop_marks, layered_pdf)
+            )
+            return b"%PDF-1.7\n" + b"\x00" * 64
+
+    plot_doc = _minimal_single_well_doc("pd-pdf-opts", "PDF options")
+    out = export_plot(
+        plot_doc,
+        "pdf",
+        backend="engine",
+        view=_CapturingView(),
+        document_id="doc-opts",
+        path=str(tmp_path / "opts.pdf"),
+        pdf_text_mode="outline",
+        crop_marks=True,
+        layered_pdf=True,
+    )
+    assert out.is_file()
+    assert captured == [("doc-opts", 0, False, True, True)]
+
+
+def test_engine_pdf_searchable_forwards_options(tmp_path: Path) -> None:
+    """Searchable path forwards the same option flags."""
+    captured: list[tuple] = []
+
+    class _CapturingView:
+        def export_scene_pdf(
+            self, document_id, export_pixel_height=0, searchable_text=False,
+            crop_marks=False, layered_pdf=False,
+        ):
+            captured.append(
+                (document_id, export_pixel_height, searchable_text, crop_marks, layered_pdf)
+            )
+            return b"%PDF-1.7\n" + b"\x00" * 64
+
+    plot_doc = _minimal_single_well_doc("pd-pdf-srch", "PDF searchable opts")
+    export_plot(
+        plot_doc,
+        "pdf",
+        backend="engine",
+        view=_CapturingView(),
+        document_id="doc-srch",
+        path=str(tmp_path / "srch.pdf"),
+        pdf_text_mode="searchable",
+        crop_marks=True,
+        layered_pdf=False,
+    )
+    assert captured == [("doc-srch", 0, True, True, False)]
+
+
+def test_engine_pdf_default_options_stay_off(tmp_path: Path) -> None:
+    """Without the option kwargs the flags default to False (backward compat)."""
+    captured: list[tuple] = []
+
+    class _CapturingView:
+        def export_scene_pdf(
+            self, document_id, export_pixel_height=0, searchable_text=False,
+            crop_marks=False, layered_pdf=False,
+        ):
+            captured.append(
+                (document_id, export_pixel_height, searchable_text, crop_marks, layered_pdf)
+            )
+            return b"%PDF-1.7\n" + b"\x00" * 64
+
+    plot_doc = _minimal_single_well_doc("pd-pdf-plain", "PDF plain")
+    export_plot(
+        plot_doc,
+        "pdf",
+        backend="engine",
+        view=_CapturingView(),
+        document_id="doc-plain",
+        path=str(tmp_path / "plain.pdf"),
+    )
+    assert captured == [("doc-plain", 0, False, False, False)]
+
+
+def test_engine_pdf_falls_back_without_new_binding_args(tmp_path: Path) -> None:
+    """Old bindings (pre-FRS §5) reject the extra args → one-arg call."""
+    calls: list[int] = []
+
+    # Simulate a binding that only accepts document_id: the host tries the
+    # 5-arg form (options on) and falls back to the 1-arg call.
+    class _StrictOneArgView:
+        def export_scene_pdf(self, *args):
+            if len(args) != 1:
+                raise TypeError(
+                    f"export_scene_pdf() takes 1 positional argument but {len(args)} were given"
+                )
+            calls.append(len(args))
+            return b"%PDF-1.7\n" + b"\x00" * 64
+
+    plot_doc = _minimal_single_well_doc("pd-pdf-old", "PDF old binding")
+    out = export_plot(
+        plot_doc,
+        "pdf",
+        backend="engine",
+        view=_StrictOneArgView(),
+        document_id="doc-old",
+        path=str(tmp_path / "old.pdf"),
+        crop_marks=True,
+        layered_pdf=True,
+    )
+    assert out.is_file()
+    assert calls == [1]
+
+
+def test_pdf_export_options_dialog_value(qtbot) -> None:
+    """Options dialog: defaults off; toggles round-trip through value()."""
+    from well_log_workstation.export_options_dialog import PdfExportOptionsDialog
+
+    dlg = PdfExportOptionsDialog()
+    qtbot.addWidget(dlg)
+    assert dlg.value() == ("outline", False, False)
+
+    dlg.radio_searchable.setChecked(True)
+    dlg.chk_crop_marks.setChecked(True)
+    dlg.chk_layered.setChecked(True)
+    assert dlg.value() == ("searchable", True, True)
+
+    # Pre-seeded state round-trips.
+    dlg2 = PdfExportOptionsDialog(
+        text_mode="searchable", crop_marks=True, layered_pdf=True
+    )
+    qtbot.addWidget(dlg2)
+    assert dlg2.value() == ("searchable", True, True)

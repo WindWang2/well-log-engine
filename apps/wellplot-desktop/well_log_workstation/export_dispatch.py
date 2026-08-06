@@ -249,9 +249,16 @@ def _engine_export(
                 data = export_cgm(document_id)
         else:  # pdf
             searchable = pdf_text_mode == "searchable"
+            # FRS §5 export options (engine-only; the Qt fallback has neither
+            # OCG layers nor crop marks). Older bindings reject the extra
+            # args — fall back via TypeError like the searchable branch.
+            crop_marks = bool(kwargs.get("crop_marks", False))
+            layered_pdf = bool(kwargs.get("layered_pdf", False))
             if searchable:
                 try:
-                    data = view.export_scene_pdf(document_id, 0, True)
+                    data = view.export_scene_pdf(
+                        document_id, 0, True, crop_marks, layered_pdf
+                    )
                 except TypeError:
                     # Binding built before B1.PDF.2 — signal caller to use Qt.
                     raise ExportError(
@@ -259,7 +266,13 @@ def _engine_export(
                         "（export_scene_pdf searchable_text）；请改用 Qt 可搜索路径"
                     ) from None
             else:
-                data = view.export_scene_pdf(document_id)
+                try:
+                    data = view.export_scene_pdf(
+                        document_id, 0, False, crop_marks, layered_pdf
+                    )
+                except TypeError:
+                    # Binding without crop_marks/layered_pdf (pre-FRS §5).
+                    data = view.export_scene_pdf(document_id)
     except ExportError:
         raise
     except Exception as exc:  # typed WellLogError surfaces here

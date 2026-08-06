@@ -5275,36 +5275,23 @@ class WellLogWorkstationWindow(QMainWindow):
             f"显示坐标系: {self._workspace.coordinate.display_crs}",
         )
 
-    def _choose_single_well_pdf_text_mode(self) -> PdfTextMode | None:
-        """ADR 0053 dual option: outline (engine) vs searchable (Qt B1.PDF.1).
+    def _choose_single_well_pdf_options(
+        self,
+    ) -> tuple[str, bool, bool] | None:
+        """PDF export options for engine single-well exports (ADR 0053 + FRS §5).
 
-        Returns None if the user cancels.
+        Returns ``(text_mode, crop_marks, layered_pdf)`` or None if cancelled.
+        The crop-marks / layered-PDF toggles are engine-only capabilities; the
+        Qt fallback path keeps its current behaviour.
         """
-        box = QMessageBox(self)
-        box.setWindowTitle("导出 PDF — 文本模式")
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setText(
-            "请选择单井 PDF 文本模式（ADR 0053 / 导出 B1）："
+        from well_log_workstation.export_options_dialog import (
+            PdfExportOptionsDialog,
         )
-        box.setInformativeText(
-            "• 引擎图形 PDF：高保真矢量，文字为轮廓、不可搜索（B0 默认）。\n"
-            "• 可搜索 PDF：文字可选中/可复制（B1.PDF.1，当前 Qt 路径）。"
-        )
-        btn_outline = box.addButton(
-            "引擎图形 PDF（不可搜索）", QMessageBox.ButtonRole.AcceptRole
-        )
-        btn_search = box.addButton(
-            "可搜索 PDF", QMessageBox.ButtonRole.AcceptRole
-        )
-        btn_cancel = box.addButton(QMessageBox.StandardButton.Cancel)
-        box.setDefaultButton(btn_outline)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is None or clicked == btn_cancel:
+
+        dlg = PdfExportOptionsDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return None
-        if clicked == btn_search:
-            return "searchable"
-        return "outline"
+        return dlg.value()
 
     def _export_active_plot(self, fmt: ExportFormat) -> None:
         """Route the active plot's export through the T8 dispatcher.
@@ -5333,11 +5320,13 @@ class WellLogWorkstationWindow(QMainWindow):
             if plot.type == "single_well" and fmt in ("svg", "pdf"):
                 eng_ok = engine_available()
                 pdf_text_mode: PdfTextMode = "outline"
+                pdf_crop_marks = False
+                pdf_layered = False
                 if fmt == "pdf":
-                    chosen = self._choose_single_well_pdf_text_mode()
+                    chosen = self._choose_single_well_pdf_options()
                     if chosen is None:
                         return
-                    pdf_text_mode = chosen
+                    pdf_text_mode, pdf_crop_marks, pdf_layered = chosen
                     if pdf_text_mode == "searchable":
                         QMessageBox.information(
                             self, "可搜索 PDF", PDF_SEARCHABLE_MODE_NOTE
@@ -5377,6 +5366,10 @@ class WellLogWorkstationWindow(QMainWindow):
                         kwargs["document_id"] = doc_id
                         if fmt == "pdf":
                             kwargs["pdf_text_mode"] = pdf_text_mode
+                            # FRS §5 export options (engine-only; the Qt
+                            # fallback path has no OCG/crop-mark support).
+                            kwargs["crop_marks"] = pdf_crop_marks
+                            kwargs["layered_pdf"] = pdf_layered
                     except (EngineUnavailable, EngineSubmitError, ExportError):
                         kwargs["backend"] = "qt"
                         kwargs["paint_fn"] = self._paint_active_plot
