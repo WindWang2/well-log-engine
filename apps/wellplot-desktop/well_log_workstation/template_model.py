@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from well_log_workstation.las_import import ImportedCurve, ImportedWellDocument
+from well_log_workstation.lithology_model import LithologySegment
 
 ScaleMode = Literal["linear", "log"]
 
@@ -38,11 +39,13 @@ class BoundCurveLayer:
 @dataclass
 class BoundTrack:
     id: str
-    role: str  # depth | curve
+    role: str  # depth | curve | litho
     title: str
     width_fraction: float
     scale: ScaleSpec | None
     layers: list[BoundCurveLayer] = field(default_factory=list)
+    # Lithology depth bands (role == "litho", FRS §2.x): SY/T 5615 segments.
+    litho_segments: list[LithologySegment] = field(default_factory=list)
     # Runtime layout edit (#292 / T4); default visible.
     visible: bool = True
 
@@ -256,6 +259,7 @@ def apply_template(
     for t in template.tracks:
         role = str(t.get("role") or "curve")
         layers_out: list[BoundCurveLayer] = []
+        litho_segments_out: list[LithologySegment] = []
         if role == "curve":
             for layer in t.get("layers") or []:
                 if str(layer.get("type") or "curve") != "curve":
@@ -273,6 +277,8 @@ def apply_template(
                         null_mask=curve.null_mask,
                     )
                 )
+        elif role == "litho" and document.lithology is not None:
+            litho_segments_out = list(document.lithology.segments)
         bound_tracks.append(
             BoundTrack(
                 id=str(t.get("id") or f"track-{len(bound_tracks)}"),
@@ -281,6 +287,7 @@ def apply_template(
                 width_fraction=float(t.get("width_fraction") or 0.25),
                 scale=_parse_scale(t.get("scale")),
                 layers=layers_out,
+                litho_segments=litho_segments_out,
             )
         )
 

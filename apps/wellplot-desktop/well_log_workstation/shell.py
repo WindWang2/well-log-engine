@@ -282,6 +282,10 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_formula.setObjectName("Action_FormulaCalc")
         self._act_formula.triggered.connect(self._on_formula_calculator)
         self._act_formula.setEnabled(False)
+        self._act_litho = file_menu.addAction("岩性道编辑…")
+        self._act_litho.setObjectName("Action_EditLithology")
+        self._act_litho.triggered.connect(self._on_edit_lithology)
+        self._act_litho.setEnabled(False)
         file_menu.addSeparator()
         act_quit = file_menu.addAction("退出")
         act_quit.triggered.connect(self.close)
@@ -1346,6 +1350,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_alias_dict.setEnabled(ws is not None)
         self._act_survey.setEnabled(ws is not None)
         self._act_formula.setEnabled(ws is not None)
+        self._act_litho.setEnabled(ws is not None)
         # Phase-2 PR-C: new plot-type menu items (fence_3d needs 3D).
         self._act_new_plane_map.setEnabled(ws is not None)
         self._act_new_fence_3d.setEnabled(
@@ -2228,6 +2233,11 @@ class WellLogWorkstationWindow(QMainWindow):
         if self._workspace is None:
             raise WorkspaceError("请先打开工区")
         doc = self.session.ensure_well_loaded(self._workspace, well_id)
+        # Attach per-well lithology segments (FRS §2.x) so template binding
+        # and canvas rendering always see the latest data.
+        from well_log_workstation.lithology_model import load_lithology_for_well
+
+        doc.lithology = load_lithology_for_well(self._workspace, well_id)[0]
         template = get_builtin_template(template_id)
         if template is None:
             raise WorkspaceError(f"未知图版: {template_id}")
@@ -4585,6 +4595,50 @@ class WellLogWorkstationWindow(QMainWindow):
                 self._show_section(plot)
             except WorkspaceError:
                 pass
+
+    def _on_edit_lithology(self) -> None:
+        """Edit the selected well's lithology segments (FRS §2.x)."""
+        if self._workspace is None or not self._workspace.wells:
+            QMessageBox.information(self, "岩性道编辑", "请先打开含井的工区。")
+            return
+        from well_log_workstation.lithology_dialog import LithologyDialog
+        from well_log_workstation.lithology_model import (
+            load_lithology_for_well,
+            save_lithology_for_well,
+        )
+
+        well_ids = self._pick_wells_for_correlation()
+        if not well_ids:
+            return
+        well_id = well_ids[0]
+        entry = next((w for w in self._workspace.wells if w.id == well_id), None)
+        if entry is None:
+            return
+        doc = self.session.ensure_well_loaded(self._workspace, well_id)
+        depth = np.asarray(doc.depth, dtype=np.float64)
+        if depth.size >= 2:
+            depth_range = (float(np.nanmin(depth)), float(np.nanmax(depth)))
+        else:
+            depth_range = None
+        current, _diags = load_lithology_for_well(self._workspace, well_id)
+        dlg = LithologyDialog(current, self, depth_range=depth_range)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        model = dlg.value()
+        try:
+            save_lithology_for_well(self._workspace, model)
+        except (WorkspaceError, OSError) as exc:
+            QMessageBox.warning(self, "保存岩性失败", str(exc))
+            return
+        self._selected_well_id = well_id
+        # Re-apply the current template so the litho track shows new segments.
+        if self._active_plot_type == "single_well" and self._presentation is not None:
+            self.apply_template_to_well(well_id, self._presentation.template_id)
+        else:
+            self.multi_track_canvas.update()
+        self.statusBar().showMessage(
+            f"已保存 {entry.name} 岩性（{len(model.segments)} 段）", 4000
+        )
 
     def _on_formula_calculator(self) -> None:
         """Edit derived-curve formulas for the selected well (FRS §2.4 / P2-A)."""

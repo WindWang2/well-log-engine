@@ -42,7 +42,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 超量程折叠 (Wrap-around) | ❌ | 无 | → SDK(曲线绘制) + Desktop |
 | 基线充填 (如 GR>80) | 🟡 | SDK `IntervalLayerSpec` + `PatternDefinition` (`scene/scene.hpp:210,193`); Desktop host 画布无 fill 图道（role 仅 depth/curve, `template_model.py:39-47`） | Desktop(画布 fill 图道) 复用 SDK interval 语义 |
 | 双曲线交叉充填 | 🟡 | SDK `CrossoverFillLayerSpec` (`scene/scene.hpp:232`) 已实现 (crossover 填充) | Desktop host 画布未渲染 → Desktop |
-| 岩性描述道 SY/T 5615 花纹库 | 🟡 | SDK `PatternDefinition` 平铺图元（line/polyline/circle）已有；Desktop `litho_patterns/syt5615.json` 内置 7 种核心岩性（砂岩/泥岩/砾岩/灰岩/白云岩/膏盐岩/页岩），`make_qbrush` Qt 真矢量渲染（替换 Dense4 近似），section 四边形 + 井间充填（含楔形）接入；单井岩性道（新 track role）仍缺 | **P0(库+剖面/对比渲染✅)/后续**: 单井岩性道 → Desktop(画布 track role) |
+| 岩性描述道 SY/T 5615 花纹库 | ✅ | SDK `PatternDefinition` 平铺图元（line/polyline/circle）已有；Desktop `litho_patterns/syt5615.json` 内置 7 种核心岩性（砂岩/泥岩/砾岩/灰岩/白云岩/膏盐岩/页岩），`make_qbrush` Qt 真矢量渲染（替换 Dense4 近似），section 四边形 + 井间充填（含楔形）接入；**单井岩性道已交付**：新 track role `litho`（`template_model`/`display_set` 绑定，`multi_track_canvas`/`export_plot` 共用 `paint_litho_bands`），岩性段数据模型 `lithology_model.py`（`wells/<id>/lithology.json`，Qt-free 可无头测）+ `LithologyDialog` 编辑器（含演示数据一键生成）+ 内置图版「标准岩性图」（`templates/std_litho.json`）；验收：单井岩性道可见 | **P0(库+剖面/对比/单井道✅)** |
 | 试油/解释成果道 | ❌ | 无 | → Desktop(数据+渲染) |
 | 射孔/井下工程道 | ❌ | SDK marker 语义含 casing_shoe (`core/document.hpp:433-439`) | → SDK(符号) + Desktop(道) |
 | 岩心照片道 + 物性点叠加 | 🟡 | SDK `ImageLayerSpec`/`ImagePyramid` (`scene/image_pyramid.hpp:67`) | Desktop host 画布无 image role → Desktop |

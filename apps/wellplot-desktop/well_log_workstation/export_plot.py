@@ -99,6 +99,13 @@ def _paint_presentation(
                 depth_v = d0 + (d1 - d0) * frac
                 painter.drawLine(int(x), int(yy), int(x + 8), int(yy))
                 painter.drawText(int(x + 10), int(yy + 4), f"{depth_v:.1f}")
+        elif track.role == "litho":
+            from well_log_workstation.multi_track_canvas import paint_litho_bands
+
+            paint_litho_bands(
+                painter, int(x), int(top), int(tw - 6), int(bottom - top),
+                d0, d1, track,
+            )
         else:
             for layer in track.layers:
                 _paint_curve(

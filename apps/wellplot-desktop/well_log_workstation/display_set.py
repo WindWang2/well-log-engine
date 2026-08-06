@@ -352,6 +352,27 @@ def presentation_from_display_set(
         )
     ]
 
+    # Template-level non-curve tracks (e.g. lithology, FRS §2.x) bind
+    # regardless of the Display Set, like the depth track above.
+    for t in template.tracks:
+        if str(t.get("role") or "curve") != "litho":
+            continue
+        bound_tracks.append(
+            BoundTrack(
+                id=str(t.get("id") or "litho"),
+                role="litho",
+                title=str(t.get("title") or "岩性"),
+                width_fraction=float(t.get("width_fraction") or 0.3),
+                scale=None,
+                layers=[],
+                litho_segments=(
+                    list(document.lithology.segments)
+                    if document.lithology is not None
+                    else []
+                ),
+            )
+        )
+
     for desc in styled:
         curve = document.curve_by_mnemonic(desc.mnemonic)
         if curve is None:

@@ -10,12 +10,71 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QWheelEvent
+from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
 from well_log_workstation.template_model import HostPresentation
 from well_log_workstation.tops_model import FormationTop
+
+
+def paint_litho_bands(
+    painter: QPainter,
+    x: int,
+    y_top: int,
+    tw: int,
+    th: int,
+    d0: float,
+    d1: float,
+    track,
+) -> None:
+    """Fill a track body with lithology segment bands (SY/T 5615 patterns).
+
+    Shared by the interactive canvas and plot export so both surfaces render
+    identically. Bands are clipped to the current depth window; segments
+    without a resolvable pattern fall back to a plain tint.
+    """
+    from well_log_workstation.litho_pattern_lib import get_pattern, make_qbrush
+
+    if tw < 4 or th < 4:
+        return
+    span = d1 - d0
+    if span <= 0:
+        return
+    segments = getattr(track, "litho_segments", None) or []
+    brush_cache: dict[str, QBrush] = {}
+    for seg in segments:
+        if not math.isfinite(seg.top) or not math.isfinite(seg.bottom):
+            continue
+        if seg.bottom < d0 or seg.top > d1:
+            continue
+        y0 = max(float(y_top), y_top + ((seg.top - d0) / span) * th)
+        y1 = min(float(y_top + th), y_top + ((seg.bottom - d0) / span) * th)
+        if y1 - y0 < 0.5:
+            continue
+        pattern = get_pattern(seg.pattern_id)
+        if seg.pattern_id not in brush_cache:
+            brush_cache[seg.pattern_id] = (
+                make_qbrush(pattern, fallback_color="#93c5fd")
+                if pattern is not None
+                else QBrush(QColor("#cbd5e1"))
+            )
+        painter.fillRect(QRectF(x, y0, tw, y1 - y0), brush_cache[seg.pattern_id])
+        # Band boundary (skip the very top edge — the track body border).
+        if y0 > y_top + 0.5:
+            painter.setPen(QPen(QColor("#8a8a8a"), 1))
+            painter.drawLine(x, int(round(y0)), x + tw, int(round(y0)))
+        # Centered lithology label when the track is wide enough.
+        if tw >= 44:
+            text = seg.label or (pattern.name if pattern is not None else "")
+            if text:
+                mid_y = (y0 + y1) / 2
+                painter.setPen(QColor("#222222"))
+                painter.drawText(
+                    QRectF(x + 2, mid_y - 8, tw - 4, 16),
+                    Qt.AlignmentFlag.AlignCenter,
+                    text,
+                )
 
 
 class MultiTrackCanvas(QWidget):
@@ -290,8 +349,11 @@ class MultiTrackCanvas(QWidget):
             return
 
         pres = self._presentation
-        # Empty Display Set: depth track only (or no visible curve layers)
-        if pres.curve_track_count < 1:
+        # Empty Display Set: depth track only (or no visible curve layers).
+        # A visible lithology track alone is still a usable plot (FRS §2.x).
+        if pres.curve_track_count < 1 and not any(
+            t.role == "litho" and t.visible for t in pres.tracks
+        ):
             p.setPen(QColor("#666"))
             p.drawText(
                 self.rect(),
@@ -363,6 +425,10 @@ class MultiTrackCanvas(QWidget):
                     depth_v = d0 + (d1 - d0) * frac
                     p.drawLine(x, yy, x + 6, yy)
                     p.drawText(x + 8, yy + 4, f"{depth_v:.1f}")
+            elif track.role == "litho":
+                paint_litho_bands(
+                    p, x, top, tw - 4, bottom - top, d0, d1, track
+                )
             else:
                 for layer in track.layers:
                     self._paint_curve(

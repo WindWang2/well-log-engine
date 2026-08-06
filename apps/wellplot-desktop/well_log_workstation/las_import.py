@@ -11,11 +11,15 @@ import shutil
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import lasio
 import numpy as np
 
 from well_log_workstation.workspace import Workspace, add_well
+
+if TYPE_CHECKING:
+    from well_log_workstation.lithology_model import LithologyModel
 
 
 class LasImportError(Exception):
@@ -46,6 +50,9 @@ class ImportedWellDocument:
     lng: float | None = None
     lat: float | None = None
     crs: str | None = "EPSG:4326"
+    # Per-well lithology segments (FRS §2.x): the shell attaches the loaded
+    # ``wells/<id>/lithology.json`` model before applying templates.
+    lithology: LithologyModel | None = None
 
     def curve_by_mnemonic(self, mnemonic: str) -> ImportedCurve | None:
         key = mnemonic.strip().upper()
