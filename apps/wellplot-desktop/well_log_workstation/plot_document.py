@@ -147,6 +147,9 @@ class PlotDocument:
     # "geographic" = wells placed by survey closure projected on the section
     # azimuth (+ curved trajectory polylines). Optional; default equal.
     well_spacing: str = "equal"
+    # Publication ornaments (FRS §5 / P2-C): title block / legend / location
+    # map overlay on the section canvas and exports. Default off.
+    ornaments: bool = False
 
     def absolute_path(self, workspace: Workspace) -> Path:
         return workspace.root / self.path
@@ -222,6 +225,8 @@ def _to_json(doc: PlotDocument) -> dict[str, Any]:
         payload["contacts"] = [dict(c) for c in doc.contacts if isinstance(c, dict)]
     if doc.type == "section" or doc.well_spacing != "equal":
         payload["well_spacing"] = str(doc.well_spacing)
+    if doc.type == "section" or doc.ornaments:
+        payload["ornaments"] = bool(doc.ornaments)
     return payload
 
 
@@ -370,6 +375,7 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
     well_spacing = str(data.get("well_spacing") or "equal")
     if well_spacing not in ("equal", "geographic"):
         well_spacing = "equal"
+    ornaments = bool(data.get("ornaments", False))
     return PlotDocument(
         id=str(data["id"]),
         name=str(data.get("name") or data["id"]),
@@ -396,6 +402,7 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         faults=faults,
         contacts=contacts,
         well_spacing=well_spacing,
+        ornaments=ornaments,
     )
 
 
@@ -481,6 +488,7 @@ def load_plot_document(workspace: Workspace, plot_id: str) -> PlotDocument:
             faults=list(doc.faults),
             contacts=list(doc.contacts),
             well_spacing=doc.well_spacing,
+            ornaments=doc.ornaments,
         )
     # Lazy import: keep this module importable without PySide6 (see save).
     from well_log_workstation.events import restore_plot_revision

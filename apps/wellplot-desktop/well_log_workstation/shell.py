@@ -775,6 +775,14 @@ class WellLogWorkstationWindow(QMainWindow):
         )
         spacing_row.addWidget(self.section_spacing_combo, 1)
         sl.addLayout(spacing_row)
+        # Publication ornaments (FRS §5 / P2-C): legend/location/title block.
+        self.section_ornament_check = QCheckBox("出版整饰（图例/接合图/责任表）")
+        self.section_ornament_check.setObjectName("SectionOrnaments")
+        self.section_ornament_check.setEnabled(False)
+        self.section_ornament_check.toggled.connect(
+            self._on_section_ornaments_toggled
+        )
+        sl.addWidget(self.section_ornament_check)
         self.section_canvas = SectionCanvas()
         sl.addWidget(self.section_canvas, 1)
         self.document_tabs.addTab(self._section_host, "油藏剖面")
@@ -2585,6 +2593,71 @@ class WellLogWorkstationWindow(QMainWindow):
             trajectories.append(None)
         return offsets, trajectories
 
+    def _collect_section_ornaments(
+        self,
+        plot: PlotDocument,
+        well_positions: list[tuple[float, float]],
+    ) -> Any:
+        """Build the ornament layer data for a section (FRS §5 / P2-C).
+
+        Legend items: lithology patterns (from litho_pattern_map), faults
+        (red dashed) and fluid contacts (OWC blue / GOC orange). Location map:
+        every well with coordinates, highlighting the section's wells. Title
+        block: plot name / workspace / scale text.
+        """
+        from PySide6.QtGui import QBrush, QColor
+
+        from well_log_workstation.litho_pattern_lib import get_pattern, make_qbrush
+        from well_log_workstation.ornament import (
+            OrnamentData,
+            title_block_fields,
+        )
+
+        legend: list[tuple[Any, str]] = []
+        lpm = getattr(plot, "litho_pattern_map", None) or {}
+        for name, pid in lpm.items():
+            pat = get_pattern(pid)
+            if pat is not None:
+                legend.append((make_qbrush(pat, "#cbd5e1"), name))
+            else:
+                legend.append(("#cbd5e1", name))
+        faults = faults_from_json(getattr(plot, "faults", None) or [])
+        if faults:
+            legend.append(("#dc2626", "断层"))
+        contacts = contacts_from_json(getattr(plot, "contacts", None) or [])
+        for c in contacts:
+            fluid = str(c.fluid_type)
+            legend.append(
+                ("#2563eb" if fluid == "owc" else "#f59e0b",
+                 "油水界面" if fluid == "owc" else "气油界面")
+            )
+
+        # Location map points: wells with coordinates; highlight = section wells.
+        points: list[tuple[float, float]] = []
+        highlight: list[int] = []
+        section_ids = set(plot.well_ids)
+        for w in self._workspace.wells:
+            if w.lng is None or w.lat is None:
+                continue
+            idx = len(points)
+            points.append((float(w.lng), float(w.lat)))
+            if w.id in section_ids:
+                highlight.append(idx)
+
+        scale_text = "1:500（示意）" if not well_positions else "1:500"
+        fields = title_block_fields(
+            plot.name,
+            self._workspace.name,
+            scale_text=scale_text,
+        )
+        return OrnamentData(
+            title_fields=fields,
+            legend_items=legend,
+            map_points=points,
+            map_highlight=highlight,
+            scale_text=scale_text,
+        )
+
     def _show_section(self, plot: PlotDocument) -> None:
         """Render the reservoir section (host-side, Phase-2 T4/T5)."""
         if self._workspace is None:
@@ -2705,6 +2778,17 @@ class WellLogWorkstationWindow(QMainWindow):
         finally:
             self._section_spacing_guard = False
         self.section_spacing_combo.setEnabled(True)
+        # Publication ornaments (FRS §5 / P2-C): collect data + sync toggle.
+        self.section_canvas.set_ornament_data(
+            self._collect_section_ornaments(plot, well_positions)
+        )
+        self.section_ornament_check.setChecked(
+            bool(getattr(plot, "ornaments", False))
+        )
+        self.section_ornament_check.setEnabled(True)
+        self.section_canvas.set_show_ornaments(
+            bool(getattr(plot, "ornaments", False))
+        )
         self.document_tabs.setCurrentWidget(self._section_host)
         emit_plot_changed(plot.id)
         self._update_status()
@@ -5061,6 +5145,26 @@ class WellLogWorkstationWindow(QMainWindow):
             4000,
         )
 
+    def _on_section_ornaments_toggled(self, checked: bool = False) -> None:
+        """Toggle publication ornaments on the section (FRS §5 / P2-C)."""
+        if self._workspace is None or self._active_plot_type != "section":
+            return
+        if not self._active_plot_id:
+            return
+        try:
+            plot = load_plot_document(self._workspace, self._active_plot_id)
+        except WorkspaceError:
+            return
+        plot.ornaments = bool(checked)
+        try:
+            save_plot_document(self._workspace, plot)
+        except WorkspaceError:
+            pass
+        self.section_canvas.set_show_ornaments(bool(checked))
+        self.statusBar().showMessage(
+            f"出版整饰：{'开' if checked else '关'}", 3000
+        )
+
     def _on_new_composite_plot(self) -> None:
         """Create + open a composite figure (Phase-2 T7)."""
         if self._workspace is None:
@@ -5289,6 +5393,23 @@ class WellLogWorkstationWindow(QMainWindow):
         elif self._active_plot_type == "section":
             # Section: paint the section canvas into the rect.
             self.section_canvas.render(painter)
+            # Publication ornaments (FRS §5 / P2-C): full-size layer on export.
+            if self.section_canvas.show_ornaments():
+                from well_log_workstation.ornament import draw_ornaments
+
+                data = self.section_canvas.ornament_data()
+                if data is not None:
+                    from PySide6.QtCore import QRectF
+
+                    w = rect.width()
+                    h = rect.height()
+                    ow = min(w * 0.45, 420.0)
+                    oh = min(h * 0.5, 260.0)
+                    draw_ornaments(
+                        painter,
+                        QRectF(rect.right() - ow, rect.bottom() - oh, ow, oh),
+                        data,
+                    )
 
     def _paint_correlation_export(self, painter, rect) -> None:
         """Vector export for correlation: columns + links (Qt paint, B0 #300)."""

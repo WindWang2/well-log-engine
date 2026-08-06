@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF, QBrush, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
@@ -60,6 +60,9 @@ class SectionCanvas(QWidget):
         # polylines [x_offset_units, display_depth].
         self._well_x_offsets: list[float] | None = None
         self._well_trajectories: list[np.ndarray | None] | None = None
+        # Publication ornaments (P2-C / FRS §5): legend/title/location map.
+        self._show_ornaments: bool = False
+        self._ornament_data: Any = None
 
     # -- data -----------------------------------------------------------
 
@@ -106,6 +109,21 @@ class SectionCanvas(QWidget):
             if self._well_trajectories is None
             else list(self._well_trajectories)
         )
+
+    def show_ornaments(self) -> bool:
+        return self._show_ornaments
+
+    def set_show_ornaments(self, enabled: bool) -> None:
+        self._show_ornaments = bool(enabled)
+        self.update()
+
+    def set_ornament_data(self, data: Any) -> None:
+        """Bind publication ornament data (legend/title/location map)."""
+        self._ornament_data = data
+        self.update()
+
+    def ornament_data(self) -> Any:
+        return self._ornament_data
 
     def columns(self) -> list[HostPresentation]:
         return list(self._columns)
@@ -370,6 +388,25 @@ class SectionCanvas(QWidget):
             f"断层 {len(self._faults)} · 接触 {len(self._contacts)} · "
             f"充填 {len(self._tie_quads)} · 滚轮缩放 / 拖动平移",
         )
+
+        # Publication ornaments (P2-C / FRS §5): legend + location map +
+        # title block in the bottom-right corner (interactive preview).
+        if self._show_ornaments and self._ornament_data is not None:
+            from well_log_workstation.ornament import OrnamentData, draw_ornaments
+
+            data = (
+                self._ornament_data
+                if isinstance(self._ornament_data, OrnamentData)
+                else OrnamentData()
+            )
+            if not data.is_empty():
+                ow = min(w * 0.42, 300.0)
+                oh = min(h * 0.55, 190.0)
+                draw_ornaments(
+                    p,
+                    QRectF(w - ow - 8, h - oh - 26, ow, oh),
+                    data,
+                )
         p.end()
 
     def unit_to_pixel(self, u: float, col_w: int, gap: int) -> float:

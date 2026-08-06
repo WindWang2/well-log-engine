@@ -71,8 +71,8 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | FRS 需求 | 状态 | 现状 | 缺口 → 归属 |
 |---|---|---|---|
 | 平面-剖面双向联动 | ❌ | 无（平面仅散点） | **P2: Desktop 事件总线** |
-| 图例栏 (Legend Block) | 🟡 | SDK pagination 有 legend 色带 (`pagination.hpp:64-65`; `pagination.cpp:232-243`) | 动态花纹/颜色图例 → SDK(导出) + Desktop(整饰) |
-| 接合图 (Location Map) | ❌ | 无 | **P2: Desktop(整饰)** |
+| 图例栏/责任表/接合图 | 🟡 | `ornament.py`（P2-C）：责任表（图名/工区/比例尺/日期）、图例栏（花纹/断层/接触样本 + 标签，行列布局）、接合图（井位散点 + 剖面井高亮 + 指北针）、比例尺；section 画布交互预览 + 导出叠加（`plot.ornaments` 开关）；图幅框线全套、CGM 整饰件、长卷剪切线仍缺 | **P2(核心✅)/后续**: SDK 侧 crop marks / 图框全套 |
+| 接合图 (Location Map) | ✅ | `ornament.draw_location_map`：井位散点 + 剖面井红点高亮 + 指北针（P2-C） | — |
 | 责任表/图框 | ❌ | 无 | **P2** |
 | 比例尺/指北针 | 🟡 | depth scale 页脚 (`PlotHeaderSpec`); SDK 页脚带 (`pagination.cpp:221`) | → SDK(导出) |
 | 长卷多页分切 + 剪切线 | 🟡 | SDK `PaginatedSvgExporter` 连续/分页 + 重复页眉/图例 (`export/pagination.hpp:34,104`); CGM 多 PICTURE (`cgm.hpp:69-74`); 无 crop marks | 剪切线 → SDK(导出) |
@@ -124,7 +124,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 |---|---|---|
 | **P2-A 公式计算器** ✅ | — | 已交付：`formula.py` 递归下降解析器 + 数组求值（null 传播/标量广播）；`formulas.json` 存储（对称 tops）；`_apply_derived_curves` 运行时附加派生曲线道；`FormulaDialog` 编辑器（语法预校验） | 解析器优先级/错误、VSH 数值、null 传播、集成附加/替换/诊断 |
 | **P2-B 平面-剖面联动** | — | 部分交付（工作流 1）：`section_line.py` 缓冲带选井（距离/投影排序）+ `SectionLineDialog` + 「平面画线生成剖面」菜单 → 一键生成沿线排序的地层对比图；工作流 2（剖面修正刷新平面，需等厚图/构造图）与工作流 3（光标同步）留后续 | 几何/排序/截断单测 + dialog 解析 + 集成井序 |
-| **P2-C 出版整饰** | 剪切线；per-track PDF layer | 图例栏、接合图、责任表图框生成 |
+| **P2-C 出版整饰** ✅ | — | 已交付：`ornament.py` 责任表（图名/工区/比例尺/日期）+ 图例栏（花纹/断层/接触样本行列布局）+ 接合图（井位+剖面井高亮+指北针）+ 比例尺；section 画布交互预览 + Qt 导出叠加（`PlotDocument.ornaments` 开关）；`_collect_section_ornaments` 数据收集 | 布局纯函数 + 绘制 smoke + 画布渲染 + 持久化往返 + 数据收集 |
 
 ---
 
