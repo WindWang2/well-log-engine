@@ -130,6 +130,43 @@ void append_text_element(std::string &output, std::string_view role,
   output += "</text>";
 }
 
+// Crop/trim marks (剪切线, FRS §5) at the four printable-area corners: two
+// short registration lines per corner, drawn outward into the margins. The
+// geometry is shared with the PDF backend (pdf_scene.cpp) so both outputs
+// align on the printed page.
+void append_crop_marks(std::string &output, const ExportPageSpec &page) noexcept {
+  constexpr double mark_length_mm = 5.0;
+  const double w = page.page_width.value;
+  const double h = page.page_height.value;
+  const double left = page.margins.left.value;
+  const double top = page.margins.top.value;
+  const double right = w - page.margins.right.value;
+  const double bottom = h - page.margins.bottom.value;
+  const auto mark = [&output](double x1, double y1, double x2, double y2) {
+    output += "<line data-export-role=\"crop-mark\" x1=\"";
+    append_number(output, x1);
+    output += "\" y1=\"";
+    append_number(output, y1);
+    output += "\" x2=\"";
+    append_number(output, x2);
+    output += "\" y2=\"";
+    append_number(output, y2);
+    output += "\" stroke=\"#000000\" stroke-width=\"0.3\"/>";
+  };
+  // Top-left
+  mark(left - mark_length_mm, top, left, top);
+  mark(left, top - mark_length_mm, left, top);
+  // Top-right
+  mark(right, top, right + mark_length_mm, top);
+  mark(right, top - mark_length_mm, right, top);
+  // Bottom-left
+  mark(left - mark_length_mm, bottom, left, bottom);
+  mark(left, bottom, left, bottom + mark_length_mm);
+  // Bottom-right
+  mark(right, bottom, right + mark_length_mm, bottom);
+  mark(right, bottom, right, bottom + mark_length_mm);
+}
+
 // Appends the self-describing snapshot metadata as data-* attributes on the
 // page root <svg>, so every page records the document revision, presentation
 // version, font fingerprint, the depth-transform descriptor (domain + reference
@@ -195,6 +232,10 @@ void append_fixed_page(std::string &output, const PreparedScene &scene,
   // Patterns/glyph defs are emitted once per page (each page is a standalone
   // SVG document). Track clipPaths/patterns/glyphs live in the shared helper.
   append_defs(output, scene);
+
+  if (page.crop_marks) {
+    append_crop_marks(output, page);
+  }
 
   // Page header band: well name + page number (synthesized plain text, distinct
   // from the per-track curve headers emitted in the body below).
@@ -393,6 +434,10 @@ PaginatedSvgExporter::write(const PreparedScene &scene,
       output += "\" data-export-page=\"1\" data-export-page-count=\"1\"";
       append_snapshot_metadata(output, snapshot);
       append_defs(output, scene);
+
+      if (page.crop_marks) {
+        append_crop_marks(output, page);
+      }
 
       if (page.repeat_headers && !page.well_name.empty()) {
         append_text_element(output, "header", page.margins.left.value,

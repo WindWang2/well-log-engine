@@ -344,6 +344,43 @@ void fixed_mode_paginates_with_repeating_bands_and_continuous_depths() {
           "every page must carry the font asset fingerprint");
 }
 
+// Crop marks (剪切线, FRS §5): off by default; when enabled every fixed page
+// emits 8 registration lines (2 per printable-area corner) without changing
+// the pagination.
+void fixed_crop_marks_emitted_per_page() {
+  const auto scene = prepare_tall_scene();
+  auto snapshot = make_snapshot(PaginationMode::fixed, Millimetres{50.0});
+  const auto plain = PaginatedSvgExporter::write(*scene, snapshot);
+  require(plain.has_value(), "plain fixed export must succeed");
+  const auto plain_text = std::string{plain.value().text()};
+  const auto svg_count = count_occurrences(plain_text, "<svg ");
+  require(count_occurrences(plain_text, "data-export-role=\"crop-mark\"") == 0,
+          "crop marks must be off by default");
+
+  snapshot.page.crop_marks = true;
+  const auto marked = PaginatedSvgExporter::write(*scene, snapshot);
+  require(marked.has_value(), "marked fixed export must succeed");
+  const auto marked_text = std::string{marked.value().text()};
+  const auto marked_svgs = count_occurrences(marked_text, "<svg ");
+  require(marked_svgs == svg_count,
+          "crop marks must not change the page count");
+  require(count_occurrences(marked_text, "data-export-role=\"crop-mark\"") ==
+              8 * marked_svgs,
+          "every fixed page must carry 8 crop-mark lines");
+}
+
+// Continuous mode: the single long page carries exactly 8 crop-mark lines.
+void continuous_crop_marks_emitted() {
+  const auto scene = prepare_tall_scene();
+  auto snapshot = make_snapshot(PaginationMode::continuous, Millimetres{297.0});
+  snapshot.page.crop_marks = true;
+  const auto result = PaginatedSvgExporter::write(*scene, snapshot);
+  require(result.has_value(), "continuous export must succeed");
+  const auto text = std::string{result.value().text()};
+  require(count_occurrences(text, "data-export-role=\"crop-mark\"") == 8,
+          "continuous page must carry 8 crop-mark lines");
+}
+
 void aggregate_pixel_height_is_positive_and_scale_aware() {
   const auto scene = prepare_tall_scene();
   ExportPageSpec page = make_snapshot(PaginationMode::fixed, Millimetres{50.0}).page;
@@ -497,6 +534,8 @@ void prepare_for_export_returns_scene_and_preserves_interactive() {
 int main() {
   continuous_mode_emits_one_correctly_sized_page();
   fixed_mode_paginates_with_repeating_bands_and_continuous_depths();
+  fixed_crop_marks_emitted_per_page();
+  continuous_crop_marks_emitted();
   aggregate_pixel_height_is_positive_and_scale_aware();
   single_scene_exporter_is_unchanged();
   invalid_scene_or_snapshot_is_rejected();

@@ -70,6 +70,14 @@ public:
   // clips and per-glyph transforms so they never leak across layers.
   PdfPathStream &save_state() noexcept;
   PdfPathStream &restore_state() noexcept;
+  // Begin/end an Optional Content Group marked-content sequence (PDF
+  // `/Lay<i> OC` … `BMC`/`EMC`). ``layer_index`` is a global layer index the
+  // page's PdfPageContent::layer_indices registers; the writer names /Lay<i>
+  // in the page Resources (/Properties) and declares the OCG in the Catalog
+  // OCProperties. Used by layered-PDF export (FRS §5) so viewers can toggle
+  // tracks on/off.
+  PdfPathStream &mark_begin(std::uint32_t layer_index) noexcept;
+  PdfPathStream &mark_end() noexcept;
   // Concatenate the current transformation matrix with the given 6-element
   // matrix (PDF `cm`). This is how the page maps scene millimetres into PDF
   // user-space points, and how per-glyph placement/rotation is applied.
@@ -167,6 +175,12 @@ struct PdfIndirectObject {
 struct PdfPageContent {
   PdfPathStream stream;
   std::span<const PdfIndirectObject> objects{};
+  // Layered-PDF global layer indices this page's stream references via
+  // mark_begin (/Lay<i> OC … BMC/EMC). The writer emits one OCG per global
+  // layer (see PdfWriter::write `layers`) and a /Properties dict naming the
+  // indices used on this page. Empty → no /Properties and no OCG involvement
+  // (byte-identical to the pre-layered writer).
+  std::vector<std::uint32_t> layer_indices{};
 };
 
 class WELLLOG_EXPORT_PDF_API PdfDocument {
@@ -193,11 +207,17 @@ private:
 class WELLLOG_EXPORT_PDF_API PdfWriter {
 public:
   // Build a PDF with one page per content entry (page_specs defaults to A4 when
-  // empty, sized to the content count). Returns a Result so allocation/path
-  // failures surface as Errors like the other exporters.
+  // empty, sized to the content count). `layers` (optional) is the global list
+  // of Optional Content Group names for layered export (FRS §5): each entry
+  // becomes one OCG object, pages reference them via /Lay<i> (i = index into
+  // `layers`) from PdfPageContent::layer_indices, and the Catalog gains an
+  // OCProperties dict with all layers initially ON. Empty → no OCG output
+  // (byte-identical to the pre-layered writer). Returns a Result so
+  // allocation/path failures surface as Errors like the other exporters.
   [[nodiscard]] static Result<PdfDocument>
   write(std::span<const PdfPageContent> pages,
-        std::span<const PdfPageSpec> page_specs = {}) noexcept;
+        std::span<const PdfPageSpec> page_specs = {},
+        std::span<const std::string> layers = {}) noexcept;
 };
 
 // Compresses a byte range with zlib (FlateDecode), the same codec the writer

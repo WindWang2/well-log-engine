@@ -65,6 +65,14 @@ struct ExportPageSpec {
   bool repeat_legend{true};
   bool show_page_numbers{true};
   bool show_depth_range{true};
+  // Crop/trim marks (剪切线, FRS §5): short registration marks at the four
+  // corners of the printable area, drawn inside the margins. Emitted by the
+  // SVG and PDF backends; off by default.
+  bool crop_marks{false};
+  // Layered PDF (分层 PDF, FRS §5): emit one Optional Content Group (OCG) per
+  // track so PDF viewers can toggle tracks on/off. SVG is unaffected (its
+  // elements already carry data-layer-id attributes). Off by default.
+  bool layered_pdf{false};
   // Criterion 7 (table-and-export.md section 8.4): the export mode. pure_vector
   // (default) keeps every non-source-raster layer vector and never silently
   // rasterizes; mixed allows complex layers to be rasterized, recording each in

@@ -855,6 +855,38 @@ void emit_custom_layer(PdfPathStream &stream, const PreparedScene &scene,
   }
 }
 
+// Crop/trim marks (剪切线, FRS §5) at the four printable-area corners, in
+// PAGE-mm space (y-down) like emit_page_bands. Geometry matches the SVG
+// backend (pagination.cpp append_crop_marks) so both outputs align on the
+// printed page.
+void emit_crop_marks(PdfPathStream &stream, const ExportPageSpec &page) noexcept {
+  constexpr double mark_length_mm = 5.0;
+  constexpr double stroke_width_pt = 0.85;  // 0.3 mm at 72 dpi points
+  const double w = page.page_width.value;
+  const double h = page.page_height.value;
+  const double left = page.margins.left.value;
+  const double top = page.margins.top.value;
+  const double right = w - page.margins.right.value;
+  const double bottom = h - page.margins.bottom.value;
+  stream.set_stroke_color(0, 0, 0);
+  stream.set_line_width(stroke_width_pt);
+  const auto mark = [&stream](double x1, double y1, double x2, double y2) {
+    stream.move_to(x1, y1).line_to(x2, y2).stroke();
+  };
+  // Top-left
+  mark(left - mark_length_mm, top, left, top);
+  mark(left, top - mark_length_mm, left, top);
+  // Top-right
+  mark(right, top, right + mark_length_mm, top);
+  mark(right, top - mark_length_mm, right, top);
+  // Bottom-left
+  mark(left - mark_length_mm, bottom, left, bottom);
+  mark(left, bottom, left, bottom + mark_length_mm);
+  // Bottom-right
+  mark(right, bottom, right + mark_length_mm, bottom);
+  mark(right, bottom, right, bottom + mark_length_mm);
+}
+
 // Emits the per-track, per-layer body — the single geometric emitter for one
 // track, mirroring svg.cpp::append_layer_body's per-track `<g>`. Called inside
 // the track's saved clip state. `resources` collects the patterns/images the
@@ -1122,7 +1154,18 @@ PdfSceneExporter::write(const PreparedScene &scene,
             .clip_nonzero()
             .end_path_no_paint();
       }
-      for (const auto &track : scene.tracks()) {
+      // Layered PDF (FRS §5): wrap each track's body in an OCG marked-content
+      // sequence so viewers can toggle tracks; the page registers the layers
+      // it used so the writer can build the per-page /Properties dict.
+      std::vector<std::uint32_t> page_layers;
+      if (page.layered_pdf) {
+        page_layers.reserve(scene.tracks().size());
+      }
+      for (std::size_t t = 0; t < scene.tracks().size(); ++t) {
+        const auto &track = scene.tracks()[t];
+        if (page.layered_pdf) {
+          stream.mark_begin(static_cast<std::uint32_t>(t));
+        }
         stream.save_state();
         stream.rect(track.clip.left.value, track.clip.top.value,
                     track.clip.width.value, track.clip.height.value)
@@ -1130,6 +1173,10 @@ PdfSceneExporter::write(const PreparedScene &scene,
             .end_path_no_paint();
         emit_track_body(stream, scene, track, resources, image_tile);
         stream.restore_state();
+        if (page.layered_pdf) {
+          stream.mark_end();
+          page_layers.push_back(static_cast<std::uint32_t>(t));
+        }
       }
       if (window.clip) {
         stream.restore_state();
@@ -1148,6 +1195,9 @@ PdfSceneExporter::write(const PreparedScene &scene,
       emit_page_bands(stream, scene, snapshot, page_index, page_count,
                       window.window_top_mm, window.window_bottom_mm,
                       text_engine, searchable_text);
+      if (page.crop_marks) {
+        emit_crop_marks(stream, page);
+      }
       stream.restore_state();
 
       if (searchable_stats != nullptr && searchable_text) {
@@ -1164,6 +1214,9 @@ PdfSceneExporter::write(const PreparedScene &scene,
                                MessageKey::internal_error);
       }
       PdfPageContent content{.stream = std::move(stream)};
+      if (!page_layers.empty()) {
+        content.layer_indices = std::move(page_layers);
+      }
       object_storage.push_back(std::move(*objects_opt));
       content.objects = object_storage.back();
       contents.push_back(std::move(content));
@@ -1173,7 +1226,18 @@ PdfSceneExporter::write(const PreparedScene &scene,
       });
     }
 
-    return PdfWriter::write(contents, specs);
+    // Layered PDF (FRS §5): the global OCG name list, one entry per track,
+    // authored as human-readable "track-<index>". Pages reference them via
+    // their layer_indices (see the track loop above).
+    std::vector<std::string> layer_names;
+    if (page.layered_pdf) {
+      layer_names.reserve(scene.tracks().size());
+      for (std::size_t t = 0; t < scene.tracks().size(); ++t) {
+        layer_names.push_back("track-" + std::to_string(t));
+      }
+    }
+
+    return PdfWriter::write(contents, specs, layer_names);
   } catch (const std::bad_alloc &) {
     return pdf_scene_error(ErrorCode::resource_exhausted,
                            MessageKey::resource_exhausted);

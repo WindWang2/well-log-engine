@@ -76,9 +76,9 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 接合图 (Location Map) | ✅ | `ornament.draw_location_map`：井位散点 + 剖面井红点高亮 + 指北针（P2-C） | — |
 | 责任表/图框 | ❌ | 无 | **P2** |
 | 比例尺/指北针 | 🟡 | depth scale 页脚 (`PlotHeaderSpec`); SDK 页脚带 (`pagination.cpp:221`) | → SDK(导出) |
-| 长卷多页分切 + 剪切线 | 🟡 | SDK `PaginatedSvgExporter` 连续/分页 + 重复页眉/图例 (`export/pagination.hpp:34,104`); CGM 多 PICTURE (`cgm.hpp:69-74`); 无 crop marks | 剪切线 → SDK(导出) |
+| 长卷多页分切 + 剪切线 | ✅ | SDK `PaginatedSvgExporter` 连续/分页 + 重复页眉/图例 (`export/pagination.hpp:34,104`); CGM 多 PICTURE (`cgm.hpp:69-74`); **crop marks 已交付**(FRS §5):`ExportPageSpec.crop_marks` 四角剪切线(每角 2 条 5mm 短线),SVG(`pagination.cpp::append_crop_marks`,fixed+continuous)+ PDF(`pdf_scene.cpp::emit_crop_marks`,PAGE-mm 空间)几何一致,默认关 | — |
 | PDF/SVG/CGM 矢量导出 | ✅ | 单井 engine 后端 SVG/PDF/CGM; correlation/section Qt paint SVG/PDF/PNG (`export_dispatch.py:157-200`) | correlation/section 无 CGM → SDK(scene 导出) |
-| 分层 PDF（图道开关） | 🟡 | PDF 搜索文本层 (`pdf_scene.hpp:63-69`); 无 per-track layer 开关 | → SDK(导出) |
+| 分层 PDF（图道开关） | ✅ | PDF 搜索文本层 (`pdf_scene.hpp:63-69`); **per-track 图层已交付**(FRS §5):`ExportPageSpec.layered_pdf` → 每图道一个 OCG(Optional Content Group),Catalog `/OCProperties`(默认全开)+ 每页 `/Properties` + 内容流 `/Lay<i> OC BMC…EMC` marked content;`PdfWriter::write` 增全局 `layers` 参数,默认空输出字节不变 | — |
 | 岩心/试油等数据 | ❌ | 无 | → Desktop(数据) |
 
 ---

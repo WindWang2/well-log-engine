@@ -295,6 +295,18 @@ PdfPathStream &PdfPathStream::restore_state() noexcept {
   return *this;
 }
 
+PdfPathStream &PdfPathStream::mark_begin(std::uint32_t layer_index) noexcept {
+  impl_->operators += "/Lay";
+  append_integer(impl_->operators, static_cast<std::int64_t>(layer_index));
+  impl_->operators += " OC BMC\n";
+  return *this;
+}
+
+PdfPathStream &PdfPathStream::mark_end() noexcept {
+  impl_->operators += "EMC\n";
+  return *this;
+}
+
 PdfPathStream &PdfPathStream::concat_matrix(double a, double b, double c,
                                             double d, double e,
                                             double f) noexcept {
@@ -492,6 +504,8 @@ std::string_view PdfDocument::bytes() const noexcept {
 //   per page p (0-based):  content stream = 3 + 2*p ;  Page = 3 + 2*p + 1
 //   per-page /ExtGState objects (one per distinct fill-alpha THAT PAGE uses)
 //   follow all page objects, numbered 3 + 2*N + (per-page running offset).
+//   caller-supplied objects (images/patterns), then the global OCG objects
+//   (layered PDF, one per entry in `layers`) follow.
 // The xref table follows, then trailer. All offsets are deterministic given the
 // (deterministic) content streams. Each page's /ExtGState dictionary maps its
 // own local /GSn names (n = index in that page's first-encountered-order,
@@ -500,7 +514,8 @@ std::string_view PdfDocument::bytes() const noexcept {
 // use. The first-encountered order (not sorted) is what the stream assigns names
 // in, so the writer must name objects in that exact same order.
 Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
-                                     std::span<const PdfPageSpec> page_specs) noexcept {
+                                     std::span<const PdfPageSpec> page_specs,
+                                     std::span<const std::string> layers) noexcept {
   try {
     if (pages.empty()) {
       return pdf_error(ErrorCode::invalid_buffer,
@@ -545,6 +560,12 @@ Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
     const std::size_t total_caller_objects =
         page_object_base[pages.size()] - object_base;
 
+    // Global OCG objects (layered PDF, FRS §5): one per `layers` entry, after
+    // all caller objects. Page streams reference them as /Lay<i> where i is the
+    // index into `layers`; the per-page /Properties dict maps each used index.
+    const std::size_t ocg_base = object_base + total_caller_objects;
+    const std::size_t total_ocg_objects = layers.size();
+
     // Compress every page's content stream once (deterministic) so its length
     // is known when the content-stream object is written.
     std::vector<std::string> compressed(pages.size());
@@ -578,9 +599,30 @@ Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
       return object_number;
     };
 
-    // Object 1: Catalog
+    // Object 1: Catalog. Layered PDF adds an OCProperties dict (all layers ON
+    // by default) referencing the OCG objects emitted after the caller objects.
     emit_object_header(1);
-    out += "<< /Type /Catalog /Pages 2 0 R >>\nendobj\n";
+    out += "<< /Type /Catalog /Pages 2 0 R";
+    if (total_ocg_objects > 0) {
+      out += "\n   /OCProperties << /OCGs [";
+      for (std::size_t i = 0; i < total_ocg_objects; ++i) {
+        if (i > 0) {
+          out.push_back(' ');
+        }
+        append_integer(out, static_cast<std::int64_t>(ocg_base + i));
+        out += " 0 R";
+      }
+      out += "] /D << /ON [";
+      for (std::size_t i = 0; i < total_ocg_objects; ++i) {
+        if (i > 0) {
+          out.push_back(' ');
+        }
+        append_integer(out, static_cast<std::int64_t>(ocg_base + i));
+        out += " 0 R";
+      }
+      out += "] >> >>";
+    }
+    out += " >>\nendobj\n";
 
     // Object 2: Pages (kids filled after page objects exist)
     emit_object_header(2);
@@ -626,7 +668,11 @@ Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
       const bool has_alphas = !page_alphas[p].empty();
       const bool has_objects = !pages[p].objects.empty();
       const bool has_font = pages[p].stream.needs_standard_font();
-      if (!has_alphas && !has_objects && !has_font) {
+      // Layered PDF: /Properties names the OCGs this page's marked content
+      // references (/Lay<i> from mark_begin). Same index used twice on one
+      // page is emitted once (a track appears once per page anyway).
+      const bool has_properties = !pages[p].layer_indices.empty();
+      if (!has_alphas && !has_objects && !has_font && !has_properties) {
         out += "/Resources << >> >>\nendobj\n";
       } else {
         out += "/Resources <<";
@@ -696,6 +742,22 @@ Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
           out += " /Font << /F1 << /Type /Font /Subtype /Type1 "
                  "/BaseFont /Helvetica /Encoding /WinAnsiEncoding >> >>";
         }
+        if (has_properties) {
+          out += " /Properties << ";
+          std::uint32_t prev = std::numeric_limits<std::uint32_t>::max();
+          for (const auto layer_index : pages[p].layer_indices) {
+            if (layer_index == prev) {
+              continue;  // dedupe consecutive repeats (track emits once/page)
+            }
+            prev = layer_index;
+            out += "/Lay";
+            append_integer(out, static_cast<std::int64_t>(layer_index));
+            out.push_back(' ');
+            append_integer(out, static_cast<std::int64_t>(ocg_base + layer_index));
+            out += " 0 R ";
+          }
+          out += ">>";
+        }
         out += " >> >>\nendobj\n";
       }
     }
@@ -721,10 +783,20 @@ Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
       }
     }
 
+    // Global OCG objects (layered PDF). Names are ASCII (the scene exporter
+    // authors "track-<index>"), so a plain PDF literal string is safe.
+    for (std::size_t i = 0; i < total_ocg_objects; ++i) {
+      emit_object_header(ocg_base + i);
+      out += "<< /Type /OCG /Name (";
+      out += layers[i];
+      out += ") >>\nendobj\n";
+    }
+
     // xref table.
     const auto xref_offset = out.size();
     const auto object_count = static_cast<std::size_t>(
-        2 + 2 * pages.size() + total_alpha_objects + total_caller_objects + 1);
+        2 + 2 * pages.size() + total_alpha_objects + total_caller_objects +
+        total_ocg_objects + 1);
     out += "xref\n0 ";
     append_integer(out, static_cast<std::int64_t>(object_count));
     out += "\n0000000000 65535 f \n";

@@ -41,6 +41,17 @@ using namespace welllog;
   std::_Exit(EXIT_FAILURE);
 }
 
+[[nodiscard]] std::size_t count_occurrences(std::string_view haystack,
+                                            std::string_view needle) {
+  std::size_t count = 0;
+  std::size_t pos = 0;
+  while ((pos = haystack.find(needle, pos)) != std::string_view::npos) {
+    ++count;
+    pos += needle.size();
+  }
+  return count;
+}
+
 void require(bool condition, std::string_view message) {
   if (!condition) {
     fail(message);
@@ -751,6 +762,67 @@ void page_transform_y_flips_scene_orientation() {
 
 } // namespace
 
+// Layered PDF (FRS §5): with layered_pdf=true every track becomes one OCG —
+// the Catalog carries /OCProperties, the page Resources carry /Properties, and
+// the track body is wrapped in /Lay<i> OC BMC … EMC marked content. Default
+// (false) output stays free of any OCG machinery.
+void layered_pdf_emits_ocg_per_track() {
+  WellLogSession session;
+  session.set_text_engine(make_engine());
+  const auto scene = make_scene(session);
+  auto snapshot = make_snapshot();
+  snapshot.page.layered_pdf = true;
+  const auto result = PdfSceneExporter::write(*scene, snapshot);
+  require(result.has_value(), "layered PDF must build");
+  const auto bytes = std::string{result.value().bytes()};
+
+  require(bytes.find("/OCProperties") != std::string::npos,
+          "Catalog must carry an OCProperties dict");
+  require(bytes.find("/Type /OCG /Name (track-0)") != std::string::npos,
+          "one OCG object per track must exist (track-0)");
+  require(bytes.find("/Properties <<") != std::string::npos,
+          "page Resources must carry a /Properties dict");
+  require(bytes.find("/Lay0") != std::string::npos,
+          "page must name its layer as /Lay0");
+
+  const auto inflated = inflate_content_stream(bytes);
+  require(inflated.find("/Lay0 OC BMC") != std::string::npos,
+          "track body must open marked content");
+  require(inflated.find("EMC") != std::string::npos,
+          "track body must close marked content");
+
+  // Default output is byte-free of OCG machinery (backward compatible).
+  const auto plain = build_scene_document();
+  const auto plain_bytes = std::string{plain.bytes()};
+  require(plain_bytes.find("/OCProperties") == std::string::npos,
+          "default PDF must not carry OCProperties");
+  require(plain_bytes.find("/Properties") == std::string::npos,
+          "default PDF must not carry /Properties");
+}
+
+// Crop marks (剪切线, FRS §5): with crop_marks=true the page stream gains the
+// 8 four-corner registration strokes (2 per corner, stroked in page-mm space);
+// default output has none.
+void crop_marks_emit_corner_strokes() {
+  WellLogSession session;
+  session.set_text_engine(make_engine());
+  const auto scene = make_scene(session);
+  auto snapshot = make_snapshot();
+  snapshot.page.crop_marks = true;
+  const auto result = PdfSceneExporter::write(*scene, snapshot);
+  require(result.has_value(), "crop-mark PDF must build");
+  const auto inflated = inflate_content_stream(result.value().bytes());
+
+  require(inflated.find("0 0 0 RG") != std::string::npos,
+          "crop marks must set a black stroking colour");
+  const auto plain = build_scene_document();
+  const auto plain_inflated = inflate_content_stream(plain.bytes());
+  const auto with_marks = count_occurrences(inflated, "S\n");
+  const auto without_marks = count_occurrences(plain_inflated, "S\n");
+  require(with_marks == without_marks + 8,
+          "crop marks must add exactly 8 stroked registration lines");
+}
+
 int main() {
   pdf_is_structurally_complete();
   external_tools_accept_the_pdf();
@@ -761,6 +833,8 @@ int main() {
   output_is_byte_deterministic();
   text_is_vector_outlines_not_font_backed();
   page_transform_y_flips_scene_orientation();
+  layered_pdf_emits_ocg_per_track();
+  crop_marks_emit_corner_strokes();
   std::cout << "welllog.pdf-scene: all cases passed\n";
   return EXIT_SUCCESS;
 }
