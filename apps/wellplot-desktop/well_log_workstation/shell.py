@@ -161,9 +161,11 @@ from well_log_workstation.tops_model import (
     FormationTop,
     TopsError,
     import_tops_from_json_file,
+    load_formulas_for_well,
     load_survey_for_well,
     load_tops_for_well,
     make_stub_tops,
+    save_formulas_for_well,
     save_survey_for_well,
     save_tops_for_well,
 )
@@ -276,6 +278,10 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_survey.setObjectName("Action_EditSurvey")
         self._act_survey.triggered.connect(self._on_edit_survey)
         self._act_survey.setEnabled(False)
+        self._act_formula = file_menu.addAction("公式计算器…")
+        self._act_formula.setObjectName("Action_FormulaCalc")
+        self._act_formula.triggered.connect(self._on_formula_calculator)
+        self._act_formula.setEnabled(False)
         file_menu.addSeparator()
         act_quit = file_menu.addAction("退出")
         act_quit.triggered.connect(self.close)
@@ -1326,6 +1332,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_import_plot_xlsx.setEnabled(ws is not None)
         self._act_alias_dict.setEnabled(ws is not None)
         self._act_survey.setEnabled(ws is not None)
+        self._act_formula.setEnabled(ws is not None)
         # Phase-2 PR-C: new plot-type menu items (fence_3d needs 3D).
         self._act_new_plane_map.setEnabled(ws is not None)
         self._act_new_fence_3d.setEnabled(
@@ -2263,6 +2270,8 @@ class WellLogWorkstationWindow(QMainWindow):
         if plot_id is not None:
             self._active_plot_id = plot_id
         self.multi_track_canvas.set_presentation(presentation)
+        # Attach derived curves from the well's formulas (FRS §2.4 / P2-A).
+        self._apply_derived_curves()
         tops, diags = load_tops_for_well(self._workspace, well_id)
         self._active_tops = tops
         self._tops_diagnostics = diags
@@ -4479,6 +4488,106 @@ class WellLogWorkstationWindow(QMainWindow):
                 self._show_section(plot)
             except WorkspaceError:
                 pass
+
+    def _on_formula_calculator(self) -> None:
+        """Edit derived-curve formulas for the selected well (FRS §2.4 / P2-A)."""
+        if self._workspace is None or not self._workspace.wells:
+            QMessageBox.information(self, "公式计算器", "请先打开含井的工区。")
+            return
+        from well_log_workstation.formula_dialog import FormulaDialog
+
+        well_ids = self._pick_wells_for_correlation()
+        if not well_ids:
+            return
+        well_id = well_ids[0]
+        entry = next((w for w in self._workspace.wells if w.id == well_id), None)
+        if entry is None:
+            return
+        current, _diags = load_formulas_for_well(self._workspace, well_id)
+        dlg = FormulaDialog(current, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        formulas = dlg.value()
+        try:
+            save_formulas_for_well(self._workspace, well_id, formulas)
+        except (WorkspaceError, OSError) as exc:
+            QMessageBox.warning(self, "保存公式失败", str(exc))
+            return
+        self._selected_well_id = well_id
+        ok_n, diags = self._apply_derived_curves()
+        note = f"已保存 {entry.name} 公式（{len(formulas)} 条）"
+        if diags:
+            note += f" · {len(diags)} 条求值失败"
+        self.statusBar().showMessage(note, 4000)
+        if diags:
+            QMessageBox.warning(
+                self, "公式求值提示",
+                "\n".join(diags[:5]) + ("\n…" if len(diags) > 5 else ""),
+            )
+
+    def _apply_derived_curves(self) -> tuple[int, list[str]]:
+        """(Re)attach derived curve tracks to the current single-well plot.
+
+        Removes any previous ``derived-*`` tracks, re-evaluates the well's
+        formulas against its curves, and refreshes the canvas. Returns
+        ``(applied_count, diagnostics)``.
+        """
+        if self._presentation is None or self._workspace is None:
+            return 0, []
+        well_id = self._selected_well_id or ""
+        if not well_id:
+            return 0, []
+        self._presentation.tracks = [
+            t for t in self._presentation.tracks
+            if not str(t.id).startswith("derived-")
+        ]
+        formulas, _ = load_formulas_for_well(self._workspace, well_id)
+        if not formulas:
+            self.multi_track_canvas.set_presentation(self._presentation)
+            return 0, []
+        try:
+            doc = self.session.ensure_well_loaded(self._workspace, well_id)
+        except Exception:  # noqa: BLE001
+            return 0, ["井数据未加载"]
+        context = {c.mnemonic: c.values for c in doc.curves}
+        nulls = {c.mnemonic: c.null_mask for c in doc.curves}
+        from well_log_workstation.formula import evaluate_expression
+        from well_log_workstation.template_model import BoundCurveLayer, BoundTrack, ScaleSpec
+
+        diags: list[str] = []
+        applied = 0
+        for f in formulas:
+            try:
+                values, mask = evaluate_expression(f.expression, context, nulls)
+            except Exception as exc:  # noqa: BLE001 — FormulaError and friends
+                diags.append(f"{f.name}: {exc}")
+                continue
+            finite = values[np.isfinite(values)]
+            vmin = float(np.min(finite)) if finite.size else 0.0
+            vmax = float(np.max(finite)) if finite.size else 1.0
+            if vmax <= vmin:
+                vmin, vmax = vmin - 1.0, vmax + 1.0
+            self._presentation.tracks.append(
+                BoundTrack(
+                    id=f"derived-{f.name}",
+                    role="curve",
+                    title=f"{f.name}",
+                    width_fraction=0.25,
+                    scale=ScaleSpec(mode="linear", min=vmin, max=vmax, unit=""),
+                    layers=[
+                        BoundCurveLayer(
+                            mnemonic=f.name,
+                            color="#8b5cf6",
+                            unit="",
+                            values=values,
+                            null_mask=mask,
+                        )
+                    ],
+                )
+            )
+            applied += 1
+        self.multi_track_canvas.set_presentation(self._presentation)
+        return applied, diags
 
     def _on_open_recent_workspace(self, path: str) -> None:
         """Open a path from the recent list (menu / API; no startup page)."""

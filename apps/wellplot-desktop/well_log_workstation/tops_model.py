@@ -17,6 +17,7 @@ from well_log_workstation.workspace import Workspace, WorkspaceError
 TOPS_SCHEMA_VERSION = 1
 TOPS_FILENAME = "tops.json"
 SURVEY_FILENAME = "survey.json"
+FORMULA_FILENAME = "formulas.json"
 
 
 class TopsError(Exception):
@@ -150,6 +151,75 @@ def save_tops_for_well(
                 "color": t.color,
             }
             for t in tops
+        ],
+    }
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Formulas (FRS §2.4 / P2-A) — stored next to tops under wells/<id>/.
+# ---------------------------------------------------------------------------
+
+
+def formula_file_path(workspace: Workspace, well_id: str) -> Path:
+    return well_data_dir(workspace, well_id) / FORMULA_FILENAME
+
+
+def load_formulas_for_well(
+    workspace: Workspace, well_id: str
+) -> tuple[list[Any], list[str]]:
+    """Load derived-curve formulas for a well.
+
+    Returns ``(formulas, diagnostics)``; missing file → ``([], [])``. Lazy
+    imports :mod:`well_log_workstation.formula` so this module stays light.
+    """
+    diagnostics: list[str] = []
+    try:
+        path = formula_file_path(workspace, well_id)
+    except WorkspaceError as exc:
+        return [], [str(exc)]
+    if not path.is_file():
+        return [], []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [], [f"公式文件损坏: {exc}"]
+    from well_log_workstation.formula import Formula
+
+    raw_list = data.get("formulas") if isinstance(data, dict) else data
+    out: list[Formula] = []
+    if isinstance(raw_list, list):
+        for item in raw_list:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            expr = str(item.get("expression") or "").strip()
+            if name and expr:
+                out.append(Formula(name=name, expression=expr))
+    return out, diagnostics
+
+
+def save_formulas_for_well(
+    workspace: Workspace,
+    well_id: str,
+    formulas: list[Any],
+) -> Path:
+    """Persist formulas next to well data (atomic write)."""
+    path = formula_file_path(workspace, well_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schemaVersion": 1,
+        "well_id": well_id,
+        "formulas": [
+            {"name": f.name, "expression": f.expression}
+            for f in formulas
+            if getattr(f, "name", "") and getattr(f, "expression", "")
         ],
     }
     tmp = path.with_suffix(".json.tmp")

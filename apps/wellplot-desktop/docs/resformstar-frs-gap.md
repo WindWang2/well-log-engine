@@ -47,7 +47,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 岩心照片道 + 物性点叠加 | 🟡 | SDK `ImageLayerSpec`/`ImagePyramid` (`scene/image_pyramid.hpp:67`) | Desktop host 画布无 image role → Desktop |
 | 交互深度校正 (Depth Shift) | ❌ | 无交互编辑；SDK session 有 patch 编辑 (`session.hpp:272-308`) | → SDK(编辑命令) + Desktop(手势) |
 | 曲线编辑 (Despike/手绘/基线平移) | ❌ | 同上 | → SDK(编辑) + Desktop(UI) |
-| 公式计算器 (VSH 等) | ❌ | 无；SDK 有 derived curve provenance (`core/document.hpp:328-334`) 供宿主求值 | → Desktop(解析器+派生曲线) |
+| 公式计算器 (VSH 等) | ✅ | `formula.py` 手写递归下降解析器（+−×÷^、括号、一元负号、log10/ln/exp/sqrt/abs/round/min/max）+ 逐元素数组求值（null 传播、标量广播、大小写不敏感）；公式存 `wells/<id>/formulas.json`；派生曲线运行时附加单井画布（`derived-*` tracks）；`FormulaDialog` 编辑器 | 已闭环：解析器/求值/集成单测 |
 
 ### 3.x 连井剖面
 
@@ -122,7 +122,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 
 | 切片 | SDK | Desktop |
 |---|---|---|
-| **P2-A 公式计算器** | 表达式求值引擎（头文件独立） | 公式编辑器 + 派生曲线写入会话 |
+| **P2-A 公式计算器** ✅ | — | 已交付：`formula.py` 递归下降解析器 + 数组求值（null 传播/标量广播）；`formulas.json` 存储（对称 tops）；`_apply_derived_curves` 运行时附加派生曲线道；`FormulaDialog` 编辑器（语法预校验） | 解析器优先级/错误、VSH 数值、null 传播、集成附加/替换/诊断 |
 | **P2-B 平面-剖面联动** | — | 平面切线选井 → 生成剖面；剖面修正 → 平面刷新（事件总线） |
 | **P2-C 出版整饰** | 剪切线；per-track PDF layer | 图例栏、接合图、责任表图框生成 |
 
