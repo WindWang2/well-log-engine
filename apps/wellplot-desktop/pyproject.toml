@@ -17,8 +17,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Optional mapping / fence / composite surfaces (host geoviz packages)
-geoviz = []
+# Optional mapping / fence / composite surfaces (host geoviz packages).
+# pyproj is required by the geoviz-backed section tests
+# (tests/test_well_section_datum.py / test_well_section_workbench.py).
+geoviz = ["pyproj>=3"]
 dev = [
   "pytest>=8",
   "pytest-qt>=4",
