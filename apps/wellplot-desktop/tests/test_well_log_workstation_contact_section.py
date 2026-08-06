@@ -85,6 +85,7 @@ def test_split_owc_above_oil_below_water() -> None:
     c = FluidContact2D(fluid_type="owc", depths={0: 1050.0, 1: 1055.0})
     res = split_quad_by_contact(q, c, 4)
     assert res is not None
+    assert len(res) == 2
     above, below = res
     # Above = oil red, below = water blue.
     assert above.fill_color == "#dc2626"
@@ -349,6 +350,37 @@ def test_split_composite_contact_crosses_one_half() -> None:
     assert pieces[0].fill_color == "#dc2626"
     assert pieces[1].fill_color == "#2563eb"
     assert pieces[2].fill_color == "#aaa"  # right half unsplit
+
+
+def test_split_with_transition_zone_three_bands() -> None:
+    """transition_m > 0 yields above + blended mid + below."""
+    q = _quad(0.0, 1000.0, 1100.0)
+    c = FluidContact2D(
+        fluid_type="owc", depths={0: 1050.0, 1: 1050.0}, transition_m=20.0
+    )
+    res = split_quad_by_contact(q, c, 4)
+    assert res is not None
+    assert len(res) == 3
+    above, mid, below = res
+    assert above.fill_color == "#dc2626"
+    assert below.fill_color == "#2563eb"
+    # Blend of oil red #dc2626 and water blue #2563eb
+    assert mid.fill_color == "#804488"
+    assert mid.fill_color != above.fill_color
+    assert mid.fill_color != below.fill_color
+    # Mid band spans contact ± 10 m
+    assert mid.corners[0, 1] == pytest.approx(1040.0)
+    assert mid.corners[2, 1] == pytest.approx(1060.0)
+
+
+def test_transition_m_json_roundtrip() -> None:
+    c = FluidContact2D(
+        fluid_type="goc", depths={0: 800.0, 1: 810.0}, transition_m=5.0
+    )
+    back = contacts_from_json(contacts_to_json([c]))
+    assert len(back) == 1
+    assert back[0].transition_m == pytest.approx(5.0)
+    assert back[0].fluid_type == "goc"
 
 
 def test_split_composite_two_contacts_full_cut() -> None:

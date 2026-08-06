@@ -43,11 +43,17 @@ class FluidContact2D:
 
     ``depths`` maps well column index → contact MD; a well absent from the map
     has no contact for this fluid (the contact line breaks there).
+
+    ``transition_m`` is the full thickness (m) of an optional transition zone
+    centred on the contact: when > 0, ``split_quad_by_contact`` emits a middle
+    band with a blended fill (oil↔water or gas↔oil) instead of a hard colour
+    jump. Default 0 preserves the sharp dual-fill.
     """
 
     fluid_type: str  # "owc" | "goc"
     depths: dict[int, float] = field(default_factory=dict)
     color: str = ""
+    transition_m: float = 0.0
 
     def resolved_color(self) -> str:
         return self.color or _fluid_color(self.fluid_type)
@@ -135,18 +141,36 @@ def _interpolate_depth(
     return interpolate_depth_at(contact.depths, x)
 
 
+def _blend_hex(a: str, b: str) -> str:
+    """Average two #RRGGBB colours for a transition-band fill."""
+    def _rgb(h: str) -> tuple[int, int, int]:
+        s = h.lstrip("#")
+        if len(s) != 6:
+            return (100, 116, 139)
+        return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+
+    ra, ga, ba = _rgb(a)
+    rb, gb, bb = _rgb(b)
+    return f"#{(ra + rb) // 2:02x}{(ga + gb) // 2:02x}{(ba + bb) // 2:02x}"
+
+
 def split_quad_by_contact(
     quad: TieQuad2D, contact: FluidContact2D, well_count: int
-) -> tuple[TieQuad2D, TieQuad2D] | None:
-    """Split a tie-quad into above/below sub-polygons along a fluid contact.
+) -> tuple[TieQuad2D, ...] | None:
+    """Split a tie-quad into above/below (optional transition) along a contact.
 
     The quad is split when the contact passes through it: the contact's
     interpolated depth at the quad's left and right x must both lie strictly
     inside the quad's depth extent on that side, and both bounding wells must
-    define the contact. Returns ``(above, below)`` as two new TieQuad2D with
-    fluid-appropriate fill colours (above = oil/gas, below = water/oil);
-    otherwise None (quad left untouched by the caller).
+    define the contact.
 
+    Returns:
+      * ``(above, below)`` when ``transition_m <= 0`` (sharp dual fill);
+      * ``(above, transition, below)`` when ``transition_m > 0`` and the band
+        fits inside the quad on both edges;
+      * ``None`` if the contact does not cross the quad.
+
+    Colours: above = oil/gas, below = water/oil; transition = blend of the two.
     Quad corner order is ``[left_top, right_top, right_bottom, left_bottom]``.
     """
     corners = np.asarray(quad.corners, dtype=np.float64)
@@ -175,30 +199,54 @@ def split_quad_by_contact(
     fluid = str(contact.fluid_type).lower()
     above_color = _FILL_ABOVE.get(fluid, _DEFAULT_COLOR)
     below_color = _FILL_BELOW.get(fluid, _DEFAULT_COLOR)
+    try:
+        half = max(0.0, float(contact.transition_m)) * 0.5
+    except (TypeError, ValueError):
+        half = 0.0
 
-    # Above polygon: left_top → right_top → (x_r, d_r) → (x_l, d_l)
-    above_corners = np.array(
-        [
-            [x_l, top_l],
-            [x_r, top_r],
-            [x_r, d_r],
-            [x_l, d_l],
-        ],
-        dtype=np.float64,
-    )
-    # Below polygon: (x_l, d_l) → (x_r, d_r) → right_bottom → left_bottom
-    below_corners = np.array(
-        [
-            [x_l, d_l],
-            [x_r, d_r],
-            [x_r, bot_r],
-            [x_l, bot_l],
-        ],
-        dtype=np.float64,
-    )
-    above = TieQuad2D(corners=above_corners, fill_color=above_color, label=quad.label)
-    below = TieQuad2D(corners=below_corners, fill_color=below_color, label=quad.label)
-    return above, below
+    def _band(
+        top_l_d: float,
+        top_r_d: float,
+        bot_r_d: float,
+        bot_l_d: float,
+        color: str,
+    ) -> TieQuad2D:
+        return TieQuad2D(
+            corners=np.array(
+                [
+                    [x_l, top_l_d],
+                    [x_r, top_r_d],
+                    [x_r, bot_r_d],
+                    [x_l, bot_l_d],
+                ],
+                dtype=np.float64,
+            ),
+            fill_color=color,
+            label=quad.label,
+            pattern_id=quad.pattern_id,
+        )
+
+    if half <= 0.0:
+        above = _band(top_l, top_r, d_r, d_l, above_color)
+        below = _band(d_l, d_r, bot_r, bot_l, below_color)
+        return above, below
+
+    # Transition band centred on contact; clamp so it stays inside the quad.
+    up_l = max(lo_l + 1e-9, d_l - half)
+    up_r = max(lo_r + 1e-9, d_r - half)
+    dn_l = min(hi_l - 1e-9, d_l + half)
+    dn_r = min(hi_r - 1e-9, d_r + half)
+    # Degenerate transition (too thin / clamped shut) → sharp split.
+    if not (up_l < dn_l and up_r < dn_r):
+        above = _band(top_l, top_r, d_r, d_l, above_color)
+        below = _band(d_l, d_r, bot_r, bot_l, below_color)
+        return above, below
+
+    mid_color = _blend_hex(above_color, below_color)
+    above = _band(top_l, top_r, up_r, up_l, above_color)
+    mid = _band(up_l, up_r, dn_r, dn_l, mid_color)
+    below = _band(dn_l, dn_r, bot_r, bot_l, below_color)
+    return above, mid, below
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +255,7 @@ def split_quad_by_contact(
 
 
 def contact_to_json(contact: FluidContact2D) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "fluid_type": str(contact.fluid_type),
         "depths": [
             [int(idx), float(d)]
@@ -216,6 +264,13 @@ def contact_to_json(contact: FluidContact2D) -> dict[str, Any]:
         ],
         "color": contact.color,
     }
+    try:
+        t = float(contact.transition_m)
+    except (TypeError, ValueError):
+        t = 0.0
+    if t > 0.0:
+        payload["transition_m"] = t
+    return payload
 
 
 def contact_from_json(raw: Any) -> FluidContact2D | None:
@@ -247,7 +302,16 @@ def contact_from_json(raw: Any) -> FluidContact2D | None:
             continue
         depths[idx] = d
     color = str(raw.get("color") or "")
-    return FluidContact2D(fluid_type=fluid, depths=depths, color=color)
+    try:
+        transition_m = max(0.0, float(raw.get("transition_m") or 0.0))
+    except (TypeError, ValueError):
+        transition_m = 0.0
+    return FluidContact2D(
+        fluid_type=fluid,
+        depths=depths,
+        color=color,
+        transition_m=transition_m,
+    )
 
 
 def contacts_to_json(contacts: Iterable[FluidContact2D]) -> list[dict[str, Any]]:
@@ -329,7 +393,7 @@ def split_quad_composite(
         for piece in pieces:
             candidate = split_quad_by_contact(piece, contact, well_count)
             if candidate is not None:
-                next_pieces.extend((candidate[0], candidate[1]))
+                next_pieces.extend(candidate)
             else:
                 next_pieces.append(piece)
         pieces = next_pieces

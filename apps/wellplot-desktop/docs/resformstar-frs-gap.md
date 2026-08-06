@@ -61,9 +61,9 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 实际井距/等井距、纵横比例尺解耦 | ❌ | correlation 等距列 | → Desktop(画布布局) |
 | 分层线拖拽吸附 (Snap Picking) | 🟡 | link 拾取 10px 容差 (`correlation_canvas.py:162-202`)；无曲线极值吸附 | → Desktop(磁吸) |
 | 曲线形态自动对比 | 🟡 | 仅名字匹配 (`correlation_links.match_tops_by_name:88-132`) | → Desktop(相似度) + SDK(信号处理) |
-| **地层尖灭/透镜体/剥蚀超覆** | 🟡 | 楔形尖灭 P0-C ✅；剥蚀/超覆截断 P1 ✅；**透镜体手绘已交付**：`LensBody2D` + 剖面画布左键加点/双击闭合 +「绘制/编辑透镜体」+ plot schema v10 `lenses` 持久化 | **P0/P1/透镜体手绘✅**；过渡带渐变仍缺 |
+| **地层尖灭/透镜体/剥蚀超覆** | 🟡 | 楔形尖灭 P0-C ✅；剥蚀/超覆截断 P1 ✅；**透镜体手绘** ✅；流体过渡带另见流体界面行 | **P0/P1/透镜体✅** |
 | 断层错断/落差 | ✅ | `section_geometry/fault_section.py` 2D 位置+落差模型：`SectionFault2D` + `fault_polyline` + `apply_fault_throw_to_quad` + **`split_quad_by_fault`**；`PlotDocument.faults` 持久化；**`split_quad_composite` 对每条断层逐条全切**（非仅第一条） | **P1/P2/复合全切✅** |
-| 流体界面 OWC/GOC + 复合充填 | 🟡 | `FluidContact2D` + `split_quad_by_contact`；**`split_quad_composite` 对每条接触线逐条全切**（GOC+OWC→气/油/水多带）；过渡带渐变色仍缺 | **P1(双色✅)/多接触全切✅/后续**: 过渡带渐变 |
+| 流体界面 OWC/GOC + 复合充填 | ✅ | `FluidContact2D` + `split_quad_by_contact`；多接触/多断层全切；**过渡带** `transition_m` → 界面上下混色条带 + 对话框「过渡带(m)」列 | **P1/多接触/过渡带✅** |
 | 磁吸/手绘平滑 | ❌ | 无 | → Desktop(交互) |
 | 全局撤销/重做 | 🟡 | SDK session 命令栈 (`session/session.hpp`); Desktop 对 datum/link 有撤销 (`tops_history.py`) | 扩展覆盖新编辑 → Desktop |
 

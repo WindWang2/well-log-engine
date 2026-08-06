@@ -47,21 +47,23 @@ class SectionContactDialog(QDialog):
             QLabel(
                 "类型：OWC=油水界面 / GOC=气油界面。\n"
                 "各井深度留空 = 该井无此界面（接触线在该井处断开）。\n"
-                "界面切割充填多边形：上部填油(红)/气(黄)、下部填水(蓝)。"
+                "界面切割充填：上部油(红)/气(黄)、下部水(蓝)；"
+                "过渡带厚度>0 时在界面两侧增加混色过渡条带。"
             )
         )
 
-        n_cols = 1 + self._well_count
+        n_cols = 2 + self._well_count
         self.table = QTableWidget(0, n_cols)
         self.table.setObjectName("SectionContactTable")
-        headers = ["类型"]
+        headers = ["类型", "过渡带(m)"]
         for i in range(self._well_count):
             name = self._well_names[i] if i < len(self._well_names) else f"井{i}"
             headers.append(f"{name} 深(MD)")
         self.table.setHorizontalHeaderLabels(headers)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        for col in range(1, n_cols):
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        for col in range(2, n_cols):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table)
 
@@ -92,10 +94,16 @@ class SectionContactDialog(QDialog):
         idx = combo.findData(contact.fluid_type)
         combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.table.setCellWidget(r, 0, combo)
+        t_text = (
+            ""
+            if float(contact.transition_m or 0.0) <= 0.0
+            else str(float(contact.transition_m))
+        )
+        self.table.setItem(r, 1, QTableWidgetItem(t_text))
         for i in range(self._well_count):
             d = contact.depths.get(i)
             text = "" if d is None else str(d)
-            self.table.setItem(r, 1 + i, QTableWidgetItem(text))
+            self.table.setItem(r, 2 + i, QTableWidgetItem(text))
 
     def value(self) -> list[FluidContact2D]:
         """Return the edited contact list (rows with <2 depths dropped)."""
@@ -107,9 +115,15 @@ class SectionContactDialog(QDialog):
                 if isinstance(combo, QComboBox)
                 else "owc"
             )
+            t_item = self.table.item(r, 1)
+            t_text = t_item.text().strip() if t_item is not None else ""
+            try:
+                transition_m = max(0.0, float(t_text)) if t_text else 0.0
+            except ValueError:
+                transition_m = 0.0
             depths: list[list] = []
             for i in range(self._well_count):
-                item = self.table.item(r, 1 + i)
+                item = self.table.item(r, 2 + i)
                 text = item.text().strip() if item is not None else ""
                 if not text:
                     continue
@@ -119,5 +133,8 @@ class SectionContactDialog(QDialog):
                     continue
             if len(depths) < 2:
                 continue
-            raw.append({"fluid_type": str(fluid), "depths": depths})
+            entry: dict = {"fluid_type": str(fluid), "depths": depths}
+            if transition_m > 0.0:
+                entry["transition_m"] = transition_m
+            raw.append(entry)
         return contacts_from_json(raw)
