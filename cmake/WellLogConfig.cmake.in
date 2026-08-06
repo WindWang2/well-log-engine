@@ -1,0 +1,34 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+# Static WellLog::IO / Export* targets re-export ZLIB::ZLIB on their link
+# interface, so consumers need the imported target available. When the engine
+# was built against a FetchContent zlib, that archive is installed beside the
+# package and imported via WellLogZlibTargets.cmake.
+if(@WELLLOG_FETCHED_ZLIB@)
+    include("${CMAKE_CURRENT_LIST_DIR}/WellLogZlibTargets.cmake")
+    if(NOT TARGET ZLIB::ZLIB)
+        if(TARGET zlibstatic)
+            add_library(ZLIB::ZLIB ALIAS zlibstatic)
+        elseif(TARGET zlib)
+            add_library(ZLIB::ZLIB ALIAS zlib)
+        endif()
+    endif()
+else()
+    find_dependency(ZLIB)
+endif()
+if(@WELLLOG_BUILD_QT_WIDGETS@)
+    find_dependency(Qt6 6.8 COMPONENTS Widgets OpenGLWidgets)
+endif()
+if(@WELLLOG_BUILD_TEXT@)
+    find_dependency(PkgConfig)
+    pkg_check_modules(HarfBuzz REQUIRED IMPORTED_TARGET harfbuzz)
+    pkg_check_modules(FreeType REQUIRED IMPORTED_TARGET freetype2)
+    pkg_check_modules(ICU_UC REQUIRED IMPORTED_TARGET icu-uc)
+    pkg_check_modules(ICU_I18N REQUIRED IMPORTED_TARGET icu-i18n)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/WellLogTargets.cmake")
+
+check_required_components(WellLog)

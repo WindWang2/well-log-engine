@@ -1,0 +1,27 @@
+[build-system]
+requires = ["scikit-build-core>=0.11,<0.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "welllog-engine"
+version = "0.1.0"
+description = "PySide6 bindings for the native WellLogEngine widget"
+readme = "python/README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "numpy>=2.0",
+    "PySide6==6.11.1",
+    "shiboken6==6.11.1",
+]
+
+[tool.scikit-build]
+build-dir = "../build/well-log-wheel/{wheel_tag}"
+cmake.args = [
+    "-DWELLLOG_BUILD_PYTHON=ON",
+    "-DWELLLOG_BUILD_QT_WIDGETS=ON",
+    "-DWELLLOG_BUILD_TESTS=OFF",
+    "-DWELLLOG_BUILD_SHARED=OFF",
+]
+install.components = ["Python"]
+wheel.py-api = "cp311"
+wheel.packages = []

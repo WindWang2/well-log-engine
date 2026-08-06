@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<typesystem package="welllog._QtWidgets">
+    <load-typesystem name="typesystem_widgets.xml" generate="no"/>
+    <load-typesystem name="typesystem_openglwidgets.xml" generate="no"/>
+    <load-typesystem name="typesystem_core.xml" generate="no"/>
+
+    <namespace-type name="welllog">
+        <!-- std::string_view module fields crash Shiboken PrimitiveTypeConverter
+             (copyToPython nullptr) — reject until converters exist. -->
+        <rejection class="*" field-name="welllog_sdk_version"/>
+        <rejection class="*" field-name="manifest_sdk_requirement"/>
+        <object-type name="WellLogView" parent-management="yes">
+            <extra-includes>
+                <include file-name="numpy_bridge.hpp" location="local"/>
+            </extra-includes>
+            <add-function
+                signature="submit_curve(PyObject*@depth@,PyObject*@values@,QString@document_id@,QString@axis_id@,QString@curve_id@,QString@mnemonic@,QString@depth_unit@,QString@value_unit@)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::submit_curve(
+                        %CPPSELF, %PYARG_1, %PYARG_2, %3, %4, %5, %6, %7, %8);
+                </inject-code>
+            </add-function>
+            <add-function
+                signature="sample_value(QString@curve_id@,unsigned long long@sample_index@)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::sample_value(
+                        %CPPSELF, %1, %2);
+                </inject-code>
+            </add-function>
+            <add-function
+                signature="submit_multi_track(PyObject*@payload@)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::submit_multi_track(
+                        %CPPSELF, %PYARG_1);
+                </inject-code>
+            </add-function>
+            <add-function
+                signature="submit_multi_well_section(PyObject*@payload@)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::submit_multi_well_section(
+                        %CPPSELF, %PYARG_1);
+                </inject-code>
+            </add-function>
+            <add-function
+                signature="clear_multi_well_section()"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::clear_multi_well_section(%CPPSELF);
+                </inject-code>
+            </add-function>
+            <add-function
+                signature="export_scene_svg(QString@document_id@,unsigned long long@export_pixel_height@=0)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::export_scene_svg(%CPPSELF, %1, %2);
+                </inject-code>
+            </add-function>
+            <add-function
+                signature="export_scene_pdf(QString@document_id@,unsigned long long@export_pixel_height@=0,bool@searchable_text@=false)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::export_scene_pdf(%CPPSELF, %1, %2, %3);
+                </inject-code>
+            </add-function>
+            <add-function
+                signature="export_scene_cgm(QString@document_id@,double@page_height_mm@=0.0)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::export_scene_cgm(%CPPSELF, %1, %2);
+                </inject-code>
+            </add-function>
+        </object-type>
+
+        <!-- TableModel / TableProjection: not listed in WELLLOG_PYTHON_GENERATED_SOURCES
+             yet (CMake only compiles WellLogView wrappers). Re-enable when the
+             generated sources list and py.typed surface ship together (#225 follow-up). -->
+    </namespace-type>
+</typesystem>

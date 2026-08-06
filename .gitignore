@@ -1,0 +1,54 @@
+# Build
+/build/
+/cmake-build-*/
+/out/
+/CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.lib
+*.exp
+*.pdb
+*.exe
+
+# Python / wheels
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+*.whl
+.python-version
+
+# vcpkg / package managers
+vcpkg_installed/
+.vcpkg-root
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Local demo / capture noise (keep scripts under demo_out/)
+demo_out/*.png
+demo_out/*.pdf
+demo_out/*.svg
+demo_out/*.csv
+demo_out/*.xlsx
+
+# Coverage / logs
+coverage/
+*.log
+*.tmp

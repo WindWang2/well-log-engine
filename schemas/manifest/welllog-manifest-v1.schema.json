@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paleo-workbench.local/schemas/welllog-manifest-v1.schema.json",
+  "title": "WellLogEngine Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "requiredSdkVersion", "document"],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "requiredSdkVersion": {
+      "const": ">=0.1.0 <1.0.0"
+    },
+    "document": {
+      "$ref": "#/$defs/document"
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "checksum", "byteOffset"],
+      "properties": {
+        "uri": {"type": "string", "minLength": 1},
+        "checksum": {"type": "string"},
+        "byteOffset": {"type": "integer", "minimum": 0}
+      }
+    },
+    "buffer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "length",
+        "strideBytes",
+        "scalarType",
+        "byteCapacity"
+      ],
+      "properties": {
+        "source": {"$ref": "#/$defs/source"},
+        "length": {"type": "integer", "minimum": 1},
+        "strideBytes": {"type": "integer", "minimum": 1},
+        "scalarType": {
+          "enum": [
+            "float32",
+            "float64",
+            "int16",
+            "int32",
+            "int64",
+            "uint8",
+            "uint16",
+            "uint32",
+            "uint64"
+          ]
+        },
+        "byteCapacity": {"type": "integer", "minimum": 1}
+      }
+    },
+    "nullBitmap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "bitLength", "byteCapacity"],
+      "properties": {
+        "source": {"$ref": "#/$defs/source"},
+        "bitLength": {"type": "integer", "minimum": 1},
+        "byteCapacity": {"type": "integer", "minimum": 1}
+      }
+    },
+    "axis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "domain", "unit", "direction", "coordinates"],
+      "properties": {
+        "id": {"$ref": "#/$defs/uuid"},
+        "domain": {"enum": ["md", "tvd", "tvdss", "sourceIndex"]},
+        "unit": {"type": "string"},
+        "direction": {"enum": ["increasing", "decreasing"]},
+        "coordinates": {"$ref": "#/$defs/buffer"}
+      }
+    },
+    "curve": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "mnemonic",
+        "displayName",
+        "unit",
+        "samplingAxisId",
+        "values",
+        "nulls"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/uuid"},
+        "mnemonic": {"type": "string"},
+        "displayName": {"type": "string"},
+        "unit": {"type": "string"},
+        "samplingAxisId": {"$ref": "#/$defs/uuid"},
+        "values": {"$ref": "#/$defs/buffer"},
+        "nulls": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/nullBitmap"}
+          ]
+        }
+      }
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "revision", "samplingAxes", "curves"],
+      "properties": {
+        "id": {"$ref": "#/$defs/uuid"},
+        "revision": {"type": "integer", "minimum": 1},
+        "samplingAxes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/axis"}
+        },
+        "curves": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/curve"}
+        }
+      }
+    }
+  }
+}
