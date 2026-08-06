@@ -282,18 +282,19 @@ def test_correlation_export_menu_enabled(qtbot, tmp_path: Path) -> None:
 
 
 def test_pdf_options_applicability_correlation() -> None:
-    """Correlation: crop marks yes; engine text/layered no."""
+    """Correlation/section: crop marks yes; engine text/layered no."""
     from well_log_workstation.export_options_dialog import (
         pdf_options_applicability,
     )
 
     sw = pdf_options_applicability("single_well")
     assert sw["text_mode"] and sw["layered_pdf"] and sw["crop_marks"]
-    corr = pdf_options_applicability("correlation")
-    assert corr["crop_marks"] is True
-    assert corr["text_mode"] is False
-    assert corr["layered_pdf"] is False
-    assert corr["engine_options"] is False
+    for kind in ("correlation", "section"):
+        opts = pdf_options_applicability(kind)
+        assert opts["crop_marks"] is True
+        assert opts["text_mode"] is False
+        assert opts["layered_pdf"] is False
+        assert opts["engine_options"] is False
 
 
 def test_pdf_export_options_dialog_correlation_disables_engine(qtbot) -> None:
@@ -394,6 +395,54 @@ def test_correlation_menu_pdf_options_accept_and_cancel(
     assert captured.get("crop_marks") is True
     assert captured.get("backend") == "qt"
     assert "layered_pdf" not in captured or not captured.get("layered_pdf")
+
+
+def test_section_menu_pdf_options_crop_marks(
+    qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Section PDF menu path shows options dialog and honours crop_marks."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from well_log_workstation.plot_document import create_section_plot
+
+    ws = create_workspace(tmp_path / "sec-menu", name="SecMenu")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    id1 = win.import_las_path(_write_las(tmp_path / "s1.las", well="S1"))
+    id2 = win.import_las_path(_write_las(tmp_path / "s2.las", well="S2"))
+    plot = create_section_plot(
+        ws, well_ids=[id1, id2], template_id="std-gr-rt-den", name="SecPDF"
+    )
+    win.open_plot_document(plot.id)
+
+    out = tmp_path / "section.pdf"
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: 0)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: 0)
+    chosen_types: list[str] = []
+
+    def _choose(**kw):  # noqa: ANN003
+        chosen_types.append(str(kw.get("plot_type") or ""))
+        return ("outline", True, False)
+
+    monkeypatch.setattr(win, "_choose_pdf_export_options", _choose)
+    monkeypatch.setattr(
+        "well_log_workstation.shell.QFileDialog.getSaveFileName",
+        lambda *a, **k: (str(out), "PDF (*.pdf)"),
+    )
+    captured: dict = {}
+    real_export = export_plot
+
+    def _spy(plot_doc, fmt, **kwargs):  # noqa: ANN001
+        captured.update(kwargs)
+        return real_export(plot_doc, fmt, **kwargs)
+
+    monkeypatch.setattr("well_log_workstation.shell.export_plot", _spy)
+    win._export_active_plot("pdf")
+    assert chosen_types == ["section"]
+    assert out.is_file() and out.read_bytes()[:4] == b"%PDF"
+    assert captured.get("crop_marks") is True
+    assert captured.get("backend") == "qt"
 
 
 def test_engine_route_png_falls_back_to_qt(

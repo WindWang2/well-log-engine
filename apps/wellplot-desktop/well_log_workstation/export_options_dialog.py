@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 TEXT_MODE_OUTLINE = "outline"
 TEXT_MODE_SEARCHABLE = "searchable"
 
-PlotTypeForPdfOptions = Literal["single_well", "correlation"]
+PlotTypeForPdfOptions = Literal["single_well", "correlation", "section"]
 
 
 def pdf_options_applicability(plot_type: str) -> dict[str, bool]:
@@ -38,8 +38,8 @@ def pdf_options_applicability(plot_type: str) -> dict[str, bool]:
             "layered_pdf": True,
             "engine_options": True,
         }
-    if plot_type == "correlation":
-        # Correlation always routes through Qt paint (no engine multi-well PDF).
+    if plot_type in ("correlation", "section"):
+        # Qt paint paths (no engine multi-well / section PDF backend).
         return {
             "text_mode": False,
             "crop_marks": True,
@@ -85,7 +85,7 @@ class PdfExportOptionsDialog(QDialog):
             )
         else:
             note = QLabel(
-                "对比图 / Qt 矢量路径：无可搜索文本层与 PDF 图层（OCG）；"
+                "对比图/剖面 · Qt 矢量路径：无可搜索文本层与 PDF 图层（OCG）；"
                 "剪切线由 Qt 绘制。"
             )
             note.setObjectName("PdfOptionsQtOnlyNote")

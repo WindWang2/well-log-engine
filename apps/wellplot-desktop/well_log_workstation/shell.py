@@ -5607,7 +5607,18 @@ class WellLogWorkstationWindow(QMainWindow):
                     kwargs["crop_marks"] = pdf_crop_marks
                 backend_note = "（对比图 · Qt 矢量）"
             elif plot.type == "section":
+                # Same options surface as correlation (Qt paint + crop marks).
+                pdf_crop_marks = False
+                if fmt == "pdf":
+                    chosen = self._choose_pdf_export_options(plot_type="section")
+                    if chosen is None:
+                        return
+                    _mode, pdf_crop_marks, _layered = chosen
                 kwargs["paint_fn"] = self._paint_active_plot
+                kwargs["backend"] = "qt"
+                if fmt == "pdf":
+                    kwargs["crop_marks"] = pdf_crop_marks
+                backend_note = "（油藏剖面 · Qt 矢量）"
             elif plot.type == "plane_map":
                 kwargs["canvas"] = self.plane_map_view._canvas
             elif plot.type == "fence_3d":
