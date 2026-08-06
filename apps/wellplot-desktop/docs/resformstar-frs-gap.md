@@ -24,7 +24,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 |---|---|---|---|
 | 坐标系/投影转换 (GK/UTM, CGCS2000/北京54/西安80) | 🟡 | `workspace.py` coordinate trio (project/display/target CRS); `plane_map_view.coerce_to_project_crs`; `crs_dialog.py` | 投影转换引擎缺失（依赖 geoviz 能力）→ SDK(IO/坐标) + Desktop(UI) |
 | 井口坐标 X/Y、KB 补心海拔、GL、Max MD | 🟡 | LAS `LAT/LONG` → lng/lat/crs (`las_import.py:115-143`); `kb_m` on wells (`datum/well_section_datum.py:37-54`) | X/Y (GK/UTM 投影坐标) 未解析；GL 无 → Desktop(数据) + SDK(las.cpp 井头) |
-| 测斜/定向井轨迹 (MD/Inc/Az → TVD/TVDSS/ΔN/ΔE) | ❌ | `section_geometry/trajectory_2d.py:20-54` 仅直线 head→bottom；`datum` 显式拒绝 `tvd` | 轨迹计算（测斜→TVD/位移）→ SDK(几何)；存储/导入 → Desktop |
+| 测斜/定向井轨迹 (MD/Inc/Az → TVD/TVDSS/ΔN/ΔE) | 🟡 | `survey.py` 最小曲率法（业界标准）从 MD/Inc/Az 算 TVD/TVDSS/位移；测斜存 `wells/<id>/survey.json`（对称 tops）；datum 增 `tvd` 模式（无 survey 降级 0）；编辑对话框；section 画布真轨迹展布（按闭合位移摆列、斜井段弯曲）仍缺 | **P1(计算+tvd datum✅)/后续**: 真轨迹展布画布 → Desktop(画布) |
 | 曲线别名字典（工区级） | ✅ | 工区级 `Workspace.mnemonic_alias`（canonical→[aliases]，存 `workspace.json`）；`mnemonic_alias.py` 双向 expand 接入 `_match_curve`/`default_checks`/`_leaf_matches_slot`；「测井别名字典」对话框编辑 | 已闭环：模板/默认显示按别名命中 |
 | 多采样率/多版本曲线 | 🟡 | 模型支持多 curve；多 axis (md/tvd/tvdss) (`core/document.hpp:45-50`) | 版本管理（原始/校正/合成, 非破坏切换）→ Desktop(会话) |
 | 统一地层层序字典（界-系-统-组-段-小层-砂层 + 颜色/线型/花纹） | ❌ | `FormationTop` 仅 name+depth+color (`tops_model.py:25-34`); SDK interval 语义含 lithology/stratigraphy (`core/document.hpp:409-416`) 但无层级体系 | 层序字典 schema → Desktop(数据)；渲染语义已可由 SDK interval 表达 |
@@ -114,8 +114,9 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 |---|---|---|
 | **P1-A 断层错断** ✅ | — | 已交付：`section_geometry/fault_section.py` 2D 位置+落差模型（替换 3D CRS 死代码）；`SectionFault2D` + `fault_polyline` + `apply_fault_throw_to_quad`（下盘角点位移，正断降/逆断升）；`PlotDocument.faults` 持久化；section 画布渲染断层线 + 错断 quad；「编辑断层」对话框；旧 3D 测试迁移 | 几何单测（位移/反向/边界）；render smoke；持久化往返 |
 | **P1-B 流体界面** ✅ | — | 已交付：`section_geometry/contact_section.py` 2D 每井深度模型（替换 3D CRS 死代码）；`FluidContact2D` + `contact_segment_2d` + `split_quad_by_contact`（quad 切上油/气·下水双色填充）；`PlotDocument.contacts` 持久化；section 画布渲染接触线 + 双色 quad；「编辑流体界面」对话框；旧 3D 测试迁移 | 几何单测（切分/边界/缺井）；render smoke；持久化往返 |
+| **P1-C 测斜/TVD datum** ✅ | — | 已交付：`survey.py` 最小曲率法（MD/Inc/Az → TVD/TVDSS/ΔN/ΔE/闭合位移）；测斜存 `wells/<id>/survey.json`（对称 tops，load/save）；datum 增 `tvd` 模式（TVD−MD 位移，无 survey 降级 0）；`_show_section` 读 `plot.datum_mode` + tvd 加载 survey；「编辑测斜数据」菜单 + `SurveyDialog` | 计算单测（直井/斜井/边界）；插值；serde；datum tvd；存储往返 |
 | **P1-B 流体界面** | 界面切割多边形 | OWC/GOC 持久化 + UI + 油水双色/过渡带渲染 |
-| **P1-C 挂井与展布** | 测斜→TVD/TVDSS/ΔN/ΔE 计算；真 TST | 测斜导入 (MD/Inc/Az) + datum tvd 模式 + Unfolded 展布 |
+| **P1-C 挂井与展布** | 测斜→TVD/TVDSS/ΔN/ΔE 计算；真 TST | 部分交付：`survey.py` 最小曲率法 + datum tvd 模式（✅）；真轨迹展布画布（按闭合位移摆列、斜井段弯曲）+ Unfolded（沿 MD 展布）仍缺 | 计算单测已通过；展布画布留后续 |
 
 ### P2 — 公式 / 联动 / 出版整饰
 

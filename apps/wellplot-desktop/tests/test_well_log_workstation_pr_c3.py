@@ -39,9 +39,11 @@ def test_datum_horizon_flattens_on_named_top():
     assert shifts == {"A": -100.0}
 
 
-def test_datum_rejects_tvd():
-    with pytest.raises(ValueError, match="tvd"):
-        WellSectionDatum(mode="tvd")
+def test_datum_tvd_without_survey_degrades_to_zero():
+    """P1-C: tvd mode is now accepted; without a survey the shift is 0."""
+    d = WellSectionDatum(mode="tvd")
+    shifts = d.compute_shifts([{"name": "A", "tops": [{"name": "T", "depth": 100.0}]}])
+    assert shifts == {"A": 0.0}
 
 
 # --- fault_2d (T4) ---

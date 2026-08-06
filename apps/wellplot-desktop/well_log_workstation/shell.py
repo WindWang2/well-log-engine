@@ -161,8 +161,10 @@ from well_log_workstation.tops_model import (
     FormationTop,
     TopsError,
     import_tops_from_json_file,
+    load_survey_for_well,
     load_tops_for_well,
     make_stub_tops,
+    save_survey_for_well,
     save_tops_for_well,
 )
 from well_log_workstation.nav_tree import NavTreeWidget
@@ -270,6 +272,10 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_alias_dict.setObjectName("Action_MnemonicAliasDict")
         self._act_alias_dict.triggered.connect(self._on_open_alias_dialog)
         self._act_alias_dict.setEnabled(False)
+        self._act_survey = file_menu.addAction("编辑测斜数据…")
+        self._act_survey.setObjectName("Action_EditSurvey")
+        self._act_survey.triggered.connect(self._on_edit_survey)
+        self._act_survey.setEnabled(False)
         file_menu.addSeparator()
         act_quit = file_menu.addAction("退出")
         act_quit.triggered.connect(self.close)
@@ -1306,6 +1312,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_import_plot_xml.setEnabled(ws is not None)
         self._act_import_plot_xlsx.setEnabled(ws is not None)
         self._act_alias_dict.setEnabled(ws is not None)
+        self._act_survey.setEnabled(ws is not None)
         # Phase-2 PR-C: new plot-type menu items (fence_3d needs 3D).
         self._act_new_plane_map.setEnabled(ws is not None)
         self._act_new_fence_3d.setEnabled(
@@ -2499,9 +2506,11 @@ class WellLogWorkstationWindow(QMainWindow):
             lat = float(entry.lat) if entry and entry.lat is not None else 0.0
             well_positions.append((lng, lat))
 
-        # Datum shifts (T5): md / tvdss / horizon flatten.
-        datum_mode = "md"
-        target_horizon = None
+        # Datum shifts (T5 / P1-C): md / tvd / tvdss / horizon flatten.
+        datum_mode = str(getattr(plot, "datum_mode", None) or "md")
+        if datum_mode not in ("md", "tvd", "tvdss", "horizon"):
+            datum_mode = "md"
+        target_horizon = getattr(plot, "datum_horizon", None)
         datum = WellSectionDatum(mode=datum_mode, target_horizon=target_horizon)
         well_dicts = [
             {
@@ -2513,7 +2522,13 @@ class WellLogWorkstationWindow(QMainWindow):
             }
             for i, pres in enumerate(presentations)
         ]
-        shifts = datum.compute_shifts(well_dicts)
+        surveys: dict[str, list] = {}
+        if datum_mode == "tvd":
+            for well_id, pres in zip(plot.well_ids, presentations, strict=False):
+                stations, _diags = load_survey_for_well(self._workspace, well_id)
+                if stations:
+                    surveys[pres.well_name] = stations
+        shifts = datum.compute_shifts(well_dicts, surveys=surveys or None)
 
         # Section geometry (T4): faults / contacts / tie quads.
         faults: list[SectionFault2D] = faults_from_json(
@@ -4322,6 +4337,41 @@ class WellLogWorkstationWindow(QMainWindow):
         self.statusBar().showMessage(
             f"已更新测井别名字典（{len(new_map)} 条规范名）", 4000
         )
+
+    def _on_edit_survey(self) -> None:
+        """Edit the deviation survey for a well (FRS §1.1 / P1-C)."""
+        if self._workspace is None or not self._workspace.wells:
+            QMessageBox.information(self, "测斜数据", "请先打开含井的工区。")
+            return
+        from well_log_workstation.survey_dialog import SurveyDialog
+
+        well_ids = self._pick_wells_for_correlation()
+        if not well_ids:
+            return
+        well_id = well_ids[0]
+        entry = next((w for w in self._workspace.wells if w.id == well_id), None)
+        if entry is None:
+            return
+        current, _diags = load_survey_for_well(self._workspace, well_id)
+        dlg = SurveyDialog(entry.name, current, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        stations = dlg.value()
+        try:
+            save_survey_for_well(self._workspace, well_id, stations)
+        except (WorkspaceError, OSError) as exc:
+            QMessageBox.warning(self, "保存测斜失败", str(exc))
+            return
+        self.statusBar().showMessage(
+            f"已保存 {entry.name} 测斜（{len(stations)} 站）", 4000
+        )
+        # If a section using TVD datum is open, re-render with the new survey.
+        if self._active_plot_type == "section" and self._active_plot_id:
+            try:
+                plot = load_plot_document(self._workspace, self._active_plot_id)
+                self._show_section(plot)
+            except WorkspaceError:
+                pass
 
     def _on_open_recent_workspace(self, path: str) -> None:
         """Open a path from the recent list (menu / API; no startup page)."""

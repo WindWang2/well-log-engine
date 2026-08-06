@@ -16,6 +16,7 @@ from well_log_workstation.workspace import Workspace, WorkspaceError
 
 TOPS_SCHEMA_VERSION = 1
 TOPS_FILENAME = "tops.json"
+SURVEY_FILENAME = "survey.json"
 
 
 class TopsError(Exception):
@@ -150,6 +151,67 @@ def save_tops_for_well(
             }
             for t in tops
         ],
+    }
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Deviation survey (FRS §1.1 / P1-C) — stored next to tops under wells/<id>/.
+# ---------------------------------------------------------------------------
+
+
+def survey_file_path(workspace: Workspace, well_id: str) -> Path:
+    return well_data_dir(workspace, well_id) / SURVEY_FILENAME
+
+
+def load_survey_for_well(
+    workspace: Workspace, well_id: str
+) -> tuple[list[Any], list[str]]:
+    """Load deviation survey stations for a well.
+
+    Returns ``(stations, diagnostics)``. Missing file → ``([], [])``. Lazy
+    imports :mod:`well_log_workstation.survey` so this module stays importable
+    without numpy-only consumers paying for it.
+    """
+    diagnostics: list[str] = []
+    try:
+        path = survey_file_path(workspace, well_id)
+    except WorkspaceError as exc:
+        return [], [str(exc)]
+    if not path.is_file():
+        return [], []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [], [f"测斜文件损坏: {exc}"]
+    raw_stations = (
+        data.get("stations") if isinstance(data, dict) else data
+    )
+    from well_log_workstation.survey import survey_from_json
+
+    return survey_from_json(raw_stations), diagnostics
+
+
+def save_survey_for_well(
+    workspace: Workspace,
+    well_id: str,
+    stations: list[Any],
+) -> Path:
+    """Persist deviation survey next to well data (atomic write)."""
+    from well_log_workstation.survey import survey_to_json
+
+    path = survey_file_path(workspace, well_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schemaVersion": 1,
+        "well_id": well_id,
+        "stations": survey_to_json(stations),
     }
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(

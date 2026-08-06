@@ -53,6 +53,8 @@ hiddenimports = list(pyside_hidden) + [
     "well_log_workstation.nav_tree",
     "well_log_workstation.litho_pattern_lib",
     "well_log_workstation.mnemonic_alias",
+    "well_log_workstation.survey",
+    "well_log_workstation.survey_dialog",
     "well_log_workstation.section_geometry.fault_section",
     "well_log_workstation.section_geometry.fault_dialog",
     "well_log_workstation.section_geometry.contact_section",
