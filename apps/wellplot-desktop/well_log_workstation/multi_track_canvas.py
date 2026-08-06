@@ -137,6 +137,10 @@ class MultiTrackCanvas(QWidget):
     # Emitted after a track-header drag reorder (FRS §2.x): the new track id
     # order of the presentation. The shell persists it on the plot document.
     track_order_changed = Signal(list)
+    # Emitted after a track-header right-edge width drag (FRS §2.x): the
+    # track id and its new width_fraction. The shell persists it via the
+    # existing track_overrides path.
+    track_width_changed = Signal(str, float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -155,6 +159,12 @@ class MultiTrackCanvas(QWidget):
         # dragged and the current insertion target (0..len(visible)).
         self._drag_track_index: int | None = None
         self._drag_track_target: int | None = None
+        # Track-header right-edge width drag (FRS §2.x): visible-track index
+        # being resized plus the drag origin and start fraction.
+        self._resize_track_index: int | None = None
+        self._resize_press_x: int = 0
+        self._resize_start_frac: float = 0.0
+        self._resize_start_tw: int = 0
         self._pick_mode = False
         self._press_y: int | None = None
         self._press_x: int | None = None
@@ -285,22 +295,34 @@ class MultiTrackCanvas(QWidget):
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
-            # Track-header hit-test first (FRS §2.x drag reorder); the header
-            # drag takes precedence over the pan gesture below.
+            # Track-header hit-test first (FRS §2.x): the right edge of a
+            # header starts a width drag; the rest of the header reorders.
             if self._presentation is not None and self._presentation.tracks:
                 entries, _band = track_header_rects(
                     self._presentation, self.width(), self.height()
                 )
                 pos = event.position()
+                px, py = int(pos.x()), int(pos.y())
                 for i, (_track, header, _body) in enumerate(entries):
-                    if header.contains(int(pos.x()), int(pos.y())):
-                        self._drag_track_index = i
-                        self._drag_track_target = i
-                        self._press_x = int(pos.x())
-                        self._press_y = int(pos.y())
-                        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                    if not header.contains(px, py):
+                        continue
+                    if px >= header.right() - 6:
+                        # Width drag: remember the start geometry so the move
+                        # handler can convert pixels back to fractions.
+                        self._resize_track_index = i
+                        self._resize_press_x = px
+                        self._resize_start_frac = entries[i][0].width_fraction
+                        self._resize_start_tw = header.width()
+                        self.setCursor(Qt.CursorShape.SizeHorCursor)
                         event.accept()
                         return
+                    self._drag_track_index = i
+                    self._drag_track_target = i
+                    self._press_x = px
+                    self._press_y = py
+                    self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                    event.accept()
+                    return
             self._press_y = int(event.position().y())
             self._press_x = int(event.position().x())
             self._did_drag = False
@@ -309,6 +331,31 @@ class MultiTrackCanvas(QWidget):
             event.accept()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        # Track-header width drag: convert the horizontal delta back into a
+        # width_fraction (inverse of the paint allocation) and apply it live.
+        if self._resize_track_index is not None and self._presentation is not None:
+            vis = list(self._presentation.visible_tracks)
+            index = self._resize_track_index
+            if 0 <= index < len(vis):
+                track = vis[index]
+                dx = float(event.position().x()) - self._resize_press_x
+                tw_new = max(24, self._resize_start_tw + int(dx))
+                total_frac = (
+                    sum(
+                        max(0.05, t.width_fraction)
+                        for t in self._presentation.visible_tracks
+                    )
+                    or 1.0
+                )
+                usable_w = max(40, self.width() - 8 - 8)
+                frac = max(
+                    0.05, min(1.0, tw_new * total_frac / usable_w)
+                )
+                if abs(frac - track.width_fraction) > 1e-6:
+                    track.width_fraction = frac
+                    self.update()
+            event.accept()
+            return
         # Track-header drag: recompute the insertion target from the cursor x
         # (header-centre boundaries), update the indicator, no depth pan.
         if self._drag_track_index is not None and self._presentation is not None:
@@ -356,6 +403,26 @@ class MultiTrackCanvas(QWidget):
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        # Track-header width drag release: report the new width_fraction so
+        # the shell persists it (FRS §2.x).
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._resize_track_index is not None
+            and self._presentation is not None
+        ):
+            vis = list(self._presentation.visible_tracks)
+            index = self._resize_track_index
+            self._resize_track_index = None
+            self.unsetCursor()
+            self.update()
+            if 0 <= index < len(vis):
+                track = vis[index]
+                if abs(track.width_fraction - self._resize_start_frac) > 1e-6:
+                    self.track_width_changed.emit(
+                        track.id, float(track.width_fraction)
+                    )
+            event.accept()
+            return
         # Track-header drag release: reorder the presentation and report the
         # new id order so the shell can persist it (FRS §2.x).
         if (

@@ -573,6 +573,11 @@ class WellLogWorkstationWindow(QMainWindow):
         self.multi_track_canvas.track_order_changed.connect(
             lambda _order: self._persist_track_overrides()
         )
+        # Track-header width drag (FRS §2.x): width_fraction persists via the
+        # same track_overrides path.
+        self.multi_track_canvas.track_width_changed.connect(
+            lambda _track_id, _frac: self._persist_track_overrides()
+        )
         self.single_well_stack.addWidget(self.multi_track_canvas)  # index 0 host
 
         self._engine_page = QWidget()

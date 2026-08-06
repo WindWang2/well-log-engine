@@ -233,3 +233,100 @@ def test_shell_track_order_persists_across_reopen(qtbot, tmp_path: Path) -> None
     restored = win2.active_presentation
     assert restored is not None
     assert [t.id for t in restored.tracks] == expected
+
+
+# ---------------------------------------------------------------------------
+# Track width drag (FRS §2.x): header right-edge resize
+# ---------------------------------------------------------------------------
+
+
+def test_canvas_header_edge_drag_resizes_width(qtbot, tmp_path: Path) -> None:
+    pres = _presentation(tmp_path)
+    canvas = MultiTrackCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(900, 600)
+    canvas.set_presentation(pres)
+    canvas.grab()
+
+    emitted: list[tuple] = []
+    canvas.track_width_changed.connect(
+        lambda track_id, frac: emitted.append((track_id, frac))
+    )
+
+    entries, _band = track_header_rects(pres, 900, 600)
+    header = entries[1][1]  # a curve track header
+    track_id = entries[1][0].id
+    start_frac = entries[1][0].width_fraction
+    y = header.center().y()
+    press = QPoint(header.right() - 2, y)  # right edge → width mode
+    release = QPoint(header.right() + 40, y)
+
+    QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=press)
+    QTest.mouseMove(canvas, release)
+    QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=release)
+
+    track = entries[1][0]
+    assert track.width_fraction > start_frac
+    assert emitted == [(track_id, track.width_fraction)]
+    assert canvas._resize_track_index is None  # state cleared
+
+
+def test_canvas_width_drag_left_shrinks(qtbot, tmp_path: Path) -> None:
+    pres = _presentation(tmp_path)
+    canvas = MultiTrackCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(900, 600)
+    canvas.set_presentation(pres)
+
+    entries, _band = track_header_rects(pres, 900, 600)
+    header = entries[1][1]
+    start_frac = entries[1][0].width_fraction
+    y = header.center().y()
+    press = QPoint(header.right() - 2, y)
+    release = QPoint(header.right() - 30, y)
+
+    QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=press)
+    QTest.mouseMove(canvas, release)
+    QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=release)
+
+    assert entries[1][0].width_fraction < start_frac
+
+
+def test_canvas_width_drag_clamps_at_minimum(qtbot, tmp_path: Path) -> None:
+    pres = _presentation(tmp_path)
+    canvas = MultiTrackCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(900, 600)
+    canvas.set_presentation(pres)
+
+    entries, _band = track_header_rects(pres, 900, 600)
+    header = entries[1][1]
+    y = header.center().y()
+    press = QPoint(header.right() - 2, y)
+    release = QPoint(header.right() - 500, y)  # far left
+
+    QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=press)
+    QTest.mouseMove(canvas, release)
+    QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=release)
+
+    assert entries[1][0].width_fraction == pytest.approx(0.05)
+
+
+def test_canvas_width_drag_without_move_does_not_emit(qtbot, tmp_path: Path) -> None:
+    pres = _presentation(tmp_path)
+    canvas = MultiTrackCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(900, 600)
+    canvas.set_presentation(pres)
+
+    emitted: list[tuple] = []
+    canvas.track_width_changed.connect(
+        lambda track_id, frac: emitted.append((track_id, frac))
+    )
+
+    entries, _band = track_header_rects(pres, 900, 600)
+    header = entries[1][1]
+    press = QPoint(header.right() - 2, header.center().y())
+    QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=press)
+    QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=press)
+    assert emitted == []
