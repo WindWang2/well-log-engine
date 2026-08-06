@@ -52,6 +52,7 @@ hiddenimports = list(pyside_hidden) + [
     "well_log_workstation.workspace",
     "well_log_workstation.nav_tree",
     "well_log_workstation.litho_pattern_lib",
+    "well_log_workstation.mnemonic_alias",
     "well_log_workstation.print_preview",
     "well_log_workstation.geometry_golden",
     "numpy",

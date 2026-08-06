@@ -266,6 +266,11 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_import_plot_xlsx.triggered.connect(self._on_import_plot_xlsx)
         self._act_import_plot_xlsx.setEnabled(False)
         file_menu.addSeparator()
+        self._act_alias_dict = file_menu.addAction("测井别名字典…")
+        self._act_alias_dict.setObjectName("Action_MnemonicAliasDict")
+        self._act_alias_dict.triggered.connect(self._on_open_alias_dialog)
+        self._act_alias_dict.setEnabled(False)
+        file_menu.addSeparator()
         act_quit = file_menu.addAction("退出")
         act_quit.triggered.connect(self.close)
 
@@ -1243,6 +1248,11 @@ class WellLogWorkstationWindow(QMainWindow):
 
     def set_workspace(self, ws: Workspace | None) -> None:
         self._workspace = ws
+        # Activate the workspace mnemonic alias dictionary so template/display
+        # matching picks up alias curves (FRS §1.2 / P0-A).
+        from well_log_workstation.mnemonic_alias import set_active_map
+
+        set_active_map(ws.mnemonic_alias if ws is not None else None)
         if ws is None:
             self.session.clear()
             self._selected_well_id = None
@@ -1276,6 +1286,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_import_las.setEnabled(ws is not None)
         self._act_import_plot_xml.setEnabled(ws is not None)
         self._act_import_plot_xlsx.setEnabled(ws is not None)
+        self._act_alias_dict.setEnabled(ws is not None)
         # Phase-2 PR-C: new plot-type menu items (fence_3d needs 3D).
         self._act_new_plane_map.setEnabled(ws is not None)
         self._act_new_fence_3d.setEnabled(
@@ -4276,6 +4287,28 @@ class WellLogWorkstationWindow(QMainWindow):
             QMessageBox.warning(self, "打开工区失败", str(exc))
         except OSError as exc:
             QMessageBox.warning(self, "打开工区失败", str(exc))
+
+    def _on_open_alias_dialog(self) -> None:
+        """Edit the workspace mnemonic alias dictionary (FRS §1.2 / P0-A)."""
+        if self._workspace is None:
+            return
+        from well_log_workstation.mnemonic_alias import set_active_map
+        from well_log_workstation.mnemonic_alias_dialog import MnemonicAliasDialog
+
+        dlg = MnemonicAliasDialog(self._workspace.mnemonic_alias, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_map = dlg.value()
+        self._workspace.mnemonic_alias = new_map
+        try:
+            save_workspace(self._workspace)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "保存别名字典失败", str(exc))
+            return
+        set_active_map(new_map)
+        self.statusBar().showMessage(
+            f"已更新测井别名字典（{len(new_map)} 条规范名）", 4000
+        )
 
     def _on_open_recent_workspace(self, path: str) -> None:
         """Open a path from the recent list (menu / API; no startup page)."""

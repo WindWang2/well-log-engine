@@ -219,8 +219,12 @@ def get_builtin_template(template_id: str) -> PlotTemplate | None:
 def _match_curve(
     doc: ImportedWellDocument, mnemonics: list[str]
 ) -> ImportedCurve | None:
+    # Expand candidates through the workspace alias dictionary (FRS §1.2):
+    # a GR slot can match a GRD curve when the workspace maps GR→[GRD].
+    from well_log_workstation.mnemonic_alias import expand as _alias_expand
+
     upper_map = {c.mnemonic.upper(): c for c in doc.curves}
-    for m in mnemonics:
+    for m in _alias_expand(mnemonics):
         hit = upper_map.get(m.strip().upper())
         if hit is not None:
             return hit

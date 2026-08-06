@@ -112,8 +112,12 @@ def _curve_slots(template: PlotTemplate) -> list[dict]:
 
 
 def _leaf_matches_slot(leaf: DisplayableTrackLeaf, slot_mnemos: Sequence[str]) -> bool:
+    # Expand slot mnemonics through the workspace alias dictionary so an alias
+    # curve (e.g. GRD) matches a slot authored for its canonical (GR).
+    from well_log_workstation.mnemonic_alias import expand as _alias_expand
+
     want = _norm(leaf.mnemonic)
-    return any(_norm(m) == want for m in slot_mnemos)
+    return any(_norm(m) == want for m in _alias_expand(slot_mnemos))
 
 
 # Soft cap for first-open / empty-plot defaults. User-saved display_set is never
@@ -202,7 +206,11 @@ def default_checks(
                 del remaining[i]
                 break
 
-    # 2) Preferred mnemonics (skip already chosen)
+    # 2) Preferred mnemonics (skip already chosen). Expand each preferred
+    # mnemonic through the workspace alias dictionary so e.g. GR also picks
+    # up a GRD curve when the workspace maps GR→[GRD].
+    from well_log_workstation.mnemonic_alias import expand as _alias_expand
+
     by_norm: dict[str, DisplayableTrackLeaf] = {}
     for leaf in leaves:
         if leaf.id in used:
@@ -212,9 +220,11 @@ def default_checks(
     for mnemo in DEFAULT_MNEMONIC_PRIORITY:
         if len(chosen) >= max_tracks:
             break
-        leaf = by_norm.get(_norm(mnemo))
-        if leaf is not None:
-            _take(leaf)
+        for candidate in _alias_expand([mnemo]):
+            leaf = by_norm.get(_norm(candidate))
+            if leaf is not None:
+                _take(leaf)
+                break
 
     # 3) Fill with remaining document-order leaves up to cap
     for leaf in leaves:

@@ -25,7 +25,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 坐标系/投影转换 (GK/UTM, CGCS2000/北京54/西安80) | 🟡 | `workspace.py` coordinate trio (project/display/target CRS); `plane_map_view.coerce_to_project_crs`; `crs_dialog.py` | 投影转换引擎缺失（依赖 geoviz 能力）→ SDK(IO/坐标) + Desktop(UI) |
 | 井口坐标 X/Y、KB 补心海拔、GL、Max MD | 🟡 | LAS `LAT/LONG` → lng/lat/crs (`las_import.py:115-143`); `kb_m` on wells (`datum/well_section_datum.py:37-54`) | X/Y (GK/UTM 投影坐标) 未解析；GL 无 → Desktop(数据) + SDK(las.cpp 井头) |
 | 测斜/定向井轨迹 (MD/Inc/Az → TVD/TVDSS/ΔN/ΔE) | ❌ | `section_geometry/trajectory_2d.py:20-54` 仅直线 head→bottom；`datum` 显式拒绝 `tvd` | 轨迹计算（测斜→TVD/位移）→ SDK(几何)；存储/导入 → Desktop |
-| 曲线别名字典（工区级） | 🟡 | 内联模板 mnemonic 列表 (`templates/std_gr_rt_den.json`) + `display_set.DEFAULT_MNEMONIC_PRIORITY:125-159`; SDK LIS 别名归一化 (`io/lis.hpp:73-102`) | 独立工区级别名字典 → Desktop(workspace.json) |
+| 曲线别名字典（工区级） | ✅ | 工区级 `Workspace.mnemonic_alias`（canonical→[aliases]，存 `workspace.json`）；`mnemonic_alias.py` 双向 expand 接入 `_match_curve`/`default_checks`/`_leaf_matches_slot`；「测井别名字典」对话框编辑 | 已闭环：模板/默认显示按别名命中 |
 | 多采样率/多版本曲线 | 🟡 | 模型支持多 curve；多 axis (md/tvd/tvdss) (`core/document.hpp:45-50`) | 版本管理（原始/校正/合成, 非破坏切换）→ Desktop(会话) |
 | 统一地层层序字典（界-系-统-组-段-小层-砂层 + 颜色/线型/花纹） | ❌ | `FormationTop` 仅 name+depth+color (`tops_model.py:25-34`); SDK interval 语义含 lithology/stratigraphy (`core/document.hpp:409-416`) 但无层级体系 | 层序字典 schema → Desktop(数据)；渲染语义已可由 SDK interval 表达 |
 | 岩心/试油/射孔数据库 | ❌ | 无 | → Desktop(数据) + 单井图道（见 §2） |
@@ -103,7 +103,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 
 | 切片 | SDK 部分 | Desktop 部分 | 验收 |
 |---|---|---|---|
-| **P0-A 别名字典** | — | `workspace.json` 增 `mnemonic_alias` 字典；模板匹配改查字典；UI 管理对话框 | 导入任意别名 GR 曲线可被模板命中；单测 |
+| **P0-A 别名字典** ✅ | — | `Workspace.mnemonic_alias`（canonical→[aliases]，存 workspace.json）；`mnemonic_alias.py` 双向 expand；接入 `_match_curve`/`default_checks`/`_leaf_matches_slot`；「测井别名字典」对话框 | 导入任意别名 GR 曲线可被模板命中；单测 |
 | **P0-B SY/T 5615 花纹库** | `PatternDefinition` 扩展（点/斜线/三角/波浪等图元组合）；内置花纹目录 + 测试 golden | 岩性道渲染（host 画布）+ 花纹选择器；section 四边形改用真花纹 | 花纹 golden 单测；单井岩性道可见 |
 | **P0-B SY/T 5615 花纹库** ✅ | — | 已交付：`litho_patterns/syt5615.json`（7 种核心岩性）+ `litho_pattern_lib`（加载/`make_qbrush` Qt 真矢量渲染/`pattern_to_engine_payload`）；section 四边形 + 井间充填（含楔形）接入真花纹；`PlotDocument.litho_pattern_map` 持久化 | 花纹加载/payload 契约/Qt 渲染/画布 smoke/持久化往返 |
 | **P0-C 砂体尖灭多边形** ✅ | — | 已交付：`interwell_fill.build_interwell_fill_bands(pinchout_mode="linear")` 生成线性楔形；`PlotDocument.pinchout_mode/factor/smooth` 持久化；correlation 画布渲染（直线/贝塞尔平滑）；UI 控件 + 测试 | 纯 numpy 几何单测；画布 render smoke；持久化往返 |

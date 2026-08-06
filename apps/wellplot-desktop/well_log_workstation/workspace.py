@@ -11,6 +11,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from well_log_workstation.mnemonic_alias import normalize_alias_mapping
+
 WORKSPACE_FILENAME = "workspace.json"
 WELLS_DIRNAME = "wells"
 PLOTS_DIRNAME = "plots"
@@ -81,6 +83,10 @@ class Workspace:
     # Phase-2 T2 (#246): project/target/display CRS trio held by the
     # Workstation. Defaults to WGS84 (paleo_map Plate Carrée identity).
     coordinate: CoordinateReference = field(default_factory=CoordinateReference)
+    # Mnemonic alias dictionary (FRS §1.2 / P0-A): canonical → [aliases].
+    # Lets a template slot ``GR`` match a curve named ``GRD`` etc. Optional;
+    # empty dict means match by exact (case-insensitive) mnemonic only.
+    mnemonic_alias: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def wells_dir(self) -> Path:
@@ -113,6 +119,11 @@ def _to_json_dict(ws: Workspace) -> dict[str, Any]:
         "name": ws.name,
         "defaultTemplateId": ws.default_template_id,
         "coordinate": asdict(ws.coordinate),
+        "mnemonic_alias": {
+            str(k): [str(x) for x in v]
+            for k, v in ws.mnemonic_alias.items()
+            if k and v
+        },
         "wells": [asdict(w) for w in ws.wells],
         "plots": [asdict(p) for p in ws.plots],
     }
@@ -158,6 +169,8 @@ def _upgrade_v1_to_v2(data: dict[str, Any]) -> dict[str, Any]:
         plots.append(pd)
     out["plots"] = plots
     out.setdefault("coordinate", asdict(CoordinateReference()))
+    # P0-A (FRS §1.2): mnemonic_alias is new in v2; v1 files default to empty.
+    out.setdefault("mnemonic_alias", {})
     return out
 
 
@@ -209,6 +222,7 @@ def _from_json_dict(root: Path, data: dict[str, Any]) -> Workspace:
         default_template_id=data.get("defaultTemplateId"),
         schema_version=version,
         coordinate=coordinate,
+        mnemonic_alias=normalize_alias_mapping(data.get("mnemonic_alias")),
     )
 
 
