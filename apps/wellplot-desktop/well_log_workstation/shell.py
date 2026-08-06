@@ -5437,13 +5437,23 @@ class WellLogWorkstationWindow(QMainWindow):
             )
             QMessageBox.warning(self, f"导出 {fmt.upper()} 失败", str(exc))
 
-    def _paint_active_plot(self, painter, rect) -> None:
-        """Paint callback for the T8 Qt-paint export path (single/corr/section)."""
+    def _paint_active_plot(
+        self, painter, rect, *, depth_range: tuple[float, float] | None = None
+    ) -> None:
+        """Paint callback for the T8 Qt-paint export path (single/corr/section).
+
+        ``depth_range`` optionally restricts the painted depth window — the
+        WYSIWYG print preview uses it for per-page pagination.
+        """
         if self._active_plot_type == "single_well" and self._presentation is not None:
             from well_log_workstation.export_plot import _paint_presentation
-            _paint_presentation(painter, self._presentation, rect)
+            _paint_presentation(
+                painter, self._presentation, rect, depth_range=depth_range
+            )
         elif self._active_plot_type == "correlation":
-            self._paint_correlation_export(painter, rect)
+            self._paint_correlation_export(
+                painter, rect, depth_range=depth_range
+            )
         elif self._active_plot_type == "section":
             # Section: paint the section canvas into the rect.
             self.section_canvas.render(painter)
@@ -5465,8 +5475,14 @@ class WellLogWorkstationWindow(QMainWindow):
                         data,
                     )
 
-    def _paint_correlation_export(self, painter, rect) -> None:
-        """Vector export for correlation: columns + links (Qt paint, B0 #300)."""
+    def _paint_correlation_export(
+        self, painter, rect, *, depth_range: tuple[float, float] | None = None
+    ) -> None:
+        """Vector export for correlation: columns + links (Qt paint, B0 #300).
+
+        ``depth_range`` makes every column share the same depth window (print
+        preview pagination); otherwise each column fits its own depth range.
+        """
         from well_log_workstation.export_plot import _paint_presentation
 
         presentations = self._correlation_presentations
@@ -5480,7 +5496,7 @@ class WellLogWorkstationWindow(QMainWindow):
                 col_w,
                 rect.height(),
             )
-            _paint_presentation(painter, pres, sub)
+            _paint_presentation(painter, pres, sub, depth_range=depth_range)
         # Overlay horizon links in shared display depth if available
         links = self._correlation_links
         if not links or n < 2:
@@ -5490,21 +5506,24 @@ class WellLogWorkstationWindow(QMainWindow):
         # Approximate shared depth band (middle 80% of column height)
         top = rect.y() + rect.height() * 0.12
         bottom = rect.y() + rect.height() * 0.92
-        # Collect depth ranges from presentations
-        import numpy as np
-
         shifts = self.correlation_canvas.depth_shifts()
-        d0s: list[float] = []
-        d1s: list[float] = []
-        for pres in presentations:
-            depth = np.asarray(pres.depth, dtype=np.float64)
-            if depth.size:
-                s = float(shifts.get(pres.well_document_id, 0.0))
-                d0s.append(float(np.nanmin(depth)) + s)
-                d1s.append(float(np.nanmax(depth)) + s)
-        if not d0s:
-            return
-        d0, d1 = min(d0s), max(d1s)
+        if depth_range is not None:
+            d0, d1 = float(depth_range[0]), float(depth_range[1])
+        else:
+            # Collect depth ranges from presentations
+            import numpy as np
+
+            d0s: list[float] = []
+            d1s: list[float] = []
+            for pres in presentations:
+                depth = np.asarray(pres.depth, dtype=np.float64)
+                if depth.size:
+                    s = float(shifts.get(pres.well_document_id, 0.0))
+                    d0s.append(float(np.nanmin(depth)) + s)
+                    d1s.append(float(np.nanmax(depth)) + s)
+            if not d0s:
+                return
+            d0, d1 = min(d0s), max(d1s)
         if d1 <= d0:
             return
         id_to_i = {p.well_document_id: i for i, p in enumerate(presentations)}
@@ -5689,7 +5708,7 @@ class WellLogWorkstationWindow(QMainWindow):
             QMessageBox.warning(self, "导出 CGM 失败", str(exc))
 
     def open_print_preview(self, *, show: bool = True):
-        """Open print-preview skeleton for active single-well or correlation (T13).
+        """Open WYSIWYG print preview for the active single-well or correlation.
 
         Returns PrintPreviewInfo for tests, or None if nothing to preview.
         ``show=False`` builds info (and optionally dialog) without modal exec.
@@ -5699,9 +5718,9 @@ class WellLogWorkstationWindow(QMainWindow):
             vr = self.multi_track_canvas.depth_range()
             if vr is not None:
                 d0, d1 = vr
-            span = max(d1 - d0, 1e-9)
-            # Skeleton multi-page plan: two pages by default for long spans
-            page_spec = PageSpec(depth_per_page_mm=max(span / 2.0, 1.0))
+            # WYSIWYG default: A4 portrait, whole visible depth on one page;
+            # the dialog can paginate by depth / change paper interactively.
+            page_spec = PageSpec(orientation="portrait")
             info = compute_print_preview(
                 plot_name=(
                     self._presentation.well_name
