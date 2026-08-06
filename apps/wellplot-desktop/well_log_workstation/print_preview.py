@@ -16,6 +16,7 @@ import numpy as np
 from PySide6.QtCore import QMarginsF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
+    QPagedPaintDevice,
     QPageLayout,
     QPageSize,
     QPainter,
@@ -204,34 +205,38 @@ def print_preview_pages(
     paint_fn: Callable[[Any, QRectF, ...], None],
     page_spec: PageSpec,
     depth_windows: Sequence[tuple[float, float]],
-    printer: QPrinter,
+    device: QPagedPaintDevice,
 ) -> int:
-    """Paint one page per depth window onto a QPrinter (or PDF file).
+    """Paint one page per depth window onto a paged device (QPrinter or
+    QPdfWriter).
 
     Returns the number of pages painted. The page geometry is derived from
-    the same PageSpec the preview thumbnails use, so printed output matches
-    the preview (WYSIWYG).
+    the same PageSpec the preview thumbnails use, so printed/exported output
+    matches the preview (WYSIWYG).
     """
-    printer.setPageSize(QPageSize(_PAGE_SIZE_IDS[page_spec.page_size]))
+    device.setPageSize(QPageSize(_PAGE_SIZE_IDS[page_spec.page_size]))
     orientation = (
         QPageLayout.Orientation.Landscape
         if page_spec.orientation == "landscape"
         else QPageLayout.Orientation.Portrait
     )
-    printer.setPageOrientation(orientation)
+    device.setPageOrientation(orientation)
     m_t, m_r, m_b, m_l = page_spec.margins_mm
-    printer.setPageMargins(
+    device.setPageMargins(
         QMarginsF(m_l, m_t, m_r, m_b), QPageLayout.Unit.Millimeter
     )
     painter = QPainter()
-    if not painter.begin(printer):
+    if not painter.begin(device):
         raise RuntimeError("无法开始打印（QPainter.begin 失败）")
     try:
         pages = 0
         for i, window in enumerate(depth_windows):
             if i:
-                printer.newPage()
-            page = printer.pageRect(QPrinter.Unit.DevicePixel)
+                device.newPage()
+            # Paintable area in device pixels: pageLayout().paintRectPixels
+            # works for both QPrinter and QPdfWriter (QPdfWriter has no
+            # pageRect accessor in PySide6).
+            page = device.pageLayout().paintRectPixels(device.resolution())
             paint_fn(painter, QRectF(page), depth_range=window)
             pages += 1
     finally:
@@ -359,6 +364,11 @@ class PrintPreviewDialog(QDialog):
         root.addWidget(notes)
 
         buttons = QDialogButtonBox()
+        export_btn = buttons.addButton(
+            "导出 PDF…", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        export_btn.setObjectName("PreviewExportPdf")
+        export_btn.clicked.connect(self._on_export_pdf)
         print_btn = buttons.addButton(
             "打印…", QDialogButtonBox.ButtonRole.ActionRole
         )
@@ -447,3 +457,37 @@ class PrintPreviewDialog(QDialog):
             )
         except RuntimeError as exc:
             QMessageBox.warning(self, "打印失败", str(exc))
+
+    def _on_export_pdf(self) -> None:
+        """Export the paginated preview to a PDF file (WYSIWYG: the file
+        matches the page slices shown in the preview)."""
+        if self._paint_fn is None or not self._info.page_depth_windows:
+            QMessageBox.information(self, "导出 PDF", "（无可导出内容）")
+            return
+        from PySide6.QtGui import QPdfWriter
+        from PySide6.QtWidgets import QFileDialog
+
+        default = f"{self._info.plot_name or 'plot'}.pdf"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出 PDF",
+            default,
+            "PDF (*.pdf);;All (*.*)",
+        )
+        if not path:
+            return
+        writer = QPdfWriter(str(path))
+        writer.setResolution(150)
+        try:
+            pages = print_preview_pages(
+                self._paint_fn,
+                self._page_spec,
+                self._info.page_depth_windows,
+                writer,
+            )
+        except RuntimeError as exc:
+            QMessageBox.warning(self, "导出 PDF 失败", str(exc))
+            return
+        QMessageBox.information(
+            self, "导出 PDF", f"已导出 {pages} 页：{path}"
+        )

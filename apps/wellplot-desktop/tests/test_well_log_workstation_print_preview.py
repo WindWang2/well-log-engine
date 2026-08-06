@@ -308,3 +308,49 @@ def test_shell_print_preview_from_single_well(qtbot, tmp_path: Path) -> None:
     d0, d1 = depth_range_from_presentation(win.active_presentation)
     assert info.depth_top == pytest.approx(d0)
     assert info.depth_bottom == pytest.approx(d1)
+
+
+# ---------------------------------------------------------------------------
+# Export PDF (WYSIWYG paginated export via QPdfWriter)
+# ---------------------------------------------------------------------------
+
+
+def test_print_preview_pages_to_pdf_writer(qtbot, tmp_path: Path) -> None:
+    """print_preview_pages accepts a QPdfWriter (export path), painting one
+    page per depth window — same contract as the QPrinter print path."""
+    from PySide6.QtGui import QPdfWriter
+
+    from well_log_workstation.print_preview import print_preview_pages
+
+    received: list = []
+    fn = _recording_paint_fn(received)
+    spec = PageSpec(orientation="portrait", depth_per_page_mm=25.0)
+    windows = ((100.0, 125.0), (125.0, 150.0), (150.0, 175.0), (175.0, 200.0))
+    writer = QPdfWriter(str(tmp_path / "export.pdf"))
+    writer.setResolution(150)
+    pages = print_preview_pages(fn, spec, windows, writer)
+    assert pages == 4
+    out = tmp_path / "export.pdf"
+    assert out.is_file()
+    assert out.stat().st_size > 1000
+    assert received == list(windows)
+
+
+def test_print_preview_dialog_has_export_button(qtbot) -> None:
+    """The dialog offers 导出 PDF… (WYSIWYG paginated export)."""
+    from PySide6.QtWidgets import QPushButton
+
+    from well_log_workstation.print_preview import PrintPreviewDialog
+
+    info = compute_print_preview(
+        plot_name="Btn",
+        depth_top=100.0,
+        depth_bottom=200.0,
+        depth_unit="m",
+        page_spec=PageSpec(depth_per_page_mm=50.0),
+    )
+    dlg = PrintPreviewDialog(info, paint_fn=None)
+    qtbot.addWidget(dlg)
+    export_btn = dlg.findChild(QPushButton, "PreviewExportPdf")
+    assert export_btn is not None
+    assert export_btn.text() == "导出 PDF…"
