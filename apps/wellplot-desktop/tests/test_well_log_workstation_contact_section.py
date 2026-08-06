@@ -351,6 +351,60 @@ def test_split_composite_contact_crosses_one_half() -> None:
     assert pieces[2].fill_color == "#aaa"  # right half unsplit
 
 
+def test_split_composite_two_contacts_full_cut() -> None:
+    """GOC then OWC: sequential full cut → gas / oil / water (3 pieces)."""
+    q = _quad(0.0, 1000.0, 1100.0)
+    goc = FluidContact2D(fluid_type="goc", depths={0: 1020.0, 1: 1020.0})
+    owc = FluidContact2D(fluid_type="owc", depths={0: 1060.0, 1: 1060.0})
+    pieces = split_quad_composite(q, [], [goc, owc], 3)
+    assert len(pieces) == 3
+    # GOC above = gas amber; then OWC splits remaining into oil / water.
+    assert pieces[0].fill_color == "#f59e0b"  # gas (above GOC)
+    assert pieces[1].fill_color == "#dc2626"  # oil (above OWC)
+    assert pieces[2].fill_color == "#2563eb"  # water (below OWC)
+    assert pieces[0].corners[2, 1] == pytest.approx(1020.0)
+    assert pieces[1].corners[0, 1] == pytest.approx(1020.0)
+    assert pieces[1].corners[2, 1] == pytest.approx(1060.0)
+    assert pieces[2].corners[0, 1] == pytest.approx(1060.0)
+
+
+def test_split_composite_two_faults_full_cut() -> None:
+    """Two fault planes: each splits current pieces → 3 columns."""
+    q = _quad(0.0, 1005.0, 1095.0)
+    f1 = SectionFault2D(
+        name="F1", between=(0, 1), x_frac=0.33, top_depth=1000, bottom_depth=1100
+    )
+    f2 = SectionFault2D(
+        name="F2", between=(0, 1), x_frac=0.66, top_depth=1000, bottom_depth=1100
+    )
+    pieces = split_quad_composite(q, [f1, f2], [], 3)
+    assert len(pieces) == 3
+    # Left edge of first piece at x=0; right edge of last at x=1.
+    assert pieces[0].corners[0, 0] == pytest.approx(0.0)
+    assert pieces[-1].corners[1, 0] == pytest.approx(1.0)
+    # Shared vertical edges abut.
+    assert pieces[0].corners[1, 0] == pytest.approx(pieces[1].corners[0, 0])
+    assert pieces[1].corners[1, 0] == pytest.approx(pieces[2].corners[0, 0])
+
+
+def test_split_composite_two_faults_and_two_contacts() -> None:
+    """Multi-fault × multi-contact: every plane applied, not first-hit only."""
+    q = _quad(0.0, 1000.0, 1100.0)
+    f1 = SectionFault2D(
+        name="F1", between=(0, 1), x_frac=0.4, top_depth=1000, bottom_depth=1100
+    )
+    f2 = SectionFault2D(
+        name="F2", between=(0, 1), x_frac=0.7, top_depth=1000, bottom_depth=1100
+    )
+    goc = FluidContact2D(fluid_type="goc", depths={0: 1025.0, 1: 1025.0})
+    owc = FluidContact2D(fluid_type="owc", depths={0: 1065.0, 1: 1065.0})
+    pieces = split_quad_composite(q, [f1, f2], [goc, owc], 3)
+    # 3 columns × 3 fluid bands = 9 when both contacts cross every column.
+    assert len(pieces) == 9
+    colors = {p.fill_color for p in pieces}
+    assert colors == {"#f59e0b", "#dc2626", "#2563eb"}
+
+
 def test_section_canvas_fault_and_contact_composite_render(qtbot) -> None:
     from PySide6.QtGui import QImage
 

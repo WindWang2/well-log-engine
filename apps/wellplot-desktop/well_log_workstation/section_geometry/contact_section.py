@@ -272,19 +272,23 @@ def split_quad_composite(
     well_count: int,
     surfaces: Iterable[Any] | None = None,
 ) -> list[TieQuad2D]:
-    """Split a tie-quad by surfaces, then faults, then fluid contacts.
+    """Split a tie-quad by surfaces, then **every** fault, then **every** contact.
 
-    A structural surface truncation comes first (erosion keeps below, onlap
-    keeps above; first surface crossing the quad wins), then the fault split
-    (hanging/foot-wall halves, first fault crossing wins), then each piece
-    may be split again by the first contact crossing it. Because a contact
-    depth is defined per well, its line breaks where the fault offsets the
-    wells — the halves split independently, producing the natural offset at
-    the fault plane.
+    Order:
+    1. Structural surfaces (erosion/onlap) — applied sequentially; each
+       successful truncate replaces the working quad (first-wins was too
+       weak when multiple surfaces stack).
+    2. Fault throws via ``apply_faults_to_quad`` (all faults), then
+       **each** fault plane splits every current piece left/right
+       (sequential full cut — not first-hit only).
+    3. **Each** fluid contact splits every current piece above/below when
+       it crosses that piece (GOC then OWC → up to three stacked fills).
 
-    Returns 1..4 pieces in paint order (surface-truncated piece; fault left
-    then right; each contact split emits the above piece before the below
-    piece). No faults/contacts/surfaces → the quad itself.
+    Because contact depth is per well, lines offset across a fault plane:
+    left and right halves split independently.
+
+    Returns 1..N pieces in paint order (fault left before right; contact
+    above before below). Empty faults/contacts/surfaces → ``[quad]``.
     """
     from well_log_workstation.section_geometry.erosion_surface import (
         truncate_quad_by_surface,
@@ -298,36 +302,35 @@ def split_quad_composite(
     faults_list = list(faults or [])
     contacts_list = list(contacts or [])
     base = quad
-    if surfaces_list:
-        for surface in surfaces_list:
-            kept = truncate_quad_by_surface(base, surface, well_count)
-            if kept is not None:
-                base = kept
-                break
+    # Surfaces: apply every successful truncate in order (stacking).
+    for surface in surfaces_list:
+        kept = truncate_quad_by_surface(base, surface, well_count)
+        if kept is not None:
+            base = kept
     eff = (
         apply_faults_to_quad(base, faults_list, well_count)
         if faults_list
         else base
     )
-    pieces = [eff]
-    if faults_list:
-        for fault in faults_list:
-            candidate = split_quad_by_fault(eff, fault, well_count)
-            if candidate is not None:
-                pieces = [candidate[0], candidate[1]]
-                break
-    if contacts_list:
-        split_pieces: list[TieQuad2D] = []
+    pieces: list[TieQuad2D] = [eff]
+    # Faults: sequential full cut — each fault splits every current piece.
+    for fault in faults_list:
+        next_pieces: list[TieQuad2D] = []
         for piece in pieces:
-            split = None
-            for contact in contacts_list:
-                candidate = split_quad_by_contact(piece, contact, well_count)
-                if candidate is not None:
-                    split = candidate
-                    break
-            if split is not None:
-                split_pieces.extend(split)
+            candidate = split_quad_by_fault(piece, fault, well_count)
+            if candidate is not None:
+                next_pieces.extend((candidate[0], candidate[1]))
             else:
-                split_pieces.append(piece)
-        pieces = split_pieces
+                next_pieces.append(piece)
+        pieces = next_pieces
+    # Contacts: sequential full cut — each contact on every piece.
+    for contact in contacts_list:
+        next_pieces = []
+        for piece in pieces:
+            candidate = split_quad_by_contact(piece, contact, well_count)
+            if candidate is not None:
+                next_pieces.extend((candidate[0], candidate[1]))
+            else:
+                next_pieces.append(piece)
+        pieces = next_pieces
     return pieces
