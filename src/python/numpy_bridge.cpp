@@ -2039,7 +2039,8 @@ export_scene_svg_impl(WellLogView *view, const QString &document_id_text,
 [[nodiscard]] PyObject *
 export_scene_pdf_impl(WellLogView *view, const QString &document_id_text,
                       std::uint64_t export_pixel_height,
-                      bool searchable_text) {
+                      bool searchable_text, bool crop_marks,
+                      bool layered_pdf) {
   if (view == nullptr) {
     set_welllog_error("WellLogValidationError", "invalid_view",
                       "WellLogView is no longer valid");
@@ -2086,6 +2087,8 @@ export_scene_pdf_impl(WellLogView *view, const QString &document_id_text,
           .mode = PaginationMode::continuous,
           .page_width = export_scene->physical_width(),
           .page_height = export_scene->physical_height(),
+          .crop_marks = crop_marks,
+          .layered_pdf = layered_pdf,
       },
   };
   snapshot.pattern_versions.reserve(export_scene->patterns().size());
@@ -2203,10 +2206,11 @@ PyObject *export_scene_svg(WellLogView *view, const QString &document_id,
 
 PyObject *export_scene_pdf(WellLogView *view, const QString &document_id,
                            std::uint64_t export_pixel_height,
-                           bool searchable_text) noexcept {
+                           bool searchable_text, bool crop_marks,
+                           bool layered_pdf) noexcept {
   try {
     return export_scene_pdf_impl(view, document_id, export_pixel_height,
-                                 searchable_text);
+                                 searchable_text, crop_marks, layered_pdf);
   } catch (const std::bad_alloc &) {
     return PyErr_NoMemory();
   } catch (...) {

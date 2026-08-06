@@ -45,11 +45,14 @@ export_scene_svg(WellLogView *view, const QString &document_id,
 // document bytes (T2 / #274). Default text is glyph outlines (non-searchable,
 // ADR 0047). ``searchable_text`` (B1.PDF.2 / ADR 0053) overlays Base-14
 // Helvetica for Latin/ASCII band labels. ``export_pixel_height`` opts into
-// export-density re-prepare (T3 / #275).
+// export-density re-prepare (T3 / #275). ``crop_marks`` / ``layered_pdf``
+// (FRS §5) enable the corner registration marks and per-track OCG layers on
+// the emitted PDF (ExportPageSpec fields; both default off).
 [[nodiscard]] PyObject *
 export_scene_pdf(WellLogView *view, const QString &document_id,
                  std::uint64_t export_pixel_height = 0,
-                 bool searchable_text = false) noexcept;
+                 bool searchable_text = false, bool crop_marks = false,
+                 bool layered_pdf = false) noexcept;
 
 // CGM Version 3 Binary export (B1.CGM.2–3 / ADR 0054). Returns metafile bytes.
 // ``page_height_mm > 0`` enables multi-PICTURE pagination (B1.CGM.3).

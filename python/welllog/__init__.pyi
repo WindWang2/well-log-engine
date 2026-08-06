@@ -33,3 +33,21 @@ class WellLogView(QOpenGLWidget):
     def clear_multi_well_section(self) -> None: ...
     def sample_value(self, curve_id: str, sample_index: int) -> float | None: ...
     def reset_viewport(self) -> None: ...
+    def export_scene_svg(
+        self,
+        document_id: str,
+        export_pixel_height: int = 0,
+    ) -> bytes: ...
+    def export_scene_pdf(
+        self,
+        document_id: str,
+        export_pixel_height: int = 0,
+        searchable_text: bool = False,
+        crop_marks: bool = False,
+        layered_pdf: bool = False,
+    ) -> bytes: ...
+    def export_scene_cgm(
+        self,
+        document_id: str,
+        page_height_mm: float = 0.0,
+    ) -> bytes: ...
