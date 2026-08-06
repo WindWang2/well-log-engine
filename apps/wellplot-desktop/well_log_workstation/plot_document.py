@@ -134,6 +134,9 @@ class PlotDocument:
     pinchout_mode: str = "off"
     pinchout_factor: float = 0.5
     pinchout_smooth: bool = False
+    # Lithology pattern map (FRS §2.3 / P0-B): top/horizon name → SY/T 5615
+    # pattern id. Optional; empty means solid-color fills only.
+    litho_pattern_map: dict[str, str] = field(default_factory=dict)
 
     def absolute_path(self, workspace: Workspace) -> Path:
         return workspace.root / self.path
@@ -199,6 +202,10 @@ def _to_json(doc: PlotDocument) -> dict[str, Any]:
         payload["pinchout_mode"] = str(doc.pinchout_mode or "off")
         payload["pinchout_factor"] = float(doc.pinchout_factor)
         payload["pinchout_smooth"] = bool(doc.pinchout_smooth)
+    if doc.type == "correlation" or doc.litho_pattern_map:
+        payload["litho_pattern_map"] = {
+            str(k): str(v) for k, v in doc.litho_pattern_map.items() if k and v
+        }
     return payload
 
 
@@ -325,6 +332,13 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         pinchout_factor = 0.5
     pinchout_factor = max(0.05, min(1.0, pinchout_factor))
     pinchout_smooth = bool(data.get("pinchout_smooth", False))
+    litho_pattern_map: dict[str, str] = {}
+    raw_lpm = data.get("litho_pattern_map") or {}
+    if isinstance(raw_lpm, dict):
+        for k, v in raw_lpm.items():
+            ks, vs = str(k).strip(), str(v).strip()
+            if ks and vs:
+                litho_pattern_map[ks] = vs
     return PlotDocument(
         id=str(data["id"]),
         name=str(data.get("name") or data["id"]),
@@ -347,6 +361,7 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         pinchout_mode=pinchout_mode,
         pinchout_factor=pinchout_factor,
         pinchout_smooth=pinchout_smooth,
+        litho_pattern_map=litho_pattern_map,
     )
 
 
@@ -428,6 +443,7 @@ def load_plot_document(workspace: Workspace, plot_id: str) -> PlotDocument:
             pinchout_mode=doc.pinchout_mode,
             pinchout_factor=doc.pinchout_factor,
             pinchout_smooth=doc.pinchout_smooth,
+            litho_pattern_map=dict(doc.litho_pattern_map),
         )
     # Lazy import: keep this module importable without PySide6 (see save).
     from well_log_workstation.events import restore_plot_revision

@@ -65,6 +65,9 @@ class CorrelationCanvas(QWidget):
         self._pinchout_mode: str = PINCHOUT_MODE_OFF
         self._pinchout_factor: float = 0.5
         self._pinchout_smooth: bool = False
+        # Lithology pattern map: top-name → pattern id (SY/T 5615). Empty
+        # means solid-color fills only.
+        self._fill_pattern_map: dict[str, str] = {}
 
     def column_gap(self) -> int:
         return self._column_gap
@@ -122,6 +125,16 @@ class CorrelationCanvas(QWidget):
         except (TypeError, ValueError):
             self._pinchout_factor = 0.5
         self._pinchout_smooth = bool(smooth)
+        self.update()
+
+    def fill_pattern_map(self) -> dict[str, str]:
+        return dict(self._fill_pattern_map)
+
+    def set_fill_pattern_map(self, mapping: dict[str, str] | None) -> None:
+        """Map top names → lithology pattern ids for fill rendering."""
+        self._fill_pattern_map = {
+            str(k): str(v) for k, v in (mapping or {}).items() if k and v
+        }
         self.update()
 
     def set_columns(
@@ -520,7 +533,26 @@ class CorrelationCanvas(QWidget):
         if color.alpha() == 255:
             color.setAlpha(96)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(color)
+
+        # Lazily resolve lithology patterns (top name → QBrush), cached for
+        # the duration of this paint so repeated names share one pixmap.
+        pat_cache: dict[str, object] = {}
+        from well_log_workstation.litho_pattern_lib import get_pattern, make_qbrush
+
+        def brush_for(band) -> object:
+            from PySide6.QtGui import QBrush
+
+            pid = self._fill_pattern_map.get(band.top_name) or (
+                self._fill_pattern_map.get(band.bottom_name)
+            )
+            if not pid:
+                return QBrush(color)
+            if pid in pat_cache:
+                return pat_cache[pid]
+            pat = get_pattern(pid)
+            brush = make_qbrush(pat, self._fill_color) if pat else QBrush(color)
+            pat_cache[pid] = brush
+            return brush
 
         def y_of(d_disp: float) -> float:
             return top + ((d_disp - d0) / (d1 - d0)) * (bottom - top)
@@ -528,6 +560,7 @@ class CorrelationCanvas(QWidget):
         for band in bands:
             if band.left_col >= n or band.right_col >= n:
                 continue
+            p.setBrush(brush_for(band))
             left_id = self._columns[band.left_col].well_document_id
             right_id = self._columns[band.right_col].well_document_id
             ls = self._shift_for(left_id)

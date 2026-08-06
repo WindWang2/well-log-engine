@@ -31,6 +31,7 @@ pyside_datas, pyside_binaries, pyside_hidden = collect_all("PySide6")
 
 datas = [
     (str(PKG / "templates"), "well_log_workstation/templates"),
+    (str(PKG / "litho_patterns"), "well_log_workstation/litho_patterns"),
 ]
 datas += pyside_datas
 # Optional golden fixture (small; harmless if present)
@@ -50,6 +51,7 @@ hiddenimports = list(pyside_hidden) + [
     "well_log_workstation.las_import",
     "well_log_workstation.workspace",
     "well_log_workstation.nav_tree",
+    "well_log_workstation.litho_pattern_lib",
     "well_log_workstation.print_preview",
     "well_log_workstation.geometry_golden",
     "numpy",

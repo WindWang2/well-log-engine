@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "patterns": [
+    {
+      "id": "syt-sandstone",
+      "name": "砂岩",
+      "name_en": "Sandstone",
+      "tile_width_mm": 5.0,
+      "tile_height_mm": 5.0,
+      "rotation_degrees": 0.0,
+      "stroke_width_mm": 0.2,
+      "foreground": "#374151",
+      "background": "#fde68a",
+      "primitives": [
+        { "line": { "from_x": 0.0, "from_y": 1.0, "to_x": 2.5, "to_y": 1.0 } },
+        { "line": { "from_x": 2.5, "from_y": 3.5, "to_x": 5.0, "to_y": 3.5 } },
+        { "circle": { "center_x": 1.25, "center_y": 3.5, "radius_mm": 0.25, "filled": 1 } },
+        { "circle": { "center_x": 3.75, "center_y": 1.0, "radius_mm": 0.25, "filled": 1 } }
+      ]
+    },
+    {
+      "id": "syt-mudstone",
+      "name": "泥岩",
+      "name_en": "Mudstone",
+      "tile_width_mm": 5.0,
+      "tile_height_mm": 5.0,
+      "rotation_degrees": 0.0,
+      "stroke_width_mm": 0.2,
+      "foreground": "#6b7280",
+      "background": "#9ca3af",
+      "primitives": [
+        { "line": { "from_x": 0.0, "from_y": 1.25, "to_x": 5.0, "to_y": 1.25 } },
+        { "line": { "from_x": 0.0, "from_y": 3.75, "to_x": 5.0, "to_y": 3.75 } }
+      ]
+    },
+    {
+      "id": "syt-conglomerate",
+      "name": "砾岩",
+      "name_en": "Conglomerate",
+      "tile_width_mm": 6.0,
+      "tile_height_mm": 6.0,
+      "rotation_degrees": 0.0,
+      "stroke_width_mm": 0.25,
+      "foreground": "#7c2d12",
+      "background": "#fed7aa",
+      "primitives": [
+        { "circle": { "center_x": 1.5, "center_y": 1.5, "radius_mm": 1.0, "filled": 0 } },
+        { "circle": { "center_x": 4.5, "center_y": 4.5, "radius_mm": 1.2, "filled": 0 } },
+        { "circle": { "center_x": 4.2, "center_y": 1.8, "radius_mm": 0.6, "filled": 0 } }
+      ]
+    },
+    {
+      "id": "syt-limestone",
+      "name": "灰岩",
+      "name_en": "Limestone",
+      "tile_width_mm": 5.0,
+      "tile_height_mm": 5.0,
+      "rotation_degrees": 45.0,
+      "stroke_width_mm": 0.2,
+      "foreground": "#334155",
+      "background": "#e2e8f0",
+      "primitives": [
+        { "line": { "from_x": 0.0, "from_y": 0.0, "to_x": 5.0, "to_y": 0.0 } },
+        { "line": { "from_x": 0.0, "from_y": 2.5, "to_x": 5.0, "to_y": 2.5 } }
+      ]
+    },
+    {
+      "id": "syt-dolomite",
+      "name": "白云岩",
+      "name_en": "Dolomite",
+      "tile_width_mm": 5.0,
+      "tile_height_mm": 5.0,
+      "rotation_degrees": 45.0,
+      "stroke_width_mm": 0.2,
+      "foreground": "#1e40af",
+      "background": "#dbeafe",
+      "primitives": [
+        { "line": { "from_x": 0.0, "from_y": 0.0, "to_x": 5.0, "to_y": 0.0 } },
+        { "line": { "from_x": 0.0, "from_y": 2.5, "to_x": 5.0, "to_y": 2.5 } },
+        { "line": { "from_x": 0.0, "from_y": 1.25, "to_x": 5.0, "to_y": 1.25 } }
+      ]
+    },
+    {
+      "id": "syt-gypsum-salt",
+      "name": "膏盐岩",
+      "name_en": "Gypsum/Salt",
+      "tile_width_mm": 5.0,
+      "tile_height_mm": 5.0,
+      "rotation_degrees": 0.0,
+      "stroke_width_mm": 0.2,
+      "foreground": "#9d174d",
+      "background": "#fce7f3",
+      "primitives": [
+        { "polyline": { "points": [[0.0, 1.25], [1.25, 0.625], [2.5, 1.25], [3.75, 0.625], [5.0, 1.25]], "closed": 0 } },
+        { "polyline": { "points": [[0.0, 3.75], [1.25, 3.125], [2.5, 3.75], [3.75, 3.125], [5.0, 3.75]], "closed": 0 } }
+      ]
+    },
+    {
+      "id": "syt-shale",
+      "name": "页岩",
+      "name_en": "Shale",
+      "tile_width_mm": 5.0,
+      "tile_height_mm": 5.0,
+      "rotation_degrees": 0.0,
+      "stroke_width_mm": 0.15,
+      "foreground": "#1f2937",
+      "background": "#a8a29e",
+      "primitives": [
+        { "line": { "from_x": 0.0, "from_y": 1.0, "to_x": 3.0, "to_y": 1.0 } },
+        { "line": { "from_x": 2.0, "from_y": 2.5, "to_x": 5.0, "to_y": 2.5 } },
+        { "line": { "from_x": 0.0, "from_y": 4.0, "to_x": 3.0, "to_y": 4.0 } }
+      ]
+    }
+  ]
+}

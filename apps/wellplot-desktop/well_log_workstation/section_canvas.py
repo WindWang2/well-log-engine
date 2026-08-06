@@ -182,11 +182,18 @@ class SectionCanvas(QWidget):
                 poly.append(QPointF(cx, y_map(qy)))
             p.setPen(Qt.PenStyle.NoPen)
             if quad.pattern_id:
-                # Host-side approximation: Qt hatch brush for the pattern fill
-                # (ADR 0050). The engine SVG/PDF export renders the true vector
-                # PatternDefinition; this is the interactive-preview fallback.
-                brush = QBrush(
-                    QColor(quad.fill_color), Qt.BrushStyle.Dense4Pattern
+                # Real vector lithology pattern (SY/T 5615). Falls back to a
+                # solid color when the id is not in the builtin catalog.
+                from well_log_workstation.litho_pattern_lib import (
+                    get_pattern,
+                    make_qbrush,
+                )
+
+                pat = get_pattern(quad.pattern_id)
+                brush = (
+                    make_qbrush(pat, quad.fill_color)
+                    if pat is not None
+                    else QBrush(QColor(quad.fill_color))
                 )
             else:
                 brush = QBrush(QColor(quad.fill_color))

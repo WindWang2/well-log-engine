@@ -880,6 +880,24 @@ class WellLogWorkstationWindow(QMainWindow):
         self.corr_pinch_smooth.setObjectName("CorrelationPinchoutSmooth")
         self.corr_pinch_smooth.toggled.connect(self._on_correlation_pinch_smooth_toggled)
         layout.addWidget(self.corr_pinch_smooth)
+        # Lithology pattern (SY/T 5615) assignment for the selected horizon.
+        from well_log_workstation.litho_pattern_lib import load_builtin_patterns
+
+        self._litho_patterns = load_builtin_patterns()
+        layout.addWidget(QLabel("层位岩性花纹"))
+        litho_row = QHBoxLayout()
+        self.corr_litho_combo = QComboBox()
+        self.corr_litho_combo.setObjectName("CorrelationLithoPattern")
+        self.corr_litho_combo.addItem("（纯色充填）", "")
+        for pid, pat in sorted(self._litho_patterns.items(), key=lambda kv: kv[1].name):
+            self.corr_litho_combo.addItem(f"{pat.name} ({pat.name_en})", pid)
+        self.corr_litho_combo.currentIndexChanged.connect(self._on_correlation_litho_changed)
+        litho_row.addWidget(self.corr_litho_combo, 1)
+        layout.addLayout(litho_row)
+        self.corr_litho_target = QLineEdit()
+        self.corr_litho_target.setObjectName("CorrelationLithoTarget")
+        self.corr_litho_target.setPlaceholderText("目标层位名，如 T1")
+        layout.addWidget(self.corr_litho_target)
         self.corr_refresh_btn = QPushButton("刷新对比图（层位）")
         self.corr_refresh_btn.setObjectName("Button_RefreshCorrelationTops")
         self.corr_refresh_btn.setToolTip(
@@ -2342,6 +2360,9 @@ class WellLogWorkstationWindow(QMainWindow):
             float(getattr(plot, "pinchout_factor", 0.5)),
             bool(getattr(plot, "pinchout_smooth", False)),
         )
+        self.correlation_canvas.set_fill_pattern_map(
+            dict(getattr(plot, "litho_pattern_map", None) or {})
+        )
         self._apply_correlation_datum_shifts(plot, presentations, tops_cols)
         self._refresh_links_list()
         self._refresh_correlation_well_list(plot)
@@ -2485,6 +2506,22 @@ class WellLogWorkstationWindow(QMainWindow):
             for col in tops_cols
         ]
         quads = tie_quads(tops_as_dicts, well_positions, datum_shifts=shifts)
+        # Attach lithology patterns (SY/T 5615) by matching the quad's top
+        # names against the plot's litho_pattern_map (name → pattern id).
+        lpm = getattr(plot, "litho_pattern_map", None) or {}
+        if lpm:
+            from dataclasses import replace
+
+            updated: list[TieQuad2D] = []
+            for q in quads:
+                pid = ""
+                for name in str(q.label).split(","):
+                    name = name.strip()
+                    if name and name in lpm:
+                        pid = lpm[name]
+                        break
+                updated.append(replace(q, pattern_id=pid or q.pattern_id))
+            quads = updated
 
         self._active_plot_id = plot.id
         self._active_plot_type = "section"
@@ -2554,6 +2591,10 @@ class WellLogWorkstationWindow(QMainWindow):
             self.corr_pinch_check.setEnabled(enabled and fill_on)
             self.corr_pinch_factor.setEnabled(enabled and fill_on)
             self.corr_pinch_smooth.setEnabled(enabled and fill_on)
+        if hasattr(self, "corr_litho_combo"):
+            fill_on = self.corr_fill_check.isChecked() if enabled else False
+            self.corr_litho_combo.setEnabled(enabled and fill_on)
+            self.corr_litho_target.setEnabled(enabled and fill_on)
 
     def _refresh_correlation_well_list(self, plot: PlotDocument | None = None) -> None:
         """Fill well-order list for active correlation plot (#295)."""
@@ -2603,6 +2644,14 @@ class WellLogWorkstationWindow(QMainWindow):
                 self.corr_pinch_smooth.setChecked(
                     bool(getattr(plot, "pinchout_smooth", False))
                 )
+            if hasattr(self, "corr_litho_combo"):
+                # Combo reflects the pattern for whichever horizon name is in
+                # the target field; default to first entry when unset.
+                target = self.corr_litho_target.text().strip()
+                lpm = dict(getattr(plot, "litho_pattern_map", None) or {})
+                want_pid = lpm.get(target, "")
+                idx = self.corr_litho_combo.findData(want_pid)
+                self.corr_litho_combo.setCurrentIndex(idx if idx >= 0 else 0)
         finally:
             self._corr_layout_guard = False
         self._set_correlation_layout_enabled(True)
@@ -2883,6 +2932,9 @@ class WellLogWorkstationWindow(QMainWindow):
                     float(getattr(plot, "pinchout_factor", 0.5)),
                     bool(getattr(plot, "pinchout_smooth", False)),
                 )
+                self.correlation_canvas.set_fill_pattern_map(
+                    dict(getattr(plot, "litho_pattern_map", None) or {})
+                )
                 # Persist updated link depths (auto path only if links changed)
                 if reason == "auto" and plot.links != updated_links:
                     plot.links = list(updated_links)
@@ -2973,6 +3025,32 @@ class WellLogWorkstationWindow(QMainWindow):
             save_plot_document(self._workspace, plot)
         except WorkspaceError:
             pass
+
+    def _on_correlation_litho_changed(self, _idx: int = -1) -> None:
+        """Assign a lithology pattern to the named horizon on the active plot."""
+        if self._corr_layout_guard:
+            return
+        name = self.corr_litho_target.text().strip()
+        pid = str(self.corr_litho_combo.currentData() or "")
+        if not name or (
+            self._active_plot_type != "correlation" or not self._active_plot_id
+        ):
+            return
+        try:
+            plot = load_plot_document(self._workspace, self._active_plot_id)
+        except WorkspaceError:
+            return
+        lpm = dict(plot.litho_pattern_map)
+        if pid:
+            lpm[name] = pid
+        else:
+            lpm.pop(name, None)
+        plot.litho_pattern_map = lpm
+        try:
+            save_plot_document(self._workspace, plot)
+        except WorkspaceError:
+            pass
+        self.correlation_canvas.set_fill_pattern_map(lpm)
 
     def auto_link_correlation_tops(self) -> list[HorizonLink]:
         """Match tops by name across adjacent wells; persist on active plot."""

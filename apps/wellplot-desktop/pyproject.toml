@@ -35,6 +35,7 @@ include = ["well_log_workstation*"]
 [tool.setuptools.package-data]
 well_log_workstation = [
   "templates/*.json",
+  "litho_patterns/*.json",
   "testdata/**/*",
   "packaging/**/*",
   "prototypes/**/*",

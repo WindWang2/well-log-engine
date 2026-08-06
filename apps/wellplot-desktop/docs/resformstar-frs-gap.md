@@ -41,7 +41,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 超量程折叠 (Wrap-around) | ❌ | 无 | → SDK(曲线绘制) + Desktop |
 | 基线充填 (如 GR>80) | 🟡 | SDK `IntervalLayerSpec` + `PatternDefinition` (`scene/scene.hpp:210,193`); Desktop host 画布无 fill 图道（role 仅 depth/curve, `template_model.py:39-47`） | Desktop(画布 fill 图道) 复用 SDK interval 语义 |
 | 双曲线交叉充填 | 🟡 | SDK `CrossoverFillLayerSpec` (`scene/scene.hpp:232`) 已实现 (crossover 填充) | Desktop host 画布未渲染 → Desktop |
-| 岩性描述道 SY/T 5615 花纹库 | ❌ | SDK `PatternDefinition` 是声明式平铺图元（无地质花纹库）; section 四边形用 Qt hatch 近似 (`section_canvas.py:174-194`) | **P0: SDK 花纹定义/渲染 + 图库；Desktop 岩性道** |
+| 岩性描述道 SY/T 5615 花纹库 | 🟡 | SDK `PatternDefinition` 平铺图元（line/polyline/circle）已有；Desktop `litho_patterns/syt5615.json` 内置 7 种核心岩性（砂岩/泥岩/砾岩/灰岩/白云岩/膏盐岩/页岩），`make_qbrush` Qt 真矢量渲染（替换 Dense4 近似），section 四边形 + 井间充填（含楔形）接入；单井岩性道（新 track role）仍缺 | **P0(库+剖面/对比渲染✅)/后续**: 单井岩性道 → Desktop(画布 track role) |
 | 试油/解释成果道 | ❌ | 无 | → Desktop(数据+渲染) |
 | 射孔/井下工程道 | ❌ | SDK marker 语义含 casing_shoe (`core/document.hpp:433-439`) | → SDK(符号) + Desktop(道) |
 | 岩心照片道 + 物性点叠加 | 🟡 | SDK `ImageLayerSpec`/`ImagePyramid` (`scene/image_pyramid.hpp:67`) | Desktop host 画布无 image role → Desktop |
@@ -105,6 +105,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 |---|---|---|---|
 | **P0-A 别名字典** | — | `workspace.json` 增 `mnemonic_alias` 字典；模板匹配改查字典；UI 管理对话框 | 导入任意别名 GR 曲线可被模板命中；单测 |
 | **P0-B SY/T 5615 花纹库** | `PatternDefinition` 扩展（点/斜线/三角/波浪等图元组合）；内置花纹目录 + 测试 golden | 岩性道渲染（host 画布）+ 花纹选择器；section 四边形改用真花纹 | 花纹 golden 单测；单井岩性道可见 |
+| **P0-B SY/T 5615 花纹库** ✅ | — | 已交付：`litho_patterns/syt5615.json`（7 种核心岩性）+ `litho_pattern_lib`（加载/`make_qbrush` Qt 真矢量渲染/`pattern_to_engine_payload`）；section 四边形 + 井间充填（含楔形）接入真花纹；`PlotDocument.litho_pattern_map` 持久化 | 花纹加载/payload 契约/Qt 渲染/画布 smoke/持久化往返 |
 | **P0-C 砂体尖灭多边形** ✅ | — | 已交付：`interwell_fill.build_interwell_fill_bands(pinchout_mode="linear")` 生成线性楔形；`PlotDocument.pinchout_mode/factor/smooth` 持久化；correlation 画布渲染（直线/贝塞尔平滑）；UI 控件 + 测试 | 纯 numpy 几何单测；画布 render smoke；持久化往返 |
 
 ### P1 — 断层 / 流体界面 / 展布
