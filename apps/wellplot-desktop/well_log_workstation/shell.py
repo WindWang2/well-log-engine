@@ -188,8 +188,9 @@ class WellLogWorkstationWindow(QMainWindow):
         self._tops_diagnostics: list[str] = []
         self._tops_history = TopsHistoryBook()
         self._templates: list[PlotTemplate] = list_builtin_templates()
-        # Per-well Display Set (session memory; T2 #342). Missing key → default
-        # to template matches on first compose for that well.
+        # Display Set session cache. Keys: "plot:<id>" (preferred for single-well
+        # plots) or "well:<id>" (preview without a plot). Model A: data on well,
+        # checks belong to the plot document when a plot is active.
         self._display_sets: dict[str, frozenset[str]] = {}
         # Per-well view mode: "graphic" | "table" (T4 #344); default graphic.
         self._view_modes: dict[str, str] = {}
@@ -450,7 +451,9 @@ class WellLogWorkstationWindow(QMainWindow):
         content = QWidget()
         content.setObjectName("WellContentTab")
         content_layout = QVBoxLayout(content)
-        self.well_content_hint = QLabel("选中井后显示导入源与可勾选井道")
+        self.well_content_hint = QLabel(
+            "数据在井上 · 树=全部井道 · 勾选=进当前井图（非数据本身）"
+        )
         self.well_content_hint.setObjectName("WellContentHint")
         self.well_content_hint.setWordWrap(True)
         content_layout.addWidget(self.well_content_hint)
@@ -1614,9 +1617,24 @@ class WellLogWorkstationWindow(QMainWindow):
         plot.track_overrides = track_overrides_snapshot(self._presentation)
         save_plot_document(self._workspace, plot)
 
+    def _display_set_key(
+        self, well_id: str, *, plot_id: str | None = None
+    ) -> str:
+        """Storage key: plot-scoped when a single-well plot is active."""
+        pid = plot_id if plot_id is not None else self._active_plot_id
+        if (
+            pid
+            and (
+                self._active_plot_type == "single_well"
+                or plot_id is not None
+            )
+        ):
+            return f"plot:{pid}"
+        return f"well:{well_id}"
+
     def display_set_for(self, well_id: str) -> frozenset[str] | None:
-        """Session Display Set for a well, or None if not yet initialized."""
-        return self._display_sets.get(well_id)
+        """Session Display Set for the active plot (or well preview)."""
+        return self._display_sets.get(self._display_set_key(well_id))
 
     def view_mode_for(self, well_id: str) -> str:
         """Session view mode for a well (default graphic)."""
@@ -1908,7 +1926,7 @@ class WellLogWorkstationWindow(QMainWindow):
                 return
 
             display_set = self._display_sets.get(
-                self._selected_well_id, frozenset()
+                self._display_set_key(self._selected_well_id), frozenset()
             )
 
             def _progress(step: int, total: int) -> None:
@@ -2005,15 +2023,29 @@ class WellLogWorkstationWindow(QMainWindow):
         template_id: str | None = None,
         plot_id: str | None = None,
     ) -> HostPresentation:
-        """Set session Display Set and rebuild the single-well plot (live)."""
-        self._display_sets[well_id] = frozenset(str(x) for x in leaf_ids)
+        """Set Display Set for the active plot (or well preview) and rebuild."""
+        effective_plot_id = (
+            plot_id if plot_id is not None else self._active_plot_id
+        )
+        key = self._display_set_key(well_id, plot_id=effective_plot_id)
+        checked = frozenset(str(x) for x in leaf_ids)
+        self._display_sets[key] = checked
+        # Persist on plot document when bound (data stays on well — model A).
+        if effective_plot_id and self._workspace is not None:
+            try:
+                plot_doc = load_plot_document(self._workspace, effective_plot_id)
+                if plot_doc.type == "single_well":
+                    plot_doc.display_set = sorted(checked)
+                    save_plot_document(self._workspace, plot_doc)
+            except WorkspaceError:
+                pass
         tid = template_id or self._current_template_id()
         if not tid:
             tid = "std-gr-rt-den"
         return self.apply_template_to_well(
             well_id,
             tid,
-            plot_id=plot_id if plot_id is not None else self._active_plot_id,
+            plot_id=effective_plot_id,
         )
 
     def apply_template_to_well(
@@ -2021,9 +2053,10 @@ class WellLogWorkstationWindow(QMainWindow):
     ) -> HostPresentation:
         """Apply builtin template to a session well; show multi-track plot.
 
-        Presentation is rebuilt from **session Display Set × template** (T2).
-        First open for a well defaults checks to template matches; later
-        template switches **keep** the Display Set and only restyle.
+        Presentation is rebuilt from **Display Set × template** (T2).
+        Display Set is **plot-scoped** when a single-well plot is open (model A:
+        import→well data tree; plot checks which leaves to show). Template
+        switches keep the Display Set and only restyle.
         Empty Display Set is allowed (guidance on canvas; not an error).
         """
         if self._workspace is None:
@@ -2034,13 +2067,38 @@ class WellLogWorkstationWindow(QMainWindow):
             raise WorkspaceError(f"未知图版: {template_id}")
 
         leaves = leaves_from_document(doc)
-        if well_id not in self._display_sets:
-            self._display_sets[well_id] = default_checks(leaves, template)
-        display_set = self._display_sets[well_id]
+        effective_plot_id = plot_id if plot_id is not None else self._active_plot_id
+        key = self._display_set_key(well_id, plot_id=effective_plot_id)
+        if key not in self._display_sets:
+            loaded: frozenset[str] | None = None
+            if effective_plot_id is not None:
+                try:
+                    plot_doc = load_plot_document(
+                        self._workspace, effective_plot_id
+                    )
+                    if plot_doc.display_set:
+                        loaded = frozenset(str(x) for x in plot_doc.display_set)
+                except WorkspaceError:
+                    loaded = None
+            if loaded is not None:
+                self._display_sets[key] = loaded
+            else:
+                self._display_sets[key] = default_checks(leaves, template)
+                # Seed plot document so re-open is stable
+                if effective_plot_id is not None:
+                    try:
+                        plot_doc = load_plot_document(
+                            self._workspace, effective_plot_id
+                        )
+                        if plot_doc.type == "single_well" and not plot_doc.display_set:
+                            plot_doc.display_set = sorted(self._display_sets[key])
+                            save_plot_document(self._workspace, plot_doc)
+                    except WorkspaceError:
+                        pass
+        display_set = self._display_sets[key]
 
         presentation = presentation_from_display_set(template, doc, display_set)
         # Restore layout edits from plot document when reopening (#292).
-        effective_plot_id = plot_id if plot_id is not None else self._active_plot_id
         if effective_plot_id is not None:
             try:
                 plot_doc = load_plot_document(self._workspace, effective_plot_id)
@@ -3194,12 +3252,21 @@ class WellLogWorkstationWindow(QMainWindow):
         self._refresh_well_content_tree()
 
     def _visual_display_set_for_well(self, well_id: str) -> frozenset[str]:
-        """Display Set for tree checkboxes (session or template defaults)."""
-        existing = self._display_sets.get(well_id)
+        """Display Set for tree checkboxes (plot doc / session / template defaults)."""
+        key = self._display_set_key(well_id)
+        existing = self._display_sets.get(key)
         if existing is not None:
             return existing
         if self._workspace is None:
             return frozenset()
+        # Prefer plot document when a single-well plot is active
+        if self._active_plot_id and self._active_plot_type == "single_well":
+            try:
+                plot_doc = load_plot_document(self._workspace, self._active_plot_id)
+                if plot_doc.display_set:
+                    return frozenset(str(x) for x in plot_doc.display_set)
+            except WorkspaceError:
+                pass
         try:
             doc = self.session.ensure_well_loaded(self._workspace, well_id)
         except Exception:  # noqa: BLE001
@@ -3220,7 +3287,9 @@ class WellLogWorkstationWindow(QMainWindow):
             tree.clear()
             well_id = self._selected_well_id
             if self._workspace is None or not well_id:
-                self.well_content_hint.setText("选中井后显示导入源与可勾选井道")
+                self.well_content_hint.setText(
+                    "选中井或打开单井图 · 数据导入到井 · 勾选决定本图显示"
+                )
                 empty = QTreeWidgetItem(["（未选井）"])
                 empty.setDisabled(True)
                 tree.addTopLevelItem(empty)
@@ -3304,9 +3373,14 @@ class WellLogWorkstationWindow(QMainWindow):
 
             tree.addTopLevelItem(source_item)
             tree.expandAll()
+            plot_note = (
+                f"本图 {self._active_plot_id[:8]}…"
+                if self._active_plot_id and self._active_plot_type == "single_well"
+                else "预览（未绑图件时勾选仅会话）"
+            )
             self.well_content_hint.setText(
-                f"井 {doc.well_name} · 显示集 {n_checked}/{len(leaves)} · "
-                f"勾选即时更新图形"
+                f"井 {doc.well_name} · 数据树 {len(leaves)} 井道 · "
+                f"本图勾选 {n_checked} · {plot_note}"
             )
         finally:
             self._content_tree_guard = False

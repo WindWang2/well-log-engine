@@ -21,7 +21,9 @@ from well_log_workstation.workspace import (
     save_workspace,
 )
 
-PLOT_SCHEMA_VERSION = 5
+# v6: single-well display_set (checked track leaf ids) — data stays on well;
+# plot only records which leaves participate (model A: import→well, checks→plot).
+PLOT_SCHEMA_VERSION = 6
 
 
 @dataclass
@@ -68,6 +70,10 @@ class PlotDocument:
     # Single-well track property overrides (schema v5 / #292): track_id → props.
     # Keys: visible, title, width_fraction, scale_min, scale_max, scale_mode.
     track_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Single-well Display Set (schema v6): leaf ids from the bound well's
+    # content tree (import source → tracks). Empty = use template defaults
+    # on first open. Does not store curve samples — data lives under wells/.
+    display_set: list[str] = field(default_factory=list)
     # Correlation column gap in pixels (#295 / T7). Optional field; default 6.
     # Well order is the existing ``well_ids`` list order.
     column_gap_px: int = 6
@@ -120,6 +126,8 @@ def _to_json(doc: PlotDocument) -> dict[str, Any]:
         payload["track_overrides"] = {
             str(k): dict(v) for k, v in doc.track_overrides.items() if isinstance(v, dict)
         }
+    if doc.type == "single_well" or doc.display_set:
+        payload["display_set"] = [str(x) for x in doc.display_set]
     # Correlation layout (T7/T8): write when correlation so re-open is stable.
     if doc.type == "correlation" or doc.column_gap_px != 6:
         payload["column_gap_px"] = int(doc.column_gap_px)
@@ -156,6 +164,11 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         # v4 -> v5 additive: track_overrides for single-well layout edits (#292).
         data = dict(data)
         data.setdefault("track_overrides", {})
+        version = 5
+    if version == 5:
+        # v5 -> v6 additive: plot-level display_set (leaf ids; data stays on well).
+        data = dict(data)
+        data.setdefault("display_set", [])
         version = PLOT_SCHEMA_VERSION
     if version != PLOT_SCHEMA_VERSION:
         raise WorkspaceError(
@@ -198,6 +211,11 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         for tid, props in raw_ov.items():
             if isinstance(props, dict):
                 track_overrides[str(tid)] = dict(props)
+    display_set: list[str] = []
+    for raw_leaf in data.get("display_set") or []:
+        s = str(raw_leaf).strip()
+        if s:
+            display_set.append(s)
     try:
         column_gap_px = int(data.get("column_gap_px", 6))
     except (TypeError, ValueError):
@@ -224,6 +242,7 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         free_graphics=free_graphics,
         revision=max(0, int(data.get("revision") or 0)),
         track_overrides=track_overrides,
+        display_set=display_set,
         column_gap_px=column_gap_px,
         datum_mode=datum_mode,
         datum_horizon=datum_horizon,
