@@ -6,7 +6,8 @@
 Standalone **log-first** desktop product (wayfinder #207).  
 Formerly branded “Well Log Workstation”; same shell, product identity upgraded toward an installable Desktop (轨 D).  
 
-**Lives in WellLogEngine** as the reference host / SDK sample (`apps/wellplot-desktop`).  
+**Lives in WellLogEngine** (`apps/wellplot-desktop`) as a host app that can serve as an
+**example** of SDK use and/or a **product** as it matures—not demo-only.  
 Not Paleo Workbench. Rendering uses **WellLogEngine** (`welllog`) when available.
 
 ## Run
