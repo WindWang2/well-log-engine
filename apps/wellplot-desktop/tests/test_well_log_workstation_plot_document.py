@@ -94,8 +94,10 @@ def test_shell_create_and_reopen_plot_restores_tracks(qtbot, tmp_path: Path) -> 
     win2 = WellLogWorkstationWindow()
     qtbot.addWidget(win2)
     win2.set_workspace(open_workspace(ws_root))
-    # Session empty until open
-    assert win2.session.get(well_id) is None
+    # The tree refresh loads data units on set_workspace, so the session is
+    # populated from disk — but the plot document itself must still restore
+    # its tracks when opened.
+    assert win2.session.get(well_id) is not None
     opened = win2.open_plot_document(plot.id)
     assert opened.id == plot.id
     assert win2.session.get(well_id) is not None

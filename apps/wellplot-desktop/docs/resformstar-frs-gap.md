@@ -1,6 +1,7 @@
 # ResformSTAR FRS — Gap Analysis & Roadmap
 
 **Date:** 2026-08-06
+**Status:** FRS P0 + P1 + P2 全部交付（12 个切片）；测试套件 394 passed / 0 failed（2026-08-06 清理了 5 个预存在失败：schema 断言 5→7、session 树加载断言、ADR 0055 + plugin-runtime-status 文档补齐）
 **Scope:** 《ResformSTAR 工业级对标：单井与连井剖面功能需求规范说明书 (FRS)》 vs
 current codebase. Ground-truth established by code inventory (well-log-engine SDK +
 WellPlot Desktop), with `file:line` references.
