@@ -281,6 +281,121 @@ def test_correlation_export_menu_enabled(qtbot, tmp_path: Path) -> None:
     assert win._act_export_png.isEnabled()
 
 
+def test_pdf_options_applicability_correlation() -> None:
+    """Correlation: crop marks yes; engine text/layered no."""
+    from well_log_workstation.export_options_dialog import (
+        pdf_options_applicability,
+    )
+
+    sw = pdf_options_applicability("single_well")
+    assert sw["text_mode"] and sw["layered_pdf"] and sw["crop_marks"]
+    corr = pdf_options_applicability("correlation")
+    assert corr["crop_marks"] is True
+    assert corr["text_mode"] is False
+    assert corr["layered_pdf"] is False
+    assert corr["engine_options"] is False
+
+
+def test_pdf_export_options_dialog_correlation_disables_engine(qtbot) -> None:
+    """Correlation surface: layered/text disabled; crop + value() honest."""
+    from well_log_workstation.export_options_dialog import PdfExportOptionsDialog
+
+    dlg = PdfExportOptionsDialog(plot_type="correlation")
+    qtbot.addWidget(dlg)
+    assert not dlg.radio_outline.isEnabled()
+    assert not dlg.radio_searchable.isEnabled()
+    assert not dlg.chk_layered.isEnabled()
+    assert dlg.chk_crop_marks.isEnabled()
+    # User cannot force layered via value() even if checkbox were checked
+    dlg.chk_layered.setChecked(True)
+    dlg.radio_searchable.setChecked(True)
+    dlg.chk_crop_marks.setChecked(True)
+    assert dlg.value() == ("outline", True, False)
+
+
+def test_correlation_pdf_crop_marks_via_export_active(
+    qtbot, tmp_path: Path
+) -> None:
+    """Programmatic correlation PDF honours crop_marks (Qt paint path)."""
+    ws = create_workspace(tmp_path / "corr-crop", name="CorrCrop")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    id1 = win.import_las_path(_write_las(tmp_path / "cc1.las", well="CC1"))
+    id2 = win.import_las_path(_write_las(tmp_path / "cc2.las", well="CC2"))
+    win.create_correlation_plot_document([id1, id2], "std-gr-rt-den")
+
+    plain = win.export_active_correlation(
+        tmp_path / "corr_plain.pdf", "pdf", crop_marks=False
+    )
+    marked = win.export_active_correlation(
+        tmp_path / "corr_marked.pdf", "pdf", crop_marks=True
+    )
+    assert plain.is_file() and plain.read_bytes()[:4] == b"%PDF"
+    assert marked.is_file() and marked.read_bytes()[:4] == b"%PDF"
+    assert marked.stat().st_size > plain.stat().st_size
+
+
+def test_correlation_menu_pdf_options_accept_and_cancel(
+    qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Menu PDF path: dialog accept passes crop_marks; cancel writes no file."""
+    from PySide6.QtWidgets import QDialog, QMessageBox
+
+    ws = create_workspace(tmp_path / "corr-menu", name="CorrMenu")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    id1 = win.import_las_path(_write_las(tmp_path / "cm1.las", well="CM1"))
+    id2 = win.import_las_path(_write_las(tmp_path / "cm2.las", well="CM2"))
+    win.create_correlation_plot_document([id1, id2], "std-gr-rt-den")
+
+    out_accept = tmp_path / "menu_corr.pdf"
+    # Avoid modal UI noise
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: 0)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: 0)
+
+    # Cancel: dialog returns None → no file
+    monkeypatch.setattr(
+        win,
+        "_choose_pdf_export_options",
+        lambda **kw: None,
+    )
+    monkeypatch.setattr(
+        "well_log_workstation.shell.QFileDialog.getSaveFileName",
+        lambda *a, **k: (str(tmp_path / "should_not_exist.pdf"), ""),
+    )
+    win._export_active_plot("pdf")
+    assert not (tmp_path / "should_not_exist.pdf").exists()
+
+    # Accept with crop_marks on — same shell path as menu export
+    monkeypatch.setattr(
+        win,
+        "_choose_pdf_export_options",
+        lambda **kw: ("outline", True, False),
+    )
+    monkeypatch.setattr(
+        "well_log_workstation.shell.QFileDialog.getSaveFileName",
+        lambda *a, **k: (str(out_accept), "PDF (*.pdf)"),
+    )
+    captured: dict = {}
+    real_export = export_plot
+
+    def _spy(plot_doc, fmt, **kwargs):  # noqa: ANN001
+        captured.update(kwargs)
+        return real_export(plot_doc, fmt, **kwargs)
+
+    monkeypatch.setattr(
+        "well_log_workstation.shell.export_plot", _spy
+    )
+    win._export_active_plot("pdf")
+    assert out_accept.is_file()
+    assert out_accept.read_bytes()[:4] == b"%PDF"
+    assert captured.get("crop_marks") is True
+    assert captured.get("backend") == "qt"
+    assert "layered_pdf" not in captured or not captured.get("layered_pdf")
+
+
 def test_engine_route_png_falls_back_to_qt(
     qtbot, tmp_path: Path, monkeypatch
 ) -> None:
@@ -690,6 +805,8 @@ def test_pdf_export_options_dialog_value(qtbot) -> None:
     dlg = PdfExportOptionsDialog()
     qtbot.addWidget(dlg)
     assert dlg.value() == ("outline", False, False)
+    assert dlg.radio_outline.isEnabled()
+    assert dlg.chk_layered.isEnabled()
 
     dlg.radio_searchable.setChecked(True)
     dlg.chk_crop_marks.setChecked(True)

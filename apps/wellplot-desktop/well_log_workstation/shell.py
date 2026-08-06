@@ -5360,14 +5360,25 @@ class WellLogWorkstationWindow(QMainWindow):
         """PDF export options for engine single-well exports (ADR 0053 + FRS §5).
 
         Returns ``(text_mode, crop_marks, layered_pdf)`` or None if cancelled.
-        The crop-marks / layered-PDF toggles are engine-only capabilities; the
-        Qt fallback path keeps its current behaviour.
+        """
+        return self._choose_pdf_export_options(plot_type="single_well")
+
+    def _choose_pdf_export_options(
+        self,
+        *,
+        plot_type: str = "single_well",
+    ) -> tuple[str, bool, bool] | None:
+        """Shared PDF options dialog for single-well and correlation menu export.
+
+        Returns ``(text_mode, crop_marks, layered_pdf)`` or None if cancelled.
+        Correlation disables engine-only controls (text mode / layered OCG);
+        crop marks remain available and are honoured by the Qt paint path.
         """
         from well_log_workstation.export_options_dialog import (
             PdfExportOptionsDialog,
         )
 
-        dlg = PdfExportOptionsDialog(self)
+        dlg = PdfExportOptionsDialog(self, plot_type=plot_type)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return None
         return dlg.value()
@@ -5377,6 +5388,8 @@ class WellLogWorkstationWindow(QMainWindow):
 
         Single-well SVG/PDF default to the engine backend when available (T11).
         Single-well PDF offers outline vs searchable dual mode (ADR 0053).
+        Correlation PDF uses the same options dialog surface (crop marks on
+        Qt path; engine-only controls disabled).
         """
         if self._workspace is None or not self._active_plot_id:
             QMessageBox.information(
@@ -5466,6 +5479,8 @@ class WellLogWorkstationWindow(QMainWindow):
             elif plot.type == "correlation":
                 # B0 (#300): Qt paint for SVG/PDF; PNG prefers widget grab for
                 # links/datum fidelity, with paint_fn fallback.
+                # PDF: same options dialog as single-well (crop marks apply;
+                # text mode / layered disabled — no engine correlation backend).
                 if fmt == "png":
                     out = self._export_correlation_png(Path(path))
                     QMessageBox.information(
@@ -5475,8 +5490,18 @@ class WellLogWorkstationWindow(QMainWindow):
                         f"大小 {out.stat().st_size} 字节",
                     )
                     return
+                pdf_crop_marks = False
+                if fmt == "pdf":
+                    chosen = self._choose_pdf_export_options(
+                        plot_type="correlation"
+                    )
+                    if chosen is None:
+                        return
+                    _mode, pdf_crop_marks, _layered = chosen
                 kwargs["paint_fn"] = self._paint_active_plot
                 kwargs["backend"] = "qt"
+                if fmt == "pdf":
+                    kwargs["crop_marks"] = pdf_crop_marks
                 backend_note = "（对比图 · Qt 矢量）"
             elif plot.type == "section":
                 kwargs["paint_fn"] = self._paint_active_plot
@@ -5632,12 +5657,19 @@ class WellLogWorkstationWindow(QMainWindow):
             )
 
     def export_active_correlation(
-        self, path: Path | str, fmt: ExportFormat
+        self,
+        path: Path | str,
+        fmt: ExportFormat,
+        *,
+        crop_marks: bool = False,
     ) -> Path:
         """Export active correlation plot to SVG/PDF/PNG (B0 #300).
 
         Backend: **Qt paint** for SVG/PDF (host multi-column + links);
         **PNG** via correlation canvas grab when possible.
+        ``crop_marks`` is honoured for SVG/PDF on the Qt paint path (same
+        geometry as single-well Qt export). Menu PDF export prompts via
+        :meth:`_choose_pdf_export_options` then passes this flag.
         """
         if self._workspace is None or not self._active_plot_id:
             raise ExportError("请先打开地层对比图")
@@ -5656,6 +5688,7 @@ class WellLogWorkstationWindow(QMainWindow):
             page_spec=PageSpec(),
             backend="qt",
             paint_fn=self._paint_active_plot,
+            crop_marks=bool(crop_marks),
         )
 
     def _export_correlation_png(self, path: Path) -> Path:
