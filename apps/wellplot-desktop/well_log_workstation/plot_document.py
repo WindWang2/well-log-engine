@@ -25,7 +25,8 @@ from well_log_workstation.workspace import (
 # v7: data_bindings — each leaf-on-plot has binding_id + plot/well identity
 # v8: track_order — persisted single-well track id order (canvas drag reorder)
 # v9: surfaces — section erosion/onlap surfaces (FRS §3.x 尖灭行 P1)
-PLOT_SCHEMA_VERSION = 9
+# v10: lenses — section freehand lens bodies (FRS §3.x 透镜体手绘)
+PLOT_SCHEMA_VERSION = 10
 
 
 @dataclass
@@ -151,6 +152,8 @@ class PlotDocument:
     # Section erosion/onlap surfaces (FRS §3.x / P1): list of serialized
     # ErosionSurface2D dicts (per-well depth + mode). Optional; empty = none.
     surfaces: list[dict] = field(default_factory=list)
+    # Freehand sand-lens polygons (FRS §3.x 透镜体手绘): LensBody2D dicts.
+    lenses: list[dict] = field(default_factory=list)
     # Section well spacing (FRS §3.1 / P1-C): "equal" = fixed column interval,
     # "geographic" = wells placed by survey closure projected on the section
     # azimuth (+ curved trajectory polylines). Optional; default equal.
@@ -235,6 +238,8 @@ def _to_json(doc: PlotDocument) -> dict[str, Any]:
         payload["contacts"] = [dict(c) for c in doc.contacts if isinstance(c, dict)]
     if doc.type == "section" or doc.surfaces:
         payload["surfaces"] = [dict(s) for s in doc.surfaces if isinstance(s, dict)]
+    if doc.type == "section" or doc.lenses:
+        payload["lenses"] = [dict(s) for s in doc.lenses if isinstance(s, dict)]
     if doc.type == "section" or doc.well_spacing != "equal":
         payload["well_spacing"] = str(doc.well_spacing)
     if doc.type == "section" or doc.ornaments:
@@ -283,6 +288,11 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         # v8 -> v9 additive: section erosion/onlap surfaces (FRS §3.x P1).
         data = dict(data)
         data.setdefault("surfaces", [])
+        version = 9
+    if version == 9:
+        # v9 -> v10 additive: freehand section lenses (FRS §3.x 透镜体手绘).
+        data = dict(data)
+        data.setdefault("lenses", [])
         version = PLOT_SCHEMA_VERSION
     if version != PLOT_SCHEMA_VERSION:
         raise WorkspaceError(
@@ -405,6 +415,12 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         for s in raw_surfaces:
             if isinstance(s, dict):
                 surfaces.append(dict(s))
+    raw_lenses = data.get("lenses")
+    lenses: list[dict] = []
+    if isinstance(raw_lenses, list):
+        for s in raw_lenses:
+            if isinstance(s, dict):
+                lenses.append(dict(s))
     well_spacing = str(data.get("well_spacing") or "equal")
     if well_spacing not in ("equal", "geographic"):
         well_spacing = "equal"
@@ -436,6 +452,7 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         faults=faults,
         contacts=contacts,
         surfaces=surfaces,
+        lenses=lenses,
         well_spacing=well_spacing,
         ornaments=ornaments,
     )
@@ -523,6 +540,7 @@ def load_plot_document(workspace: Workspace, plot_id: str) -> PlotDocument:
             faults=list(doc.faults),
             contacts=list(doc.contacts),
             surfaces=list(doc.surfaces),
+            lenses=list(doc.lenses),
             well_spacing=doc.well_spacing,
             ornaments=doc.ornaments,
         )

@@ -69,6 +69,8 @@ hiddenimports = list(pyside_hidden) + [
     "well_log_workstation.section_geometry.contact_dialog",
     "well_log_workstation.section_geometry.erosion_surface",
     "well_log_workstation.section_geometry.erosion_surface_dialog",
+    "well_log_workstation.section_geometry.lens_body",
+    "well_log_workstation.section_geometry.lens_dialog",
     "well_log_workstation.print_preview",
     "well_log_workstation.geometry_golden",
     "numpy",

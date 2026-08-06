@@ -61,7 +61,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 实际井距/等井距、纵横比例尺解耦 | ❌ | correlation 等距列 | → Desktop(画布布局) |
 | 分层线拖拽吸附 (Snap Picking) | 🟡 | link 拾取 10px 容差 (`correlation_canvas.py:162-202`)；无曲线极值吸附 | → Desktop(磁吸) |
 | 曲线形态自动对比 | 🟡 | 仅名字匹配 (`correlation_links.match_tops_by_name:88-132`) | → Desktop(相似度) + SDK(信号处理) |
-| **地层尖灭/透镜体/剥蚀超覆** | 🟡 | `interwell_fill.py` 支持单井区间的线性楔形尖灭（FRS §3.3，P0-C 已交付）；`interwell_fill.py:35-88` 同名分层直四边形；**剥蚀/超覆截断已交付**(FRS §3.x P1)：`section_geometry/erosion_surface.py` `ErosionSurface2D`（per-well 深度 + 模式,剥蚀保下部/超覆保上部）+ `truncate_quad_by_surface` + `split_quad_composite` surfaces 阶段(最先,先于断层/界面) + 画布 surface 线(深棕 dash-dot) + `SectionErosionSurfaceDialog` 编辑 + plot_doc v9 `surfaces` 持久化;透镜体手绘仍缺 | **P0(楔形✅)/P1(剥蚀超覆截断✅)/后续**: 透镜体 → Desktop(手绘交互) |
+| **地层尖灭/透镜体/剥蚀超覆** | 🟡 | 楔形尖灭 P0-C ✅；剥蚀/超覆截断 P1 ✅；**透镜体手绘已交付**：`LensBody2D` + 剖面画布左键加点/双击闭合 +「绘制/编辑透镜体」+ plot schema v10 `lenses` 持久化 | **P0/P1/透镜体手绘✅**；过渡带渐变仍缺 |
 | 断层错断/落差 | ✅ | `section_geometry/fault_section.py` 2D 位置+落差模型：`SectionFault2D` + `fault_polyline` + `apply_fault_throw_to_quad` + **`split_quad_by_fault`**；`PlotDocument.faults` 持久化；**`split_quad_composite` 对每条断层逐条全切**（非仅第一条） | **P1/P2/复合全切✅** |
 | 流体界面 OWC/GOC + 复合充填 | 🟡 | `FluidContact2D` + `split_quad_by_contact`；**`split_quad_composite` 对每条接触线逐条全切**（GOC+OWC→气/油/水多带）；过渡带渐变色仍缺 | **P1(双色✅)/多接触全切✅/后续**: 过渡带渐变 |
 | 磁吸/手绘平滑 | ❌ | 无 | → Desktop(交互) |

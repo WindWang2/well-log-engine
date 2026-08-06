@@ -15,6 +15,7 @@ paint path (T8).
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
@@ -24,10 +25,13 @@ from PySide6.QtWidgets import QWidget
 from well_log_workstation.correlation_links import HorizonLink
 from well_log_workstation.section_geometry import (
     FluidContact2D,
+    LensBody2D,
     SectionFault2D,
     TieQuad2D,
+    append_vertex,
     contact_segment_2d,
     fault_polyline,
+    finalize_draft,
     split_quad_composite,
 )
 from well_log_workstation.template_model import HostPresentation
@@ -38,17 +42,22 @@ class SectionCanvas(QWidget):
     """Side-by-side well columns + section geometry overlays."""
 
     depth_range_changed = Signal(float, float)
+    # Freehand lens: emitted when a draft polygon is closed (≥3 vertices).
+    lens_completed = Signal(object)  # LensBody2D
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("SectionCanvas")
         self.setMinimumSize(480, 400)
         self.setStyleSheet("background: #ffffff;")
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._columns: list[HostPresentation] = []
         self._tops_per_column: list[list[FormationTop]] = []
         self._faults: list[SectionFault2D] = []
         self._contacts: list[FluidContact2D] = []
         self._surfaces: list[Any] = []
+        self._lenses: list[LensBody2D] = []
         self._tie_quads: list[TieQuad2D] = []
         self._d0: float | None = None
         self._d1: float | None = None
@@ -63,6 +72,10 @@ class SectionCanvas(QWidget):
         # Publication ornaments (P2-C / FRS §5): legend/title/location map.
         self._show_ornaments: bool = False
         self._ornament_data: Any = None
+        # Freehand lens drawing (FRS §3.x 透镜体手绘).
+        self._draw_lens_mode = False
+        self._lens_draft: list[tuple[float, float]] = []
+        self._lens_cursor: tuple[float, float] | None = None
 
     # -- data -----------------------------------------------------------
 
@@ -74,14 +87,39 @@ class SectionCanvas(QWidget):
         contacts: list[FluidContact2D] | None = None,
         tie_quads: list[TieQuad2D] | None = None,
         surfaces: list[Any] | None = None,
+        lenses: list[LensBody2D] | None = None,
     ) -> None:
         self._columns = list(presentations)
         self._tops_per_column = list(tops_per_column or [])
         self._faults = list(faults or [])
         self._contacts = list(contacts or [])
         self._surfaces = list(surfaces or [])
+        self._lenses = list(lenses or [])
         self._tie_quads = list(tie_quads or [])
         self._fit_depth()
+        self.update()
+
+    def lenses(self) -> list[LensBody2D]:
+        return list(self._lenses)
+
+    def set_lenses(self, lenses: list[LensBody2D] | None) -> None:
+        self._lenses = list(lenses or [])
+        self.update()
+
+    def draw_lens_mode(self) -> bool:
+        return self._draw_lens_mode
+
+    def set_draw_lens_mode(self, enabled: bool) -> None:
+        """Toggle freehand lens capture (left-click vertices, double-click close)."""
+        self._draw_lens_mode = bool(enabled)
+        if not enabled:
+            self._lens_draft = []
+            self._lens_cursor = None
+        self.setCursor(
+            Qt.CursorShape.CrossCursor
+            if self._draw_lens_mode
+            else Qt.CursorShape.ArrowCursor
+        )
         self.update()
 
     def set_well_x_offsets(self, offsets: list[float] | None) -> None:
@@ -174,12 +212,52 @@ class SectionCanvas(QWidget):
         event.accept()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
+        if self._draw_lens_mode and event.button() == Qt.MouseButton.LeftButton:
+            mapped = self._pixel_to_section(event.position().x(), event.position().y())
+            if mapped is not None:
+                self._lens_draft = append_vertex(
+                    self._lens_draft, mapped[0], mapped[1]
+                )
+                self.update()
+            event.accept()
+            return
+        if self._draw_lens_mode and event.button() == Qt.MouseButton.RightButton:
+            # Cancel draft
+            self._lens_draft = []
+            self._lens_cursor = None
+            self.update()
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_y = int(event.position().y())
             self._drag_d0, self._drag_d1 = self._d0, self._d1
             event.accept()
 
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        if self._draw_lens_mode and event.button() == Qt.MouseButton.LeftButton:
+            mapped = self._pixel_to_section(event.position().x(), event.position().y())
+            if mapped is not None:
+                self._lens_draft = append_vertex(
+                    self._lens_draft, mapped[0], mapped[1]
+                )
+            lens = finalize_draft(self._lens_draft)
+            if lens is not None:
+                self._lenses.append(lens)
+                self._lens_draft = []
+                self._lens_cursor = None
+                self.lens_completed.emit(lens)
+                self.update()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._draw_lens_mode:
+            mapped = self._pixel_to_section(event.position().x(), event.position().y())
+            self._lens_cursor = mapped
+            self.update()
+            event.accept()
+            return
         if (
             self._drag_y is None
             or self._drag_d0 is None
@@ -196,8 +274,69 @@ class SectionCanvas(QWidget):
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        self._drag_y = None
+        if not self._draw_lens_mode:
+            self._drag_y = None
         event.accept()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if self._draw_lens_mode and event.key() == Qt.Key.Key_Escape:
+            self._lens_draft = []
+            self._lens_cursor = None
+            self.update()
+            event.accept()
+            return
+        if self._draw_lens_mode and event.key() in (
+            Qt.Key.Key_Return,
+            Qt.Key.Key_Enter,
+        ):
+            lens = finalize_draft(self._lens_draft)
+            if lens is not None:
+                self._lenses.append(lens)
+                self._lens_draft = []
+                self._lens_cursor = None
+                self.lens_completed.emit(lens)
+                self.update()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _layout_metrics(
+        self, width: int, height: int
+    ) -> tuple[int, int, int, int, int, float, float] | None:
+        """Return (n, col_w, gap, top, bottom, d0, d1) or None if not ready."""
+        if not self._columns or self._d0 is None or self._d1 is None:
+            return None
+        n = len(self._columns)
+        gap = 6
+        col_w = max(40, (width - 16 - gap * (n - 1)) // n)
+        top, bottom = 36, height - 24
+        return n, col_w, gap, top, bottom, self._d0, self._d1
+
+    def _pixel_to_section(
+        self, px: float, py: float
+    ) -> tuple[float, float] | None:
+        """Map widget pixel → (well-index unit, depth)."""
+        m = self._layout_metrics(self.width(), self.height())
+        if m is None:
+            return None
+        n, col_w, gap, top, bottom, d0, d1 = m
+        if bottom <= top or d1 <= d0:
+            return None
+        # Inverse of unit_to_pixel without offset: solve base first, then
+        # approximate unit by linear scan (offsets make exact invert hard).
+        best_u = 0.0
+        best_err = 1e30
+        steps = max(n * 20, 20)
+        for i in range(steps + 1):
+            u = (i / steps) * max(n - 1, 1)
+            x = self.unit_to_pixel(u, col_w, gap)
+            err = abs(x - px)
+            if err < best_err:
+                best_err = err
+                best_u = u
+        t = (py - top) / (bottom - top)
+        depth = d0 + t * (d1 - d0)
+        return float(best_u), float(depth)
 
     # -- paint ----------------------------------------------------------
 
@@ -295,16 +434,65 @@ class SectionCanvas(QWidget):
             p.drawPolygon(poly)
 
         for quad in self._tie_quads:
-            # Composite split (FRS §3.x): structural fault split first
-            # (hanging/foot-wall halves, throw applied inside), then each
-            # half by the first fluid contact crossing it — a contact depth
-            # is per-well, so its line offsets naturally where the fault
-            # displaces the wells. 1..4 pieces painted in order.
+            # Composite split: surfaces → every fault → every contact.
             for piece in split_quad_composite(
-                quad, self._faults, self._contacts, n
+                quad,
+                self._faults,
+                self._contacts,
+                n,
+                surfaces=self._surfaces,
             ):
                 _paint_quad(piece)
+
+        # Freehand lens bodies (FRS §3.x 透镜体手绘) — over quads, under wells.
+        for lens in self._lenses:
+            if not lens.is_valid():
+                continue
+            poly = QPolygonF()
+            for (qx, qy) in lens.points:
+                xi = min(max(float(qx), 0.0), float(max(n - 1, 0)))
+                poly.append(QPointF(x_unit(xi), y_map(float(qy))))
+            fill = QColor(lens.fill_color)
+            fill.setAlpha(140)
+            p.setBrush(QBrush(fill))
+            p.setPen(QPen(QColor(lens.stroke_color), 1.5))
+            p.drawPolygon(poly)
+            if lens.label:
+                cx = float(np.mean(lens.points[:, 0]))
+                cy = float(np.mean(lens.points[:, 1]))
+                p.setPen(QColor(lens.stroke_color))
+                p.drawText(
+                    QPointF(x_unit(min(max(cx, 0.0), float(max(n - 1, 0)))), y_map(cy)),
+                    lens.label[:16],
+                )
         p.setBrush(Qt.BrushStyle.NoBrush)
+
+        # Live freehand draft
+        if self._draw_lens_mode and self._lens_draft:
+            draft_poly = QPolygonF()
+            for (qx, qy) in self._lens_draft:
+                draft_poly.append(
+                    QPointF(
+                        x_unit(min(max(qx, 0.0), float(max(n - 1, 0)))),
+                        y_map(qy),
+                    )
+                )
+            if self._lens_cursor is not None:
+                cu, cd = self._lens_cursor
+                draft_poly.append(
+                    QPointF(
+                        x_unit(min(max(cu, 0.0), float(max(n - 1, 0)))),
+                        y_map(cd),
+                    )
+                )
+            pen = QPen(QColor("#5b21b6"), 1.5, Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            if draft_poly.count() >= 2:
+                p.drawPolyline(draft_poly)
+            for i in range(draft_poly.count()):
+                pt = draft_poly.at(i)
+                p.drawEllipse(pt, 3.0, 3.0)
 
         # 1. Well columns + curves (mirror CorrelationCanvas)
         for i, pres in enumerate(self._columns):
@@ -435,8 +623,13 @@ class SectionCanvas(QWidget):
             h - 6,
             f"油藏剖面 · {n} 井 · {spacing_note} · 共享深度 {d0:.1f}–{d1:.1f} · "
             f"断层 {len(self._faults)} · 接触 {len(self._contacts)} · "
-            f"剥蚀/超覆 {len(self._surfaces)} · "
-            f"充填 {len(self._tie_quads)} · 滚轮缩放 / 拖动平移",
+            f"剥蚀/超覆 {len(self._surfaces)} · 透镜体 {len(self._lenses)} · "
+            f"充填 {len(self._tie_quads)} · "
+            + (
+                "绘制中：左键加点 · 双击/Enter 闭合 · 右键/Esc 取消"
+                if self._draw_lens_mode
+                else "滚轮缩放 / 拖动平移"
+            ),
         )
 
         # Publication ornaments (P2-C / FRS §5): legend + location map +

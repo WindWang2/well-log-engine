@@ -788,6 +788,26 @@ class WellLogWorkstationWindow(QMainWindow):
         self.section_surface_btn.setEnabled(False)
         self.section_surface_btn.clicked.connect(self._on_edit_section_surfaces)
         sl.addWidget(self.section_surface_btn)
+        # Freehand sand lenses (FRS §3.x 透镜体手绘).
+        lens_row = QHBoxLayout()
+        self.section_lens_draw_btn = QPushButton("绘制透镜体")
+        self.section_lens_draw_btn.setObjectName("Button_DrawSectionLens")
+        self.section_lens_draw_btn.setCheckable(True)
+        self.section_lens_draw_btn.setEnabled(False)
+        self.section_lens_draw_btn.setToolTip(
+            "手绘砂体透镜体：左键加点，双击或 Enter 闭合，右键/Esc 取消。"
+        )
+        self.section_lens_draw_btn.toggled.connect(self._on_draw_section_lens_toggled)
+        lens_row.addWidget(self.section_lens_draw_btn)
+        self.section_lens_edit_btn = QPushButton("编辑透镜体…")
+        self.section_lens_edit_btn.setObjectName("Button_EditSectionLenses")
+        self.section_lens_edit_btn.setEnabled(False)
+        self.section_lens_edit_btn.setToolTip(
+            "列表编辑已有透镜体顶点，或添加椭圆示例。"
+        )
+        self.section_lens_edit_btn.clicked.connect(self._on_edit_section_lenses)
+        lens_row.addWidget(self.section_lens_edit_btn)
+        sl.addLayout(lens_row)
         # Section well spacing (FRS §3.1 / P1-C): equal vs geographic (survey).
         spacing_row = QHBoxLayout()
         spacing_row.addWidget(QLabel("井距模式"))
@@ -810,6 +830,7 @@ class WellLogWorkstationWindow(QMainWindow):
         )
         sl.addWidget(self.section_ornament_check)
         self.section_canvas = SectionCanvas()
+        self.section_canvas.lens_completed.connect(self._on_section_lens_completed)
         sl.addWidget(self.section_canvas, 1)
         self.document_tabs.addTab(self._section_host, "油藏剖面")
 
@@ -2770,6 +2791,9 @@ class WellLogWorkstationWindow(QMainWindow):
         )
 
         surfaces = surfaces_from_json(getattr(plot, "surfaces", None) or [])
+        from well_log_workstation.section_geometry import lenses_from_json
+
+        lenses = lenses_from_json(getattr(plot, "lenses", None) or [])
         quads: list[TieQuad2D] = []
         tops_as_dicts = [
             [{"name": ft.name, "depth": ft.depth} for ft in col]
@@ -2801,17 +2825,20 @@ class WellLogWorkstationWindow(QMainWindow):
             faults=faults,
             contacts=contacts,
             surfaces=surfaces,
+            lenses=lenses,
             tie_quads=quads,
         )
         names = " · ".join(p.well_name for p in presentations[:4])
         self.section_caption.setText(
             f"油藏剖面 · {names} · 基准 {datum_mode} · "
             f"断层 {len(faults)} · 接触 {len(contacts)} · "
-            f"剥蚀/超覆 {len(surfaces)} · 充填 {len(quads)}"
+            f"剥蚀/超覆 {len(surfaces)} · 透镜体 {len(lenses)} · 充填 {len(quads)}"
         )
         self.section_fault_btn.setEnabled(True)
         self.section_contact_btn.setEnabled(True)
         self.section_surface_btn.setEnabled(True)
+        self.section_lens_draw_btn.setEnabled(True)
+        self.section_lens_edit_btn.setEnabled(True)
         # Sync the spacing combo from the plot doc (guarded against re-entry).
         self._section_spacing_guard = True
         try:
@@ -5205,6 +5232,82 @@ class WellLogWorkstationWindow(QMainWindow):
         self._show_section(plot)
         self.statusBar().showMessage(
             f"已更新流体界面（{len(new_contacts)} 条）", 4000
+        )
+
+    def _on_draw_section_lens_toggled(self, checked: bool = False) -> None:
+        """Toggle freehand lens capture on the section canvas."""
+        self.section_canvas.set_draw_lens_mode(bool(checked))
+        if checked:
+            self.statusBar().showMessage(
+                "透镜体绘制：左键加点 · 双击/Enter 闭合 · 右键/Esc 取消",
+                6000,
+            )
+
+    def _on_section_lens_completed(self, lens: object) -> None:
+        """Persist a newly closed freehand lens onto the active section plot."""
+        if (
+            self._workspace is None
+            or self._active_plot_type != "section"
+            or not self._active_plot_id
+        ):
+            return
+        from well_log_workstation.section_geometry import lenses_to_json
+
+        try:
+            plot = load_plot_document(self._workspace, self._active_plot_id)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "保存透镜体失败", str(exc))
+            return
+        plot.lenses = lenses_to_json(self.section_canvas.lenses())
+        try:
+            save_plot_document(self._workspace, plot)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "保存透镜体失败", str(exc))
+            return
+        label = getattr(lens, "label", "") or "透镜体"
+        self.statusBar().showMessage(
+            f"已添加透镜体「{label}」（共 {len(plot.lenses)} 个）", 4000
+        )
+        # Keep draw mode on for consecutive lenses.
+        self.section_lens_draw_btn.setChecked(True)
+
+    def _on_edit_section_lenses(self) -> None:
+        """Dialog edit of freehand section lenses."""
+        if (
+            self._workspace is None
+            or self._active_plot_type != "section"
+            or not self._active_plot_id
+        ):
+            return
+        from well_log_workstation.section_geometry import (
+            lenses_from_json,
+            lenses_to_json,
+        )
+        from well_log_workstation.section_geometry.lens_dialog import (
+            SectionLensDialog,
+        )
+
+        try:
+            plot = load_plot_document(self._workspace, self._active_plot_id)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "加载图件失败", str(exc))
+            return
+        dlg = SectionLensDialog(
+            current=lenses_from_json(plot.lenses),
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_lenses = dlg.value()
+        plot.lenses = lenses_to_json(new_lenses)
+        try:
+            save_plot_document(self._workspace, plot)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "保存透镜体失败", str(exc))
+            return
+        self._show_section(plot)
+        self.statusBar().showMessage(
+            f"已更新透镜体（{len(new_lenses)} 个）", 4000
         )
 
     def _on_edit_section_surfaces(self) -> None:

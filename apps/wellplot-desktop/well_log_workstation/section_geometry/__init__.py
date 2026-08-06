@@ -37,6 +37,16 @@ from well_log_workstation.section_geometry.tie_polygons import (
     TieQuad2D,
     tie_quads,
 )
+from well_log_workstation.section_geometry.lens_body import (
+    LensBody2D,
+    append_vertex,
+    finalize_draft,
+    lens_from_json,
+    lens_to_json,
+    lenses_from_json,
+    lenses_to_json,
+    make_ellipse_lens,
+)
 from well_log_workstation.section_geometry.trajectory_2d import (
     normalize_offsets,
     project_closure_to_section,
@@ -74,6 +84,15 @@ __all__ = [
     "surfaces_from_json",
     "surfaces_to_json",
     "truncate_quad_by_surface",
+    # Freehand lens bodies (FRS §3.x 透镜体手绘).
+    "LensBody2D",
+    "append_vertex",
+    "finalize_draft",
+    "lens_from_json",
+    "lens_to_json",
+    "lenses_from_json",
+    "lenses_to_json",
+    "make_ellipse_lens",
     "project_trajectory_2d",
     "project_closure_to_section",
     "normalize_offsets",
