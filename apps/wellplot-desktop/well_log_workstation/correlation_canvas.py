@@ -6,11 +6,25 @@ import math
 
 import numpy as np
 from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF, QWheelEvent
+from PySide6.QtGui import (
+    QColor,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPolygonF,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import QWidget
 
 from well_log_workstation.correlation_links import HorizonLink
-from well_log_workstation.interwell_fill import build_interwell_fill_bands
+from well_log_workstation.interwell_fill import (
+    PINCH_LEFT,
+    PINCH_OFF,
+    PINCH_RIGHT,
+    PINCHOUT_MODE_OFF,
+    PINCHOUT_MODES,
+    build_interwell_fill_bands,
+)
 from well_log_workstation.template_model import HostPresentation
 from well_log_workstation.tops_model import FormationTop
 
@@ -47,6 +61,10 @@ class CorrelationCanvas(QWidget):
         # Inter-well fill bands (#297 / T9)
         self._show_interwell_fill: bool = False
         self._fill_color: str = "#93c5fd80"  # light blue, semi via alpha in paint
+        # Pinchout wedges (FRS §3.3): off by default; per-plot toggle.
+        self._pinchout_mode: str = PINCHOUT_MODE_OFF
+        self._pinchout_factor: float = 0.5
+        self._pinchout_smooth: bool = False
 
     def column_gap(self) -> int:
         return self._column_gap
@@ -79,6 +97,31 @@ class CorrelationCanvas(QWidget):
 
     def set_fill_color(self, color: str) -> None:
         self._fill_color = str(color or "#93c5fd80")
+        self.update()
+
+    def pinchout_mode(self) -> str:
+        return self._pinchout_mode
+
+    def pinchout_factor(self) -> float:
+        return self._pinchout_factor
+
+    def pinchout_smooth(self) -> bool:
+        return self._pinchout_smooth
+
+    def set_pinchout(
+        self, mode: str, factor: float, smooth: bool
+    ) -> None:
+        """Configure pinchout wedges for unilateral intervals (FRS §3.3).
+
+        ``mode`` ∈ {"off","linear"}; ``factor`` is the apex x fraction across
+        the inter-column gap (clamped by the geometry helper).
+        """
+        self._pinchout_mode = mode if mode in PINCHOUT_MODES else PINCHOUT_MODE_OFF
+        try:
+            self._pinchout_factor = max(0.05, min(1.0, float(factor)))
+        except (TypeError, ValueError):
+            self._pinchout_factor = 0.5
+        self._pinchout_smooth = bool(smooth)
         self.update()
 
     def set_columns(
@@ -422,17 +465,27 @@ class CorrelationCanvas(QWidget):
 
         tops_n = sum(len(t) for t in self._tops_per_column)
         links_n = len(self._links)
-        fill_n = (
-            len(build_interwell_fill_bands(self._tops_per_column))
+        all_bands = (
+            build_interwell_fill_bands(
+                self._tops_per_column,
+                pinchout_mode=self._pinchout_mode,
+                pinchout_factor=self._pinchout_factor,
+                pinchout_smooth=self._pinchout_smooth,
+            )
             if self._show_interwell_fill
-            else 0
+            else []
         )
+        fill_n = sum(1 for b in all_bands if b.pinch == PINCH_OFF)
+        wedge_n = len(all_bands) - fill_n
         pick_note = (
             " · 点选连线中(先后点两井层位)"
             if self._link_pick_mode
             else " · Shift+点层位连线"
         )
-        fill_note = f" · 充填 {fill_n}" if self._show_interwell_fill else ""
+        parts = [f"充填 {fill_n}"]
+        if wedge_n:
+            parts.append(f"尖灭 {wedge_n}")
+        fill_note = f" · {' · '.join(parts)}" if self._show_interwell_fill else ""
         p.setPen(QColor("#555"))
         p.drawText(
             8,
@@ -454,10 +507,15 @@ class CorrelationCanvas(QWidget):
         d0: float,
         d1: float,
     ) -> None:
-        """Paint solid fill quads between adjacent wells for shared top pairs."""
+        """Paint fill quads + pinchout wedges between adjacent wells."""
         if d1 <= d0:
             return
-        bands = build_interwell_fill_bands(self._tops_per_column)
+        bands = build_interwell_fill_bands(
+            self._tops_per_column,
+            pinchout_mode=self._pinchout_mode,
+            pinchout_factor=self._pinchout_factor,
+            pinchout_smooth=self._pinchout_smooth,
+        )
         color = QColor(self._fill_color)
         if color.alpha() == 255:
             color.setAlpha(96)
@@ -478,18 +536,64 @@ class CorrelationCanvas(QWidget):
             rt = band.right_top_depth + rs
             lb = band.left_bottom_depth + ls
             rb = band.right_bottom_depth + rs
-            # Skip if fully outside viewport
-            if max(lt, rt, lb, rb) < d0 or min(lt, rt, lb, rb) > d1:
+            apex_d = band.apex_depth + (
+                ls if band.pinch == PINCH_RIGHT else rs
+            )
+            # Viewport cull (apex included for wedges)
+            depths = (lt, rt, lb, rb) + (
+                (apex_d,) if band.pinch != PINCH_OFF else ()
+            )
+            if max(depths) < d0 or min(depths) > d1:
                 continue
             x_l = 8 + band.left_col * (col_w + gap) + col_w - 2
             x_r = 8 + band.right_col * (col_w + gap) + 2
-            poly = QPolygonF(
-                [
-                    QPointF(x_l, y_of(lt)),
-                    QPointF(x_r, y_of(rt)),
-                    QPointF(x_r, y_of(rb)),
-                    QPointF(x_l, y_of(lb)),
-                ]
-            )
-            p.drawPolygon(poly)
+            if band.pinch == PINCH_OFF:
+                poly = QPolygonF(
+                    [
+                        QPointF(x_l, y_of(lt)),
+                        QPointF(x_r, y_of(rt)),
+                        QPointF(x_r, y_of(rb)),
+                        QPointF(x_l, y_of(lb)),
+                    ]
+                )
+                p.drawPolygon(poly)
+                continue
+            # Wedge: apex on the missing side, full interval on the present side.
+            x_a = x_l + (x_r - x_l) * band.apex_frac
+            y_a = y_of(apex_d)
+            y_top_pres = y_of(rt if band.pinch == PINCH_LEFT else lt)
+            y_bot_pres = y_of(rb if band.pinch == PINCH_LEFT else lb)
+            if band.smooth:
+                # Bézier from the present side toward the apex, with the
+                # control point pulled partway back so the well-side
+                # thickness is preserved and the edge rounds into the apex.
+                path = QPainterPath()
+                path.moveTo(x_l if band.pinch == PINCH_RIGHT else x_r, y_top_pres)
+                if band.pinch == PINCH_RIGHT:
+                    ctrl_top = QPointF(x_l + 0.7 * (x_a - x_l), y_top_pres)
+                    path.quadTo(ctrl_top, QPointF(x_a, y_a))
+                    ctrl_bot = QPointF(x_l + 0.7 * (x_a - x_l), y_bot_pres)
+                    path.quadTo(ctrl_bot, QPointF(x_l, y_bot_pres))
+                else:
+                    ctrl_top = QPointF(x_r + 0.7 * (x_a - x_r), y_top_pres)
+                    path.quadTo(ctrl_top, QPointF(x_a, y_a))
+                    ctrl_bot = QPointF(x_r + 0.7 * (x_a - x_r), y_bot_pres)
+                    path.quadTo(ctrl_bot, QPointF(x_r, y_bot_pres))
+                path.closeSubpath()
+                p.drawPath(path)
+            else:
+                # Straight-edge wedge (triangle): apex shared by top & bottom.
+                if band.pinch == PINCH_RIGHT:
+                    corners = [
+                        QPointF(x_l, y_of(lt)),
+                        QPointF(x_a, y_a),
+                        QPointF(x_l, y_of(lb)),
+                    ]
+                else:
+                    corners = [
+                        QPointF(x_r, y_of(rt)),
+                        QPointF(x_a, y_a),
+                        QPointF(x_r, y_of(rb)),
+                    ]
+                p.drawPolygon(QPolygonF(corners))
         p.setBrush(Qt.BrushStyle.NoBrush)

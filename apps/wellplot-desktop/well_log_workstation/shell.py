@@ -856,6 +856,30 @@ class WellLogWorkstationWindow(QMainWindow):
         self.corr_fill_check.setObjectName("CorrelationInterwellFill")
         self.corr_fill_check.toggled.connect(self._on_correlation_fill_toggled)
         layout.addWidget(self.corr_fill_check)
+        # Pinchout wedges (FRS §3.3): unilateral intervals wedge out toward
+        # the neighbour column instead of being dropped from the fill.
+        self.corr_pinch_check = QCheckBox("尖灭楔形")
+        self.corr_pinch_check.setObjectName("CorrelationPinchout")
+        self.corr_pinch_check.setToolTip(
+            "单井存在的层位区间向缺失侧收拢为楔形（厚度归零外推）。"
+        )
+        self.corr_pinch_check.toggled.connect(self._on_correlation_pinch_toggled)
+        layout.addWidget(self.corr_pinch_check)
+        pinch_row = QHBoxLayout()
+        pinch_row.addWidget(QLabel("尖灭位置"))
+        self.corr_pinch_factor = QDoubleSpinBox()
+        self.corr_pinch_factor.setObjectName("CorrelationPinchoutFactor")
+        self.corr_pinch_factor.setRange(0.05, 1.0)
+        self.corr_pinch_factor.setSingleStep(0.05)
+        self.corr_pinch_factor.setValue(0.5)
+        self.corr_pinch_factor.setSuffix("（0=邻井 1=本井）")
+        self.corr_pinch_factor.valueChanged.connect(self._on_correlation_pinch_factor_changed)
+        pinch_row.addWidget(self.corr_pinch_factor)
+        layout.addLayout(pinch_row)
+        self.corr_pinch_smooth = QCheckBox("平滑边缘")
+        self.corr_pinch_smooth.setObjectName("CorrelationPinchoutSmooth")
+        self.corr_pinch_smooth.toggled.connect(self._on_correlation_pinch_smooth_toggled)
+        layout.addWidget(self.corr_pinch_smooth)
         self.corr_refresh_btn = QPushButton("刷新对比图（层位）")
         self.corr_refresh_btn.setObjectName("Button_RefreshCorrelationTops")
         self.corr_refresh_btn.setToolTip(
@@ -2313,6 +2337,11 @@ class WellLogWorkstationWindow(QMainWindow):
         self.correlation_canvas.set_fill_color(
             str(getattr(plot, "interwell_fill_color", None) or "#93c5fd")
         )
+        self.correlation_canvas.set_pinchout(
+            str(getattr(plot, "pinchout_mode", "off") or "off"),
+            float(getattr(plot, "pinchout_factor", 0.5)),
+            bool(getattr(plot, "pinchout_smooth", False)),
+        )
         self._apply_correlation_datum_shifts(plot, presentations, tops_cols)
         self._refresh_links_list()
         self._refresh_correlation_well_list(plot)
@@ -2519,6 +2548,12 @@ class WellLogWorkstationWindow(QMainWindow):
         if hasattr(self, "corr_fill_check"):
             self.corr_fill_check.setEnabled(enabled)
             self.corr_refresh_btn.setEnabled(enabled)
+        if hasattr(self, "corr_pinch_check"):
+            # Pinchout only renders when inter-well fill is on.
+            fill_on = self.corr_fill_check.isChecked() if enabled else False
+            self.corr_pinch_check.setEnabled(enabled and fill_on)
+            self.corr_pinch_factor.setEnabled(enabled and fill_on)
+            self.corr_pinch_smooth.setEnabled(enabled and fill_on)
 
     def _refresh_correlation_well_list(self, plot: PlotDocument | None = None) -> None:
         """Fill well-order list for active correlation plot (#295)."""
@@ -2557,6 +2592,16 @@ class WellLogWorkstationWindow(QMainWindow):
             if hasattr(self, "corr_fill_check"):
                 self.corr_fill_check.setChecked(
                     bool(getattr(plot, "show_interwell_fill", False))
+                )
+            if hasattr(self, "corr_pinch_check"):
+                self.corr_pinch_check.setChecked(
+                    str(getattr(plot, "pinchout_mode", "off") or "off") == "linear"
+                )
+                self.corr_pinch_factor.setValue(
+                    float(getattr(plot, "pinchout_factor", 0.5))
+                )
+                self.corr_pinch_smooth.setChecked(
+                    bool(getattr(plot, "pinchout_smooth", False))
                 )
         finally:
             self._corr_layout_guard = False
@@ -2833,6 +2878,11 @@ class WellLogWorkstationWindow(QMainWindow):
                 self.correlation_canvas.set_show_interwell_fill(
                     bool(plot.show_interwell_fill)
                 )
+                self.correlation_canvas.set_pinchout(
+                    str(getattr(plot, "pinchout_mode", "off") or "off"),
+                    float(getattr(plot, "pinchout_factor", 0.5)),
+                    bool(getattr(plot, "pinchout_smooth", False)),
+                )
                 # Persist updated link depths (auto path only if links changed)
                 if reason == "auto" and plot.links != updated_links:
                     plot.links = list(updated_links)
@@ -2860,6 +2910,11 @@ class WellLogWorkstationWindow(QMainWindow):
             return
         enabled = self.corr_fill_check.isChecked()
         self.correlation_canvas.set_show_interwell_fill(enabled)
+        # Pinchout wedges are a sub-mode of inter-well fill.
+        self._set_correlation_layout_enabled(
+            self._active_plot_type == "correlation"
+            and bool(self._active_plot_id)
+        )
         if (
             self._workspace is None
             or self._active_plot_type != "correlation"
@@ -2871,6 +2926,49 @@ class WellLogWorkstationWindow(QMainWindow):
         except WorkspaceError:
             return
         plot.show_interwell_fill = enabled
+        try:
+            save_plot_document(self._workspace, plot)
+        except WorkspaceError:
+            pass
+
+    def _on_correlation_pinch_toggled(self, checked: bool = False) -> None:
+        if self._corr_layout_guard:
+            return
+        mode = "linear" if self.corr_pinch_check.isChecked() else "off"
+        self._apply_pinchout_to_canvas(mode)
+
+    def _on_correlation_pinch_factor_changed(self, _value: float) -> None:
+        if self._corr_layout_guard:
+            return
+        # The factor is only meaningful when wedges are on; mirror it to canvas
+        # so the live preview updates even before persistence.
+        mode = "linear" if self.corr_pinch_check.isChecked() else "off"
+        self._apply_pinchout_to_canvas(mode)
+
+    def _on_correlation_pinch_smooth_toggled(self, _checked: bool = False) -> None:
+        if self._corr_layout_guard:
+            return
+        mode = "linear" if self.corr_pinch_check.isChecked() else "off"
+        self._apply_pinchout_to_canvas(mode)
+
+    def _apply_pinchout_to_canvas(self, mode: str) -> None:
+        """Push current pinchout controls to the canvas and persist on the plot."""
+        factor = float(self.corr_pinch_factor.value())
+        smooth = self.corr_pinch_smooth.isChecked()
+        self.correlation_canvas.set_pinchout(mode, factor, smooth)
+        if (
+            self._workspace is None
+            or self._active_plot_type != "correlation"
+            or not self._active_plot_id
+        ):
+            return
+        try:
+            plot = load_plot_document(self._workspace, self._active_plot_id)
+        except WorkspaceError:
+            return
+        plot.pinchout_mode = mode
+        plot.pinchout_factor = factor
+        plot.pinchout_smooth = smooth
         try:
             save_plot_document(self._workspace, plot)
         except WorkspaceError:

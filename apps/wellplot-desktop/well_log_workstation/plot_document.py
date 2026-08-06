@@ -128,6 +128,12 @@ class PlotDocument:
     # Inter-well fill MVP (#297 / T9)
     show_interwell_fill: bool = False
     interwell_fill_color: str = "#93c5fd"
+    # Pinchout wedges for unilateral intervals (FRS §3.3). Optional correlation
+    # fields; default off. ``pinchout_factor`` is the apex x fraction across the
+    # inter-column gap (0.05–1.0).
+    pinchout_mode: str = "off"
+    pinchout_factor: float = 0.5
+    pinchout_smooth: bool = False
 
     def absolute_path(self, workspace: Workspace) -> Path:
         return workspace.root / self.path
@@ -187,6 +193,12 @@ def _to_json(doc: PlotDocument) -> dict[str, Any]:
         payload["interwell_fill_color"] = str(
             doc.interwell_fill_color or "#93c5fd"
         )
+    # Pinchout wedges (FRS §3.3): optional correlation fields, written together
+    # so a stale file never carries a half-set of pinchout options.
+    if doc.type == "correlation" or doc.pinchout_mode != "off":
+        payload["pinchout_mode"] = str(doc.pinchout_mode or "off")
+        payload["pinchout_factor"] = float(doc.pinchout_factor)
+        payload["pinchout_smooth"] = bool(doc.pinchout_smooth)
     return payload
 
 
@@ -304,6 +316,15 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         datum_horizon = None
     show_interwell_fill = bool(data.get("show_interwell_fill", False))
     interwell_fill_color = str(data.get("interwell_fill_color") or "#93c5fd")
+    pinchout_mode = str(data.get("pinchout_mode") or "off")
+    if pinchout_mode not in ("off", "linear"):
+        pinchout_mode = "off"
+    try:
+        pinchout_factor = float(data.get("pinchout_factor", 0.5))
+    except (TypeError, ValueError):
+        pinchout_factor = 0.5
+    pinchout_factor = max(0.05, min(1.0, pinchout_factor))
+    pinchout_smooth = bool(data.get("pinchout_smooth", False))
     return PlotDocument(
         id=str(data["id"]),
         name=str(data.get("name") or data["id"]),
@@ -323,6 +344,9 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         datum_horizon=datum_horizon,
         show_interwell_fill=show_interwell_fill,
         interwell_fill_color=interwell_fill_color,
+        pinchout_mode=pinchout_mode,
+        pinchout_factor=pinchout_factor,
+        pinchout_smooth=pinchout_smooth,
     )
 
 
@@ -401,6 +425,9 @@ def load_plot_document(workspace: Workspace, plot_id: str) -> PlotDocument:
             datum_horizon=doc.datum_horizon,
             show_interwell_fill=doc.show_interwell_fill,
             interwell_fill_color=doc.interwell_fill_color,
+            pinchout_mode=doc.pinchout_mode,
+            pinchout_factor=doc.pinchout_factor,
+            pinchout_smooth=doc.pinchout_smooth,
         )
     # Lazy import: keep this module importable without PySide6 (see save).
     from well_log_workstation.events import restore_plot_revision
