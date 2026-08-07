@@ -64,6 +64,7 @@ class PdfExportOptionsDialog(QDialog):
         text_mode: str = TEXT_MODE_OUTLINE,
         crop_marks: bool = False,
         layered_pdf: bool = False,
+        border_frame: bool = False,
         plot_type: str = "single_well",
         engine_options: bool | None = None,
     ) -> None:
@@ -111,6 +112,11 @@ class PdfExportOptionsDialog(QDialog):
         self.chk_crop_marks.setEnabled(bool(appl.get("crop_marks", True)))
         layout.addWidget(self.chk_crop_marks)
 
+        self.chk_border_frame = QCheckBox("图框边线（页边距矩形边框）")
+        self.chk_border_frame.setObjectName("PdfBorderFrame")
+        self.chk_border_frame.setChecked(bool(border_frame))
+        layout.addWidget(self.chk_border_frame)
+
         self.chk_layered = QCheckBox("PDF 图层（每图道一个 OCG，查看器可开关）")
         self.chk_layered.setObjectName("PdfLayered")
         self.chk_layered.setChecked(
@@ -133,13 +139,15 @@ class PdfExportOptionsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def value(self) -> tuple[str, bool, bool]:
-        """Return ``(text_mode, crop_marks, layered_pdf)``.
+    def value(self) -> tuple[str, bool, bool, bool]:
+        """Return ``(text_mode, crop_marks, layered_pdf, border_frame)``.
 
         When engine options are disabled (e.g. correlation), ``text_mode`` is
         forced to outline and ``layered_pdf`` is always False so callers never
-        interpret UI state as engine multi-well export.
+        interpret UI state as engine multi-well export. ``crop_marks`` and
+        ``border_frame`` are honoured on the Qt paint path for all plot types.
         """
+        border = self.chk_border_frame.isChecked()
         if not self._engine_options:
             return (
                 TEXT_MODE_OUTLINE,
@@ -147,10 +155,16 @@ class PdfExportOptionsDialog(QDialog):
                 if self.chk_crop_marks.isEnabled()
                 else False,
                 False,
+                border,
             )
         mode = (
             TEXT_MODE_SEARCHABLE
             if self.radio_searchable.isChecked()
             else TEXT_MODE_OUTLINE
         )
-        return (mode, self.chk_crop_marks.isChecked(), self.chk_layered.isChecked())
+        return (
+            mode,
+            self.chk_crop_marks.isChecked(),
+            self.chk_layered.isChecked(),
+            border,
+        )

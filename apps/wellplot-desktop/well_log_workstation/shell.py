@@ -5640,10 +5640,10 @@ class WellLogWorkstationWindow(QMainWindow):
 
     def _choose_single_well_pdf_options(
         self,
-    ) -> tuple[str, bool, bool] | None:
+    ) -> tuple[str, bool, bool, bool] | None:
         """PDF export options for engine single-well exports (ADR 0053 + FRS §5).
 
-        Returns ``(text_mode, crop_marks, layered_pdf)`` or None if cancelled.
+        Returns ``(text_mode, crop_marks, layered_pdf, border_frame)`` or None.
         """
         return self._choose_pdf_export_options(plot_type="single_well")
 
@@ -5651,12 +5651,13 @@ class WellLogWorkstationWindow(QMainWindow):
         self,
         *,
         plot_type: str = "single_well",
-    ) -> tuple[str, bool, bool] | None:
+    ) -> tuple[str, bool, bool, bool] | None:
         """Shared PDF options dialog for single-well and correlation menu export.
 
-        Returns ``(text_mode, crop_marks, layered_pdf)`` or None if cancelled.
-        Correlation disables engine-only controls (text mode / layered OCG);
-        crop marks remain available and are honoured by the Qt paint path.
+        Returns ``(text_mode, crop_marks, layered_pdf, border_frame)`` or None
+        if cancelled. Correlation disables engine-only controls (text mode /
+        layered OCG); crop marks and frame border remain available and are
+        honoured by the Qt paint path.
         """
         from well_log_workstation.export_options_dialog import (
             PdfExportOptionsDialog,
@@ -5698,11 +5699,17 @@ class WellLogWorkstationWindow(QMainWindow):
                 pdf_text_mode: PdfTextMode = "outline"
                 pdf_crop_marks = False
                 pdf_layered = False
+                pdf_border_frame = False
                 if fmt == "pdf":
                     chosen = self._choose_single_well_pdf_options()
                     if chosen is None:
                         return
-                    pdf_text_mode, pdf_crop_marks, pdf_layered = chosen
+                    (
+                        pdf_text_mode,
+                        pdf_crop_marks,
+                        pdf_layered,
+                        pdf_border_frame,
+                    ) = chosen
                     if pdf_text_mode == "searchable":
                         QMessageBox.information(
                             self, "可搜索 PDF", PDF_SEARCHABLE_MODE_NOTE
@@ -5753,13 +5760,15 @@ class WellLogWorkstationWindow(QMainWindow):
                         kwargs["paint_fn"] = self._paint_active_plot
                         backend_note = "（引擎不可用，已回退 Qt）"
                         if fmt == "pdf":
-                            # Qt fallback honours crop marks (FRS §5 parity).
+                            # Qt fallback honours crop marks + frame border.
                             kwargs["crop_marks"] = pdf_crop_marks
+                            kwargs["border_frame"] = pdf_border_frame
                 else:
                     kwargs["backend"] = "qt"
                     kwargs["paint_fn"] = self._paint_active_plot
                     if fmt == "pdf":
                         kwargs["crop_marks"] = pdf_crop_marks
+                        kwargs["border_frame"] = pdf_border_frame
             elif plot.type == "correlation":
                 # B0 (#300): Qt paint for SVG/PDF; PNG prefers widget grab for
                 # links/datum fidelity, with paint_fn fallback.
@@ -5775,30 +5784,34 @@ class WellLogWorkstationWindow(QMainWindow):
                     )
                     return
                 pdf_crop_marks = False
+                pdf_border_frame = False
                 if fmt == "pdf":
                     chosen = self._choose_pdf_export_options(
                         plot_type="correlation"
                     )
                     if chosen is None:
                         return
-                    _mode, pdf_crop_marks, _layered = chosen
+                    _mode, pdf_crop_marks, _layered, pdf_border_frame = chosen
                 kwargs["paint_fn"] = self._paint_active_plot
                 kwargs["backend"] = "qt"
                 if fmt == "pdf":
                     kwargs["crop_marks"] = pdf_crop_marks
+                    kwargs["border_frame"] = pdf_border_frame
                 backend_note = "（对比图 · Qt 矢量）"
             elif plot.type == "section":
                 # Same options surface as correlation (Qt paint + crop marks).
                 pdf_crop_marks = False
+                pdf_border_frame = False
                 if fmt == "pdf":
                     chosen = self._choose_pdf_export_options(plot_type="section")
                     if chosen is None:
                         return
-                    _mode, pdf_crop_marks, _layered = chosen
+                    _mode, pdf_crop_marks, _layered, pdf_border_frame = chosen
                 kwargs["paint_fn"] = self._paint_active_plot
                 kwargs["backend"] = "qt"
                 if fmt == "pdf":
                     kwargs["crop_marks"] = pdf_crop_marks
+                    kwargs["border_frame"] = pdf_border_frame
                 backend_note = "（油藏剖面 · Qt 矢量）"
             elif plot.type == "plane_map":
                 kwargs["canvas"] = self.plane_map_view._canvas
@@ -5970,14 +5983,15 @@ class WellLogWorkstationWindow(QMainWindow):
         fmt: ExportFormat,
         *,
         crop_marks: bool = False,
+        border_frame: bool = False,
     ) -> Path:
         """Export active correlation plot to SVG/PDF/PNG (B0 #300).
 
         Backend: **Qt paint** for SVG/PDF (host multi-column + links);
         **PNG** via correlation canvas grab when possible.
-        ``crop_marks`` is honoured for SVG/PDF on the Qt paint path (same
-        geometry as single-well Qt export). Menu PDF export prompts via
-        :meth:`_choose_pdf_export_options` then passes this flag.
+        ``crop_marks`` and ``border_frame`` are honoured for SVG/PDF on the Qt
+        paint path. Menu PDF export prompts via
+        :meth:`_choose_pdf_export_options` then passes these flags.
         """
         if self._workspace is None or not self._active_plot_id:
             raise ExportError("请先打开地层对比图")
@@ -5997,6 +6011,7 @@ class WellLogWorkstationWindow(QMainWindow):
             backend="qt",
             paint_fn=self._paint_active_plot,
             crop_marks=bool(crop_marks),
+            border_frame=bool(border_frame),
         )
 
     def _export_correlation_png(self, path: Path) -> Path:

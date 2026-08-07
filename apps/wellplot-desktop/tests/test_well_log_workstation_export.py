@@ -311,7 +311,7 @@ def test_pdf_export_options_dialog_correlation_disables_engine(qtbot) -> None:
     dlg.chk_layered.setChecked(True)
     dlg.radio_searchable.setChecked(True)
     dlg.chk_crop_marks.setChecked(True)
-    assert dlg.value() == ("outline", True, False)
+    assert dlg.value() == ("outline", True, False, False)
 
 
 def test_correlation_pdf_crop_marks_via_export_active(
@@ -373,7 +373,7 @@ def test_correlation_menu_pdf_options_accept_and_cancel(
     monkeypatch.setattr(
         win,
         "_choose_pdf_export_options",
-        lambda **kw: ("outline", True, False),
+        lambda **kw: ("outline", True, False, False),
     )
     monkeypatch.setattr(
         "well_log_workstation.shell.QFileDialog.getSaveFileName",
@@ -423,7 +423,7 @@ def test_section_menu_pdf_options_crop_marks(
 
     def _choose(**kw):  # noqa: ANN003
         chosen_types.append(str(kw.get("plot_type") or ""))
-        return ("outline", True, False)
+        return ("outline", True, False, False)
 
     monkeypatch.setattr(win, "_choose_pdf_export_options", _choose)
     monkeypatch.setattr(
@@ -853,21 +853,21 @@ def test_pdf_export_options_dialog_value(qtbot) -> None:
 
     dlg = PdfExportOptionsDialog()
     qtbot.addWidget(dlg)
-    assert dlg.value() == ("outline", False, False)
+    assert dlg.value() == ("outline", False, False, False)
     assert dlg.radio_outline.isEnabled()
     assert dlg.chk_layered.isEnabled()
 
     dlg.radio_searchable.setChecked(True)
     dlg.chk_crop_marks.setChecked(True)
     dlg.chk_layered.setChecked(True)
-    assert dlg.value() == ("searchable", True, True)
+    assert dlg.value() == ("searchable", True, True, False)
 
     # Pre-seeded state round-trips.
     dlg2 = PdfExportOptionsDialog(
         text_mode="searchable", crop_marks=True, layered_pdf=True
     )
     qtbot.addWidget(dlg2)
-    assert dlg2.value() == ("searchable", True, True)
+    assert dlg2.value() == ("searchable", True, True, False)
 
 
 # ---------------------------------------------------------------------------

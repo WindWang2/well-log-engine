@@ -72,9 +72,9 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | FRS 需求 | 状态 | 现状 | 缺口 → 归属 |
 |---|---|---|---|
 | 平面-剖面双向联动 | ❌ | 无（平面仅散点） | **P2: Desktop 事件总线** |
-| 图例栏/责任表/接合图 | 🟡 | `ornament.py`（P2-C）：责任表（图名/工区/比例尺/日期）、图例栏（花纹/断层/接触样本 + 标签，行列布局）、接合图（井位散点 + 剖面井高亮 + 指北针）、比例尺；section 画布交互预览 + 导出叠加（`plot.ornaments` 开关）；图幅框线全套、CGM 整饰件、长卷剪切线仍缺 | **P2(核心✅)/后续**: SDK 侧 crop marks / 图框全套 |
+| 图例栏/责任表/接合图 | ✅ | `ornament.py`（P2-C）：责任表（图名/工区/比例尺/日期）、图例栏（花纹/断层/接触样本 + 标签，行列布局）、接合图（井位散点 + 剖面井高亮 + 指北针）、比例尺；section 画布交互预览 + 导出叠加（`plot.ornaments` 开关）；**图框边线已交付**（`_draw_qt_frame_border`，Qt 导出 SVG/PDF/PNG，`border_frame` 导出选项，镜像 crop marks wiring）；CGM 整饰件、长卷剪切线、SDK C++ 单井 PDF 图框留后续 | **P2(核心+图框✅)/后续**: SDK 侧 CGM 整饰 / 长卷剪切 / 单井 PDF 图框 |
 | 接合图 (Location Map) | ✅ | `ornament.draw_location_map`：井位散点 + 剖面井红点高亮 + 指北针（P2-C） | — |
-| 责任表/图框 | ❌ | 无 | **P2** |
+| 责任表/图框 | ✅ | 责任表 `ornament.draw_title_block`（图名/工区/比例尺/日期，P2-C）；**图框边线** `export_dispatch._draw_qt_frame_border`（页边距矩形边框，Qt 导出 SVG/PDF/PNG，`PdfExportOptionsDialog.border_frame` 选项，镜像 crop marks wiring，默认关） | **P2✅** |
 | 比例尺/指北针 | 🟡 | depth scale 页脚 (`PlotHeaderSpec`); SDK 页脚带 (`pagination.cpp:221`) | → SDK(导出) |
 | 长卷多页分切 + 剪切线 | ✅ | SDK `PaginatedSvgExporter` 连续/分页 + 重复页眉/图例 (`export/pagination.hpp:34,104`); CGM 多 PICTURE (`cgm.hpp:69-74`); **crop marks 已交付**(FRS §5):`ExportPageSpec.crop_marks` 四角剪切线(每角 2 条 5mm 短线),SVG(`pagination.cpp::append_crop_marks`,fixed+continuous)+ PDF(`pdf_scene.cpp::emit_crop_marks`,PAGE-mm 空间)几何一致,默认关 | — |
 | PDF/SVG/CGM 矢量导出 | ✅ | 单井 engine SVG/PDF/CGM；correlation/**section** Qt paint；**PDF 导出选项对话框**对齐单井表面（剪切线；对比/剖面禁用文本模式与 OCG） | 无 CGM → SDK |

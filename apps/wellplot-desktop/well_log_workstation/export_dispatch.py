@@ -320,6 +320,35 @@ def _draw_qt_crop_marks(
         painter.drawLine(QPointF(cx, cy), QPointF(cx, cy + sy * ln))
 
 
+def _draw_qt_frame_border(
+    painter,
+    rect,
+    *,
+    margin_mm: float,
+    mm_per_unit: float,
+) -> None:
+    """Page frame border (图框边线) for the Qt fallback export (FRS §5).
+
+    A single thin rectangle inset by ``margin_mm`` from the page edge — the
+    classic publication figure frame. ``rect`` units are mm (SVG/PNG) or
+    device pixels (PDF at 150 dpi); ``mm_per_unit`` converts.
+    """
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QBrush, QColor, QPen
+
+    m = margin_mm * mm_per_unit
+    painter.setPen(QPen(QColor("#000000"), max(1.0, 0.3 * mm_per_unit)))
+    painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+    painter.drawRect(
+        QRectF(
+            rect.x() + m,
+            rect.y() + m,
+            rect.width() - 2 * m,
+            rect.height() - 2 * m,
+        )
+    )
+
+
 def _qt_paint_export(
     plot_doc: PlotDocument,
     fmt: ExportFormat,
@@ -339,6 +368,7 @@ def _qt_paint_export(
     out = Path(kwargs.get("path") or f"export_{plot_doc.id}.{fmt}")
     out.parent.mkdir(parents=True, exist_ok=True)
     crop_marks = bool(kwargs.get("crop_marks", False))
+    border_frame = bool(kwargs.get("border_frame", False))
 
     if fmt == "svg":
         from PySide6.QtSvg import QSvgGenerator
@@ -366,6 +396,13 @@ def _qt_paint_export(
                     QRectF(0, 0, w_mm, h_mm),
                     margin_mm=10.0,
                     mark_mm=5.0,
+                    mm_per_unit=1.0,
+                )
+            if border_frame:
+                _draw_qt_frame_border(
+                    painter,
+                    QRectF(0, 0, w_mm, h_mm),
+                    margin_mm=10.0,
                     mm_per_unit=1.0,
                 )
         finally:
@@ -396,6 +433,13 @@ def _qt_paint_export(
                     mark_mm=5.0,
                     mm_per_unit=150.0 / 25.4,
                 )
+            if border_frame:
+                _draw_qt_frame_border(
+                    painter,
+                    QRectF(page.x(), page.y(), page.width(), page.height()),
+                    margin_mm=10.0,
+                    mm_per_unit=150.0 / 25.4,
+                )
         finally:
             painter.end()
     else:  # png
@@ -411,6 +455,13 @@ def _qt_paint_export(
         painter = QPainter(pm)
         try:
             paint_fn(painter, QRectF(0, 0, w_mm, h_mm))
+            if border_frame:
+                _draw_qt_frame_border(
+                    painter,
+                    QRectF(0, 0, w_mm, h_mm),
+                    margin_mm=10.0,
+                    mm_per_unit=4.0,  # ~4 px/mm (~100 dpi)
+                )
         finally:
             painter.end()
         if not pm.save(str(out)):
