@@ -51,6 +51,10 @@ class ImportedWellDocument:
     lng: float | None = None
     lat: float | None = None
     crs: str | None = "EPSG:4326"
+    # Wellhead elevations + total depth (FRS §1.x): KB/GL/MaxMD from LAS headers.
+    kb_m: float | None = None
+    gl_m: float | None = None
+    max_md: float | None = None
     # Per-well lithology segments (FRS §2.x): the shell attaches the loaded
     # ``wells/<id>/lithology.json`` model before applying templates.
     lithology: LithologyModel | None = None
@@ -153,6 +157,13 @@ def parse_las_file(path: Path | str) -> ImportedWellDocument:
         else:
             diagnostics.append("缺少 WELL-X/Y/LAT/LONG 井位头；井位标记为 None")
 
+    # Wellhead elevations + total depth (FRS §1.x): KB (kelly-bushing /
+    # 补心海拔), GL (ground level / 地面海拔), STOP (max measured depth).
+    # KB feeds the tvdss section datum (shift = -kb). All tolerant of absence.
+    kb_m = _header_float("KB", "KBELEV", "KOELEV")
+    gl_m = _header_float("GL", "GLELEV", "GRDELEV")
+    max_md = _header_float("STOP", "MAXDEP", "MAXMD")
+
     depth_unit = (depth_curve.unit or "m").strip() or "m"
     depth_out = _freeze(depth)
 
@@ -206,6 +217,9 @@ def parse_las_file(path: Path | str) -> ImportedWellDocument:
         lng=lng,
         lat=lat,
         crs=crs,
+        kb_m=kb_m,
+        gl_m=gl_m,
+        max_md=max_md,
     )
 
 
@@ -244,5 +258,8 @@ def import_las_into_workspace(
         lng=document.lng,
         lat=document.lat,
         crs=document.crs,
+        kb_m=document.kb_m,
+        gl_m=document.gl_m,
+        max_md=document.max_md,
     )
     return LasImportResult(catalog_well_id=well_id, document=document)

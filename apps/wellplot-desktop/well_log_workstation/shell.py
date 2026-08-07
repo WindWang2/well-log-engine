@@ -289,6 +289,10 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_survey.setObjectName("Action_EditSurvey")
         self._act_survey.triggered.connect(self._on_edit_survey)
         self._act_survey.setEnabled(False)
+        self._act_well_header = file_menu.addAction("井头数据编辑…")
+        self._act_well_header.setObjectName("Action_EditWellHeader")
+        self._act_well_header.triggered.connect(self._on_edit_well_header)
+        self._act_well_header.setEnabled(False)
         self._act_formula = file_menu.addAction("公式计算器…")
         self._act_formula.setObjectName("Action_FormulaCalc")
         self._act_formula.triggered.connect(self._on_formula_calculator)
@@ -1129,6 +1133,8 @@ class WellLogWorkstationWindow(QMainWindow):
         self.corr_datum_mode.setObjectName("CorrelationDatumMode")
         self.corr_datum_mode.addItem("MD（原始深度）", "md")
         self.corr_datum_mode.addItem("层位拉平", "horizon")
+        self.corr_datum_mode.addItem("TVDSS（海拔，-KB）", "tvdss")
+        self.corr_datum_mode.addItem("TVD（测斜）", "tvd")
         self.corr_datum_mode.currentIndexChanged.connect(self._on_correlation_datum_changed)
         datum_row.addWidget(self.corr_datum_mode)
         layout.addLayout(datum_row)
@@ -1605,6 +1611,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_import_plot_xlsx.setEnabled(ws is not None)
         self._act_alias_dict.setEnabled(ws is not None)
         self._act_survey.setEnabled(ws is not None)
+        self._act_well_header.setEnabled(ws is not None)
         self._act_formula.setEnabled(ws is not None)
         self._act_curve_edit.setEnabled(ws is not None)
         self._act_draw_curve.setEnabled(ws is not None)
@@ -3045,16 +3052,22 @@ class WellLogWorkstationWindow(QMainWindow):
             datum_mode = "md"
         target_horizon = getattr(plot, "datum_horizon", None)
         datum = WellSectionDatum(mode=datum_mode, target_horizon=target_horizon)
-        well_dicts = [
-            {
-                "name": pres.well_name,
-                "tops": [
-                    {"name": ft.name, "depth": ft.depth}
-                    for ft in (tops_cols[i] if i < len(tops_cols) else [])
-                ],
-            }
-            for i, pres in enumerate(presentations)
-        ]
+        well_dicts = []
+        for i, pres in enumerate(presentations):
+            entry = next(
+                (w for w in self._workspace.wells if w.id == pres.well_document_id),
+                None,
+            )
+            well_dicts.append(
+                {
+                    "name": pres.well_name,
+                    "tops": [
+                        {"name": ft.name, "depth": ft.depth}
+                        for ft in (tops_cols[i] if i < len(tops_cols) else [])
+                    ],
+                    "kb_m": entry.kb_m if entry is not None else None,
+                }
+            )
         surveys: dict[str, list] = {}
         if datum_mode == "tvd":
             for well_id, pres in zip(plot.well_ids, presentations, strict=False):
@@ -3603,10 +3616,15 @@ class WellLogWorkstationWindow(QMainWindow):
         id_by_name: dict[str, str] = {}
         for i, pres in enumerate(presentations):
             tops = tops_cols[i] if i < len(tops_cols) else []
+            entry = next(
+                (w for w in self._workspace.wells if w.id == pres.well_document_id),
+                None,
+            )
             well_dicts.append(
                 {
                     "name": pres.well_name,
                     "tops": [{"name": t.name, "depth": t.depth} for t in tops],
+                    "kb_m": entry.kb_m if entry is not None else None,
                 }
             )
             id_by_name[pres.well_name] = pres.well_document_id
@@ -5300,6 +5318,52 @@ class WellLogWorkstationWindow(QMainWindow):
                 self._show_section(plot)
             except WorkspaceError:
                 pass
+
+    def _on_edit_well_header(self) -> None:
+        """Edit a well's header fields: KB/GL/MaxMD + coordinates (FRS §1.x)."""
+        if self._workspace is None or not self._workspace.wells:
+            QMessageBox.information(self, "井头数据", "请先打开含井的工区。")
+            return
+        from well_log_workstation.well_header_dialog import WellHeaderDialog
+        from well_log_workstation.workspace import save_workspace
+
+        well_ids = self._pick_wells_for_correlation()
+        if not well_ids:
+            return
+        well_id = well_ids[0]
+        idx = next(
+            (i for i, w in enumerate(self._workspace.wells) if w.id == well_id),
+            None,
+        )
+        if idx is None:
+            return
+        entry = self._workspace.wells[idx]
+        dlg = WellHeaderDialog(entry, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        updated = dlg.result_entry()
+        self._workspace.wells[idx] = updated
+        try:
+            save_workspace(self._workspace)
+        except (WorkspaceError, OSError) as exc:
+            QMessageBox.warning(self, "保存井头数据失败", str(exc))
+            return
+        self._selected_well_id = well_id
+        # Re-render an open section/correlation so a TVDSS datum picks up KB.
+        if self._active_plot_type in ("section", "correlation") and self._active_plot_id:
+            try:
+                plot = load_plot_document(self._workspace, self._active_plot_id)
+                if self._active_plot_type == "section":
+                    self._show_section(plot)
+                else:
+                    self._show_correlation(plot)
+            except WorkspaceError:
+                pass
+        self.statusBar().showMessage(
+            f"已保存 {updated.name} 井头数据"
+            f"（KB={updated.kb_m if updated.kb_m is not None else '—'} m）",
+            4000,
+        )
 
     def _on_edit_lithology(self) -> None:
         """Edit the selected well's lithology segments (FRS §2.x)."""

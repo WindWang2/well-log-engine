@@ -57,6 +57,13 @@ class WellCatalogEntry:
     lng: float | None = None
     lat: float | None = None
     crs: str | None = "EPSG:4326"
+    # Wellhead elevations + total depth (FRS §1.x): KB (kelly-bushing /
+    # 补心海拔), GL (ground level / 地面海拔), MaxMD. Captured from LAS
+    # headers and editable via the well-header dialog; KB feeds the
+    # tvdss section datum (shift = -kb).
+    kb_m: float | None = None
+    gl_m: float | None = None
+    max_md: float | None = None
 
 
 @dataclass
@@ -199,6 +206,9 @@ def _from_json_dict(root: Path, data: dict[str, Any]) -> Workspace:
             lng=_opt_float(w.get("lng")),
             lat=_opt_float(w.get("lat")),
             crs=str(w.get("crs") or "EPSG:4326"),
+            kb_m=_opt_float(w.get("kb_m")),
+            gl_m=_opt_float(w.get("gl_m")),
+            max_md=_opt_float(w.get("max_md")),
         )
         for w in data.get("wells") or []
     ]
@@ -341,6 +351,9 @@ def add_well(
     lng: float | None = None,
     lat: float | None = None,
     crs: str | None = "EPSG:4326",
+    kb_m: float | None = None,
+    gl_m: float | None = None,
+    max_md: float | None = None,
 ) -> WellCatalogEntry:
     """Append a well catalog entry and persist."""
     entry = WellCatalogEntry(
@@ -350,6 +363,9 @@ def add_well(
         lng=lng,
         lat=lat,
         crs=crs,
+        kb_m=kb_m,
+        gl_m=gl_m,
+        max_md=max_md,
     )
     ws.wells.append(entry)
     save_workspace(ws)
