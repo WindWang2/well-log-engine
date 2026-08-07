@@ -107,7 +107,17 @@ def _paint_presentation(
                 d0, d1, track,
             )
         else:
+            # Crossover fill (FRS §2.x 双曲线交叉充填) — under the curve lines.
+            from well_log_workstation.crossover_fill import paint_crossover_fill
+
+            paint_crossover_fill(
+                painter, track, int(x), int(tw - 6), int(top),
+                int(bottom), d0, d1, depth,
+            )
             for layer in track.layers:
+                eff_scale = getattr(layer, "scale", None)
+                if eff_scale is None:
+                    eff_scale = track.scale
                 _paint_curve(
                     painter,
                     x + 3,
@@ -119,16 +129,16 @@ def _paint_presentation(
                     d1,
                     np.asarray(layer.values, dtype=np.float64),
                     np.asarray(layer.null_mask, dtype=bool),
-                    track.scale.min if track.scale else 0.0,
-                    track.scale.max if track.scale else 100.0,
-                    track.scale.mode if track.scale else "linear",
+                    eff_scale.min if eff_scale else 0.0,
+                    eff_scale.max if eff_scale else 100.0,
+                    eff_scale.mode if eff_scale else "linear",
                     QColor(layer.color),
-                    bool(getattr(track.scale, "wrap", False)) if track.scale else False,
-                    getattr(track.scale, "fill_threshold", None)
-                    if track.scale
+                    bool(getattr(eff_scale, "wrap", False)) if eff_scale else False,
+                    getattr(eff_scale, "fill_threshold", None)
+                    if eff_scale
                     else None,
-                    str(getattr(track.scale, "fill_direction", "above"))
-                    if track.scale
+                    str(getattr(eff_scale, "fill_direction", "above"))
+                    if eff_scale
                     else "above",
                 )
         x += tw

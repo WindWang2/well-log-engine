@@ -35,6 +35,13 @@ class ScaleSpec:
     # "above") or below ("below") the threshold. Optional; default off.
     fill_threshold: float | None = None
     fill_direction: str = "above"
+    # Crossover fill (FRS §2.x 双曲线交叉充填): when ``crossover_fill`` is
+    # set on a track with ≥2 curve layers, the region where layers[0]'s
+    # mapped x lies to the right of layers[1]'s is filled (SDK
+    # upper_minus_lower semantics). ``crossover_color`` overrides the
+    # default (layers[1] color, semi-transparent). Optional; default off.
+    crossover_fill: bool = False
+    crossover_color: str = ""
 
 
 @dataclass
@@ -44,6 +51,10 @@ class BoundCurveLayer:
     unit: str
     values: Any  # np.ndarray
     null_mask: Any
+    # Per-layer scale (FRS §2.x 双曲线交叉充填 / 对道): when set, this layer
+    # maps values with its own scale instead of the track's. None = fall
+    # back to the track scale. Optional; default None.
+    scale: ScaleSpec | None = None
 
 
 @dataclass
@@ -271,6 +282,8 @@ def _parse_scale(raw: dict[str, Any] | None) -> ScaleSpec | None:
         wrap=bool(raw.get("wrap", False)),
         fill_threshold=fill_threshold,
         fill_direction=fill_direction,
+        crossover_fill=bool(raw.get("crossover_fill", False)),
+        crossover_color=str(raw.get("crossover_color") or ""),
     )
 
 
@@ -301,6 +314,9 @@ def apply_template(
                         unit=curve.unit,
                         values=curve.values,
                         null_mask=curve.null_mask,
+                        scale=_parse_scale(layer.get("scale"))
+                        if isinstance(layer.get("scale"), dict)
+                        else None,
                     )
                 )
         elif role == "litho" and document.lithology is not None:
@@ -398,6 +414,9 @@ def track_overrides_snapshot(presentation: HostPresentation) -> dict[str, dict[s
             if track.scale.fill_threshold is not None:
                 entry["scale_fill_threshold"] = float(track.scale.fill_threshold)
                 entry["scale_fill_direction"] = str(track.scale.fill_direction)
+            if track.scale.crossover_fill:
+                entry["scale_crossover_fill"] = True
+                entry["scale_crossover_color"] = str(track.scale.crossover_color)
         out[track.id] = entry
     return out
 
@@ -451,6 +470,10 @@ def apply_track_overrides(
                 track.scale.fill_direction = (
                     fd if fd in ("above", "below") else "above"
                 )
+            if "scale_crossover_fill" in raw:
+                track.scale.crossover_fill = bool(raw["scale_crossover_fill"])
+            if "scale_crossover_color" in raw:
+                track.scale.crossover_color = str(raw["scale_crossover_color"] or "")
             # Keep scale valid
             if track.scale.max <= track.scale.min:
                 track.scale.max = track.scale.min + 1.0
@@ -462,6 +485,7 @@ def apply_track_overrides(
                 "scale_mode",
                 "scale_wrap",
                 "scale_fill_threshold",
+                "scale_crossover_fill",
             )
         ):
             # Curve tracks without scale (unusual) — create one if edited
@@ -491,5 +515,7 @@ def apply_track_overrides(
                 wrap=bool(raw.get("scale_wrap", False)),
                 fill_threshold=ft,
                 fill_direction=fd if fd in ("above", "below") else "above",
+                crossover_fill=bool(raw.get("scale_crossover_fill", False)),
+                crossover_color=str(raw.get("scale_crossover_color") or ""),
             )
     return presentation

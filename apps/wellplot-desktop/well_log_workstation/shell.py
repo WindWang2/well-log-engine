@@ -992,6 +992,11 @@ class WellLogWorkstationWindow(QMainWindow):
             self._on_track_props_changed
         )
         form.addRow("充填方向", self.track_fill_direction)
+        # Crossover fill (FRS §2.x 双曲线交叉充填): dual-curve track region.
+        self.track_crossover_fill = QCheckBox("双曲线交叉充填")
+        self.track_crossover_fill.setObjectName("TrackCrossoverFill")
+        self.track_crossover_fill.toggled.connect(self._on_track_props_changed)
+        form.addRow("", self.track_crossover_fill)
         layout.addWidget(props)
         self._track_props_guard = False
         self._set_track_props_enabled(False)
@@ -1821,6 +1826,11 @@ class WellLogWorkstationWindow(QMainWindow):
         self.track_scale_min.setEnabled(enabled)
         self.track_scale_max.setEnabled(enabled)
         self.track_scale_mode.setEnabled(enabled)
+        if hasattr(self, "track_fill_enable"):
+            self.track_fill_enable.setEnabled(enabled)
+            self.track_fill_threshold.setEnabled(False)
+            self.track_fill_direction.setEnabled(False)
+            self.track_crossover_fill.setEnabled(False)
 
     def _selected_track_id(self) -> str | None:
         item = self.track_list.currentItem()
@@ -1882,6 +1892,7 @@ class WellLogWorkstationWindow(QMainWindow):
                 self.track_scale_mode.setCurrentIndex(0)
                 self.track_scale_wrap.setChecked(False)
                 self.track_fill_enable.setChecked(False)
+                self.track_crossover_fill.setChecked(False)
                 self._set_track_props_enabled(False)
                 return
             self.track_visible.setChecked(bool(track.visible))
@@ -1894,6 +1905,8 @@ class WellLogWorkstationWindow(QMainWindow):
             fill_on = has_scale and bool(getattr(track.scale, "fill_threshold", None) is not None)
             self.track_fill_threshold.setEnabled(fill_on)
             self.track_fill_direction.setEnabled(fill_on)
+            crossover_ok = has_scale and len(track.layers) >= 2
+            self.track_crossover_fill.setEnabled(crossover_ok)
             self.track_visible.setEnabled(True)
             if track.scale is not None:
                 self.track_scale_min.setValue(float(track.scale.min))
@@ -1909,12 +1922,9 @@ class WellLogWorkstationWindow(QMainWindow):
                 fd = str(getattr(track.scale, "fill_direction", "above"))
                 fidx = self.track_fill_direction.findData(fd)
                 self.track_fill_direction.setCurrentIndex(fidx if fidx >= 0 else 0)
-            else:
-                self.track_scale_min.setValue(0.0)
-                self.track_scale_max.setValue(100.0)
-                self.track_scale_mode.setCurrentIndex(0)
-                self.track_scale_wrap.setChecked(False)
-                self.track_fill_enable.setChecked(False)
+                self.track_crossover_fill.setChecked(
+                    bool(getattr(track.scale, "crossover_fill", False))
+                )
         finally:
             self._track_props_guard = False
 
@@ -1962,6 +1972,7 @@ class WellLogWorkstationWindow(QMainWindow):
                 track.scale.fill_threshold = None
                 self.track_fill_threshold.setEnabled(False)
                 self.track_fill_direction.setEnabled(False)
+            track.scale.crossover_fill = self.track_crossover_fill.isChecked()
         # Refresh list labels (hidden marker) without losing selection
         self._refresh_track_list_labels_only()
         self.multi_track_canvas.set_presentation(self._presentation)

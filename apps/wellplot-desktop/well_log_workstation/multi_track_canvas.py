@@ -865,7 +865,17 @@ class MultiTrackCanvas(QWidget):
                     p, x, top, tw, bottom - top, d0, d1, track
                 )
             else:
+                # Crossover fill (FRS §2.x 双曲线交叉充填): dual-curve track
+                # enclosed region, under the curve lines.
+                from well_log_workstation.crossover_fill import paint_crossover_fill
+
+                paint_crossover_fill(
+                    p, track, x, tw - 4, top, bottom, d0, d1, depth
+                )
                 for layer in track.layers:
+                    eff_scale = getattr(layer, "scale", None)
+                    if eff_scale is None:
+                        eff_scale = track.scale
                     self._paint_curve(
                         p,
                         x + 2,
@@ -877,16 +887,16 @@ class MultiTrackCanvas(QWidget):
                         d1,
                         layer.values,
                         layer.null_mask,
-                        track.scale.min if track.scale else 0.0,
-                        track.scale.max if track.scale else 100.0,
-                        track.scale.mode if track.scale else "linear",
+                        eff_scale.min if eff_scale else 0.0,
+                        eff_scale.max if eff_scale else 100.0,
+                        eff_scale.mode if eff_scale else "linear",
                         QColor(layer.color),
-                        bool(getattr(track.scale, "wrap", False)) if track.scale else False,
-                        getattr(track.scale, "fill_threshold", None)
-                        if track.scale
+                        bool(getattr(eff_scale, "wrap", False)) if eff_scale else False,
+                        getattr(eff_scale, "fill_threshold", None)
+                        if eff_scale
                         else None,
-                        str(getattr(track.scale, "fill_direction", "above"))
-                        if track.scale
+                        str(getattr(eff_scale, "fill_direction", "above"))
+                        if eff_scale
                         else "above",
                     )
 

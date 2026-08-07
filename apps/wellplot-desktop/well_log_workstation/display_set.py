@@ -113,6 +113,8 @@ def _parse_scale(raw: object) -> ScaleSpec | None:
         wrap=bool(raw.get("wrap", False)),
         fill_threshold=fill_threshold,
         fill_direction=fill_direction,
+        crossover_fill=bool(raw.get("crossover_fill", False)),
+        crossover_color=str(raw.get("crossover_color") or ""),
     )
 
 

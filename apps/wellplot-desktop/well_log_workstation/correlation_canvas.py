@@ -424,7 +424,9 @@ class CorrelationCanvas(QWidget):
             layer = curve_track.layers[0]
             vals = np.asarray(layer.values, dtype=np.float64)
             nulls = np.asarray(layer.null_mask, dtype=bool)
-            scale = curve_track.scale
+            scale = getattr(layer, "scale", None)
+            if scale is None:
+                scale = curve_track.scale
             vmin = scale.min if scale else 0.0
             vmax = scale.max if scale else 100.0
             mode = scale.mode if scale else "linear"
@@ -482,6 +484,16 @@ class CorrelationCanvas(QWidget):
                     for poly in polys:
                         p.drawPolygon(poly)
                     p.setBrush(Qt.BrushStyle.NoBrush)
+
+            # Crossover fill (FRS §2.x 双曲线交叉充填) — under the curve line.
+            if len(curve_track.layers) >= 2:
+                from well_log_workstation.crossover_fill import paint_crossover_fill
+
+                shifted_depth = depth + well_shift
+                paint_crossover_fill(
+                    p, curve_track, int(x0) - 2, col_w - 4, top, bottom,
+                    d0, d1, shifted_depth,
+                )
 
             p.setPen(QPen(QColor(layer.color), 1.5))
             prev = None
