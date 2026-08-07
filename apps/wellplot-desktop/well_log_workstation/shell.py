@@ -5739,8 +5739,11 @@ class WellLogWorkstationWindow(QMainWindow):
             if curve is None:
                 diags.append(f"{mnemonic}: 井中无此曲线")
                 continue
+            # Multi-rate (Epic A): edits apply against the curve's own sampling
+            # axis (falling back to the document depth for shared-axis curves).
+            edit_depth = curve.depth if getattr(curve, "depth", None) is not None else doc.depth
             values, null_mask = apply_curve_edits(
-                doc.depth, curve.values, curve.null_mask,
+                edit_depth, curve.values, curve.null_mask,
                 [e for e in edits if e.mnemonic == mnemonic],
             )
             finite = values[np.isfinite(values)]
@@ -5762,6 +5765,7 @@ class WellLogWorkstationWindow(QMainWindow):
                             unit=curve.unit,
                             values=values,
                             null_mask=null_mask,
+                            depth=edit_depth,
                         )
                     ],
                 )

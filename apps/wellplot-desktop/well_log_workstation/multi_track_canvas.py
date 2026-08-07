@@ -463,10 +463,24 @@ class MultiTrackCanvas(QWidget):
         self._d0 = self._d1 = None
         if self._presentation is None:
             return
+        # Multi-rate (Epic A): the shared depth window covers the union of the
+        # presentation axis and any per-layer sampling axes.
+        ranges: list[tuple[float, float]] = []
         depth = np.asarray(self._presentation.depth, dtype=np.float64)
-        if depth.size < 2:
+        if depth.size >= 2:
+            ranges.append((float(np.nanmin(depth)), float(np.nanmax(depth))))
+        for track in self._presentation.tracks:
+            for layer in track.layers:
+                layer_depth = getattr(layer, "depth", None)
+                if layer_depth is None:
+                    continue
+                ld = np.asarray(layer_depth, dtype=np.float64)
+                if ld.size >= 2:
+                    ranges.append((float(np.nanmin(ld)), float(np.nanmax(ld))))
+        if not ranges:
             return
-        d0, d1 = float(np.nanmin(depth)), float(np.nanmax(depth))
+        d0 = min(r[0] for r in ranges)
+        d1 = max(r[1] for r in ranges)
         if not math.isfinite(d0) or not math.isfinite(d1) or d1 <= d0:
             d0, d1 = 0.0, 1.0
         self._data_d0, self._data_d1 = d0, d1
@@ -956,13 +970,18 @@ class MultiTrackCanvas(QWidget):
                     eff_scale = getattr(layer, "scale", None)
                     if eff_scale is None:
                         eff_scale = track.scale
+                    # Multi-rate (Epic A): a layer with its own sampling axis
+                    # paints against that axis; others share pres.depth.
+                    layer_depth = getattr(layer, "depth", None)
+                    if layer_depth is None:
+                        layer_depth = depth
                     self._paint_curve(
                         p,
                         x + 2,
                         top,
                         tw - 8,
                         bottom - top,
-                        depth,
+                        np.asarray(layer_depth, dtype=np.float64),
                         d0,
                         d1,
                         layer.values,

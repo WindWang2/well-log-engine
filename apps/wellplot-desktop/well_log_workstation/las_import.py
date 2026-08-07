@@ -33,6 +33,11 @@ class ImportedCurve:
     unit: str
     values: np.ndarray  # float64, read-only
     null_mask: np.ndarray  # bool, True where null
+    # Optional per-curve sampling axis (multi-rate, Epic A): when the curve's
+    # sample count differs from the document depth axis, it keeps its own
+    # depth coordinates instead of being truncated/padded onto the shared
+    # axis. None = shares ``ImportedWellDocument.depth`` (index-aligned).
+    depth: np.ndarray | None = None
 
 
 @dataclass
@@ -174,18 +179,18 @@ def parse_las_file(path: Path | str) -> ImportedWellDocument:
             diagnostics.append("跳过无名曲线")
             continue
         data = np.asarray(curve.data, dtype=np.float64)
+        curve_depth: np.ndarray | None = None
         if data.size != depth_out.size:
-            # Align to min length
+            # Multi-rate (Epic A): keep the curve's own sampling instead of
+            # truncating + NaN-padding onto the shared axis — its samples
+            # align with the first N depth rows of the file.
             n = min(data.size, depth_out.size)
             diagnostics.append(
-                f"曲线 {mnemonic} 长度 {data.size} 与深度 {depth_out.size} 不一致，截断为 {n}"
+                f"曲线 {mnemonic} 长度 {data.size} 与深度 {depth_out.size} 不一致，"
+                f"保留独立采样轴（{n} 个样本）"
             )
             data = data[:n]
-            # only truncate depth once if needed — keep full depth, pad nulls
-            if data.size < depth_out.size:
-                padded = np.full(depth_out.size, np.nan, dtype=np.float64)
-                padded[: data.size] = data
-                data = padded
+            curve_depth = _freeze(depth_out[:n])
         null_val = getattr(las.well, "NULL", None)
         try:
             null_num = float(null_val.value) if null_val is not None else -999.25
@@ -200,6 +205,7 @@ def parse_las_file(path: Path | str) -> ImportedWellDocument:
                 unit=(curve.unit or "").strip(),
                 values=_freeze(values),
                 null_mask=np.ascontiguousarray(null_mask, dtype=bool),
+                depth=curve_depth,
             )
         )
 

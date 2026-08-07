@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -282,3 +283,40 @@ def test_submit_multi_well_when_engine_present(
     report = win.open_engine_correlation_preview()
     assert report.get("render_prepared") is True
     assert int(report.get("well_count", 0)) == 2
+
+
+def test_multi_track_payload_per_curve_depth(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    """Multi-rate (Epic A): a layer with its own sampling axis carries its
+    depth in the payload; shared-axis curves stay truncated to the shared
+    depth (and the shared depth follows the shortest shared curve)."""
+    monkeypatch.setenv("WLWS_DISABLE_ENGINE", "1")
+    reset_engine_capability_cache()
+    ws = create_workspace(tmp_path / "mr-payload")
+    las = _write_las(tmp_path / "p3.las")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    well_id = win.import_las_path(las)
+    pres = win.apply_template_to_well(well_id, "std-gr-rt-den")
+    # Give the RT layer its own (shorter, offset) sampling axis.
+    for track in pres.tracks:
+        for layer in track.layers:
+            if layer.mnemonic.upper() == "RT":
+                rt_d = np.asarray(pres.depth[::2], dtype=np.float64).copy()
+                layer.depth = rt_d
+                layer.values = np.asarray(layer.values[::2], dtype=np.float64).copy()
+    payload = presentation_to_multi_track_payload(pres)
+    curves = {c["mnemonic"].upper(): c for c in payload["curves"]}
+    assert "depth" not in curves["GR"], "shared-axis curve must omit depth"
+    rt = curves["RT"]
+    assert rt["depth"] is not None, "per-curve-axis curve must carry depth"
+    assert rt["values"].size == rt["depth"].size
+    assert rt["values"].size != payload["depth"].size
+    n = payload["depth"].size
+    for mnem, c in curves.items():
+        if "depth" not in c:
+            assert c["values"].size == n, (
+                f"shared-axis curve {mnem} must match the shared depth"
+            )

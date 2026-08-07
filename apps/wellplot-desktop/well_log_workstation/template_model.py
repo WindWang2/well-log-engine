@@ -57,6 +57,10 @@ class BoundCurveLayer:
     unit: str
     values: Any  # np.ndarray
     null_mask: Any
+    # Optional per-layer sampling axis (multi-rate, Epic A): the layer's own
+    # depth coordinates, sample-aligned with ``values``. None = share the
+    # presentation depth (index-aligned), the historic contract.
+    depth: Any | None = None
     # Per-layer scale (FRS §2.x 双曲线交叉充填 / 对道): when set, this layer
     # maps values with its own scale instead of the track's. None = fall
     # back to the track scale. Optional; default None.
@@ -326,6 +330,7 @@ def apply_template(
                         unit=curve.unit,
                         values=curve.values,
                         null_mask=curve.null_mask,
+                        depth=curve.depth,
                         scale=_parse_scale(layer.get("scale"))
                         if isinstance(layer.get("scale"), dict)
                         else None,

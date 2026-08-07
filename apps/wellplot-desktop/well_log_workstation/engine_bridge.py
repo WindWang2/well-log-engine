@@ -359,7 +359,10 @@ def presentation_to_multi_track_payload(
     if not _is_uuid(doc_id):
         doc_id = str(uuid.uuid4())
 
-    # Collect unique curve layers → curves list + map mnemonic→curve_id
+    # Collect unique curve layers → curves list + map mnemonic→curve_id.
+    # Multi-rate (Epic A): a layer with its own sampling axis carries its
+    # "depth" in the curve entry; shared-axis layers keep the historic
+    # truncate-to-shared-depth behaviour.
     curves: list[dict[str, Any]] = []
     curve_ids: dict[str, str] = {}  # mnemonic upper -> curve_id
     n = depth.size
@@ -379,26 +382,44 @@ def presentation_to_multi_track_payload(
                 vals[nulls] = np.nan
             vals = np.nan_to_num(vals, nan=0.0)
             values = _readonly_f64(vals)
-            m = min(n, values.size)
-            if m < 2:
-                continue
             cid = str(uuid.uuid4())
-            curve_ids[key] = cid
-            curves.append(
-                {
+            layer_depth = getattr(layer, "depth", None)
+            if layer_depth is not None:
+                ld = _readonly_f64(np.asarray(layer_depth, dtype=np.float64))
+                if ld.size < 2 or values.size != ld.size:
+                    continue  # per-curve axis must match its own values
+                entry: dict[str, Any] = {
+                    "curve_id": cid,
+                    "mnemonic": layer.mnemonic,
+                    "values": values,
+                    "value_unit": layer.unit or "unit",
+                    "depth": ld,
+                }
+            else:
+                m = min(n, values.size)
+                if m < 2:
+                    continue
+                entry = {
                     "curve_id": cid,
                     "mnemonic": layer.mnemonic,
                     "values": values[:m],
                     "value_unit": layer.unit or "unit",
                 }
-            )
+            curve_ids[key] = cid
+            curves.append(entry)
 
     if not curves:
         raise EngineSubmitError("图版未绑定可提交的曲线")
 
-    # Align depth to first curve length
-    first_len = int(curves[0]["values"].size)  # type: ignore[union-attr]
-    depth = depth[:first_len]
+    # Shared-axis curves must all match the shared depth exactly: truncate
+    # every shared curve + the depth to the shortest shared length (per-curve
+    # axis entries are untouched).
+    shared = [c for c in curves if "depth" not in c]
+    if shared:
+        shared_len = min(int(c["values"].size) for c in shared)
+        for c in shared:
+            c["values"] = c["values"][:shared_len]
+        depth = depth[:shared_len]
 
     tracks_payload: list[dict[str, Any]] = []
     for track in presentation.tracks:

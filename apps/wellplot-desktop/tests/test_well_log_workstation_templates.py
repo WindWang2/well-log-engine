@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -12,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from well_log_workstation.las_import import import_las_into_workspace
 from well_log_workstation.shell import WellLogWorkstationWindow
 from well_log_workstation.template_model import (
+    HostPresentation,
     apply_template,
     get_builtin_template,
     list_builtin_templates,
@@ -144,3 +146,90 @@ def test_shell_apply_shows_multi_track_canvas(qtbot, tmp_path: Path) -> None:
     assert win.multi_track_canvas.track_count() >= 2
     assert win.active_presentation is not None
     assert win.multi_track_canvas.presentation() is not None
+
+
+def test_apply_template_preserves_per_curve_depth() -> None:
+    """Multi-rate (Epic A): a curve with its own sampling axis binds the
+    layer's depth; shared-axis curves keep depth=None."""
+    from well_log_workstation.las_import import (
+        ImportedCurve,
+        ImportedWellDocument,
+    )
+
+    doc = ImportedWellDocument(
+        document_id="aaaaaaaa-0000-4000-8000-000000000001",
+        well_name="MR",
+        source_path="",
+        depth=np.array([1000.0, 1000.5, 1001.0]),
+        depth_unit="m",
+        curves=[
+            ImportedCurve(
+                mnemonic="GR", unit="API",
+                values=np.array([1.0, 2.0, 3.0]),
+                null_mask=np.zeros(3, dtype=bool),
+            ),
+            ImportedCurve(
+                mnemonic="RT", unit="OHMM",
+                values=np.array([10.0, 20.0]),
+                null_mask=np.zeros(2, dtype=bool),
+                depth=np.array([1000.1, 1000.6]),
+            ),
+        ],
+    )
+    template = get_builtin_template("std-gr-rt-den")
+    assert template is not None
+    pres = apply_template(template, doc)
+    by_mnemonic: dict[str, object] = {}
+    for t in pres.tracks:
+        for layer in t.layers:
+            by_mnemonic[layer.mnemonic] = layer
+    gr_layer = by_mnemonic["GR"]
+    rt_layer = by_mnemonic["RT"]
+    assert gr_layer.depth is None, "shared-axis curve must bind no depth"
+    assert rt_layer.depth is not None, "per-curve-axis curve must bind depth"
+    np.testing.assert_allclose(rt_layer.depth, [1000.1, 1000.6])
+
+
+def test_canvas_paints_per_curve_depth_layer(qtbot) -> None:
+    """Multi-rate (Epic A): the shared window covers per-layer axes and the
+    layer paints against its own depth (render smoke)."""
+    from PySide6.QtGui import QImage
+
+    from well_log_workstation.multi_track_canvas import MultiTrackCanvas
+    from well_log_workstation.template_model import BoundCurveLayer, BoundTrack
+
+    canvas = MultiTrackCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(600, 480)
+    depth = np.linspace(1000.0, 2000.0, 101)
+    per_curve_depth = np.linspace(1000.5, 1999.5, 50)
+    pres = HostPresentation(
+        template_id="t", template_name="T", well_document_id="w1",
+        well_name="W1", depth=depth, depth_unit="m",
+        tracks=[
+            BoundTrack(
+                id="d", role="depth", title="深度",
+                width_fraction=0.12, scale=None, layers=[],
+            ),
+            BoundTrack(
+                id="c", role="curve", title="GR",
+                width_fraction=0.25, scale=None,
+                layers=[
+                    BoundCurveLayer(
+                        mnemonic="GR", color="#1a6fb5", unit="API",
+                        values=np.linspace(10.0, 90.0, 50),
+                        null_mask=np.zeros(50, dtype=bool),
+                        depth=per_curve_depth,
+                    ),
+                ],
+            ),
+        ],
+    )
+    canvas.set_presentation(pres)
+    # The shared window covers the union of both axes.
+    d0, d1 = canvas.depth_range()
+    assert d0 == pytest.approx(1000.0)
+    assert d1 == pytest.approx(2000.0)
+    img = QImage(canvas.size(), QImage.Format.Format_ARGB32)
+    img.fill(0xFFFFFFFF)
+    canvas.render(img)  # crash smoke with a per-layer axis
