@@ -924,6 +924,19 @@ class WellLogWorkstationWindow(QMainWindow):
         self.track_list_label = QLabel("当前显示图道（派生 · 勾选在左栏井内容）")
         self.track_list_label.setObjectName("TrackListLabel")
         layout.addWidget(self.track_list_label)
+        # Curve version toggle (FRS §1.x 多版本曲线): session-level display
+        # preference — "corrected" shows the green edited-* tracks on top of
+        # the template curves, "original" hides them. Not persisted (Desktop
+        # session scope per FRS).
+        self.curve_version_combo = QComboBox()
+        self.curve_version_combo.setObjectName("CurveVersionCombo")
+        self.curve_version_combo.addItem("校正（含编辑曲线）", "corrected")
+        self.curve_version_combo.addItem("原始（不含编辑）", "original")
+        self.curve_version_combo.setCurrentIndex(0)
+        self.curve_version_combo.currentIndexChanged.connect(
+            self._on_curve_version_changed
+        )
+        layout.addWidget(self.curve_version_combo)
         self.track_list = QListWidget()
         self.track_list.setObjectName("TrackList")
         self.track_list.currentItemChanged.connect(self._on_track_list_selection)
@@ -962,6 +975,9 @@ class WellLogWorkstationWindow(QMainWindow):
         layout.addWidget(props)
         self._track_props_guard = False
         self._set_track_props_enabled(False)
+        # Session-level curve version preference (FRS §1.x 多版本曲线).
+        self._show_curve_edits = True
+        self._curve_version_guard = False
 
         layout.addWidget(QLabel("层位"))
         self.tops_list = QListWidget()
@@ -1801,6 +1817,15 @@ class WellLogWorkstationWindow(QMainWindow):
         """Populate right-pane track list from active single-well presentation."""
         if not hasattr(self, "track_list"):
             return
+        # Sync the curve-version combo to the session preference (guarded).
+        if hasattr(self, "curve_version_combo"):
+            self._curve_version_guard = True
+            try:
+                want = "corrected" if self._show_curve_edits else "original"
+                idx = self.curve_version_combo.findData(want)
+                self.curve_version_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            finally:
+                self._curve_version_guard = False
         prev = self._selected_track_id()
         self.track_list.blockSignals(True)
         self.track_list.clear()
@@ -2455,8 +2480,9 @@ class WellLogWorkstationWindow(QMainWindow):
         self.multi_track_canvas.set_presentation(presentation)
         # Attach derived curves from the well's formulas (FRS §2.4 / P2-A).
         self._apply_derived_curves()
-        # Attach non-destructive curve edits (FRS §2.x despike/baseline).
-        self._apply_curve_edits()
+        # Attach non-destructive curve edits (FRS §2.x despike/baseline)
+        # honoring the session curve version preference (FRS §1.x).
+        self._apply_curve_edits(show_edited=self._show_curve_edits)
         tops, diags = load_tops_for_well(self._workspace, well_id)
         self._active_tops = tops
         self._tops_diagnostics = diags
@@ -4943,6 +4969,22 @@ class WellLogWorkstationWindow(QMainWindow):
                 "\n".join(diags[:5]) + ("\n…" if len(diags) > 5 else ""),
             )
 
+    def _on_curve_version_changed(self, index: int = 0) -> None:
+        """Toggle the session curve version (original vs corrected)."""
+        if self._curve_version_guard:
+            return
+        mode = self.curve_version_combo.itemData(index) or "corrected"
+        self._show_curve_edits = mode == "corrected"
+        _ok_n, diags = self._apply_curve_edits(
+            show_edited=self._show_curve_edits
+        )
+        label = "校正（含编辑曲线）" if self._show_curve_edits else "原始（不含编辑）"
+        self.statusBar().showMessage(f"曲线版本：{label}", 4000)
+        if diags:
+            QMessageBox.warning(
+                self, "曲线编辑提示", "\n".join(diags[:5])
+            )
+
     def _on_curve_edit(self) -> None:
         """Non-destructive curve edits (despike / baseline) for a well."""
         if self._workspace is None:
@@ -4977,6 +5019,14 @@ class WellLogWorkstationWindow(QMainWindow):
             QMessageBox.warning(self, "保存曲线编辑失败", str(exc))
             return
         self._selected_well_id = well_id
+        # Show the edited version after saving so the user sees the result.
+        self._show_curve_edits = True
+        self._curve_version_guard = True
+        try:
+            idx = self.curve_version_combo.findData("corrected")
+            self.curve_version_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        finally:
+            self._curve_version_guard = False
         ok_n, diags = self._apply_curve_edits()
         note = f"已保存 {entry.name} 曲线编辑（{len(edits)} 条）"
         if diags:
@@ -4988,13 +5038,17 @@ class WellLogWorkstationWindow(QMainWindow):
                 "\n".join(diags[:5]) + ("\n…" if len(diags) > 5 else ""),
             )
 
-    def _apply_curve_edits(self) -> tuple[int, list[str]]:
+    def _apply_curve_edits(
+        self, *, show_edited: bool = True
+    ) -> tuple[int, list[str]]:
         """(Re)attach edited curve tracks to the current single-well plot.
 
         Removes any previous ``edited-*`` tracks, applies the well's curve
-        edits (despike / baseline) to the read-only source arrays, and
-        appends a green ``edited-<mnemonic>`` track per edited curve.
-        Returns ``(applied_count, diagnostics)``.
+        edits (despike / baseline / freehand) to the read-only source arrays,
+        and appends a green ``edited-<mnemonic>`` track per edited curve —
+        unless ``show_edited`` is False (original version: edits are still
+        validated for diagnostics but not displayed). Returns
+        ``(applied_count, diagnostics)``.
         """
         if self._presentation is None or self._workspace is None:
             return 0, []
@@ -5014,6 +5068,23 @@ class WellLogWorkstationWindow(QMainWindow):
         if not edits:
             self.multi_track_canvas.set_presentation(self._presentation)
             return 0, []
+        if not show_edited:
+            # Original version: keep diagnostics (missing curves etc.) but
+            # don't attach the edited tracks.
+            diags: list[str] = []
+            try:
+                doc = self.session.ensure_well_loaded(self._workspace, well_id)
+            except Exception:  # noqa: BLE001
+                return 0, ["井数据未加载"]
+            seen: set[str] = set()
+            for edit in edits:
+                if edit.mnemonic in seen:
+                    continue
+                seen.add(edit.mnemonic)
+                if doc.curve_by_mnemonic(edit.mnemonic) is None:
+                    diags.append(f"{edit.mnemonic}: 井中无此曲线")
+            self.multi_track_canvas.set_presentation(self._presentation)
+            return 0, diags
         try:
             doc = self.session.ensure_well_loaded(self._workspace, well_id)
         except Exception:  # noqa: BLE001
@@ -6683,6 +6754,14 @@ class WellLogWorkstationWindow(QMainWindow):
         except (WorkspaceError, OSError) as exc:
             QMessageBox.warning(self, "保存手绘曲线失败", str(exc))
             return
+        # Show the edited version after a stroke so the user sees the result.
+        self._show_curve_edits = True
+        self._curve_version_guard = True
+        try:
+            idx = self.curve_version_combo.findData("corrected")
+            self.curve_version_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        finally:
+            self._curve_version_guard = False
         _ok_n, diags = self._apply_curve_edits()
         note = f"已手绘曲线 {mnemonic}（{len(pts)} 点）"
         if diags:

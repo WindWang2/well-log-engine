@@ -27,7 +27,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 井口坐标 X/Y、KB 补心海拔、GL、Max MD | 🟡 | LAS `LAT/LONG` → lng/lat/crs (`las_import.py:115-143`); `kb_m` on wells (`datum/well_section_datum.py:37-54`) | X/Y (GK/UTM 投影坐标) 未解析；GL 无 → Desktop(数据) + SDK(las.cpp 井头) |
 | 测斜/定向井轨迹 (MD/Inc/Az → TVD/TVDSS/ΔN/ΔE) | 🟡 | `survey.py` 最小曲率法（业界标准）从 MD/Inc/Az 算 TVD/TVDSS/位移；测斜存 `wells/<id>/survey.json`（对称 tops）；datum 增 `tvd` 模式（无 survey 降级 0）；编辑对话框；section 画布真轨迹展布（按闭合位移摆列、斜井段弯曲）仍缺 | **P1(计算+tvd datum✅)/后续**: 真轨迹展布画布 → Desktop(画布) |
 | 曲线别名字典（工区级） | ✅ | 工区级 `Workspace.mnemonic_alias`（canonical→[aliases]，存 `workspace.json`）；`mnemonic_alias.py` 双向 expand 接入 `_match_curve`/`default_checks`/`_leaf_matches_slot`；「测井别名字典」对话框编辑 | 已闭环：模板/默认显示按别名命中 |
-| 多采样率/多版本曲线 | 🟡 | 模型支持多 curve；多 axis (md/tvd/tvdss) (`core/document.hpp:45-50`) | 版本管理（原始/校正/合成, 非破坏切换）→ Desktop(会话) |
+| 多采样率/多版本曲线 | 🟡 | 模型支持多 curve；多 axis (md/tvd/tvdss) (`core/document.hpp:45-50`)；**版本管理（原始/校正 非破坏切换）已交付 Desktop 侧**：会话级「曲线版本」combo（`CurveVersionCombo`）在 校正（含编辑曲线 edited-*）/ 原始（不含）间切换，`_apply_curve_edits(show_edited=...)` 参数化，保存编辑/手绘后自动切回校正版，编辑定义存 `curve_edits.json` 运行时重算不碰原始数据 | 多采样率（同 mnemonic 多版本采样）仍缺 → Desktop(数据) |
 | 统一地层层序字典（界-系-统-组-段-小层-砂层 + 颜色/线型/花纹） | ❌ | `FormationTop` 仅 name+depth+color (`tops_model.py:25-34`); SDK interval 语义含 lithology/stratigraphy (`core/document.hpp:409-416`) 但无层级体系 | 层序字典 schema → Desktop(数据)；渲染语义已可由 SDK interval 表达 |
 | 岩心/试油/射孔数据库 | ❌ | 无 | → Desktop(数据) + 单井图道（见 §2） |
 

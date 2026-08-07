@@ -604,3 +604,196 @@ GR.GAPI
     win._act_pick_tops.trigger()
     assert win.multi_track_canvas.pick_mode() is True
     assert win.multi_track_canvas.shift_mode() is False
+
+
+# -- curve version toggle (FRS §1.x 多版本曲线) -----------------------
+
+
+def test_apply_curve_edits_show_edited_false_hides_tracks(
+    qtbot, tmp_path: Path
+) -> None:
+    from well_log_workstation.shell import WellLogWorkstationWindow
+    from well_log_workstation.workspace import create_workspace
+
+    def _las(path: Path, well: str) -> Path:
+        path.write_text(
+            f"""~VERSION INFORMATION
+VERS. 2.0
+WRAP. NO
+~WELL INFORMATION
+STRT.M 1000.0
+STOP.M 1004.0
+STEP.M 1.0
+NULL. -999.25
+WELL. {well}
+~CURVE INFORMATION
+DEPT.M
+GR.GAPI
+~ASCII
+1000 20
+1001 50
+1002 21
+1003 22
+1004 23
+""",
+            encoding="utf-8",
+        )
+        return path
+
+    ws = create_workspace(tmp_path / "ws")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    wid = win.import_las_path(_las(tmp_path / "a.las", "A"))
+
+    from well_log_workstation.plot_document import create_single_well_plot
+
+    plot = create_single_well_plot(
+        ws, well_id=wid, well_name="A", template_id="std-gr-rt-den"
+    )
+    win.open_plot_document(plot.id)
+    win._selected_well_id = wid
+    save_curve_edits_for_well(
+        ws, wid, [CurveEdit(mnemonic="GR", method="despike", window=3, threshold=3.0)]
+    )
+
+    # Corrected version (default): edited track attached.
+    applied, _ = win._apply_curve_edits(show_edited=True)
+    assert applied == 1
+    assert any(t.id.startswith("edited-") for t in win._presentation.tracks)
+
+    # Original version: no edited track, applied = 0, no diagnostics.
+    applied2, diags = win._apply_curve_edits(show_edited=False)
+    assert applied2 == 0
+    assert diags == []
+    assert not any(t.id.startswith("edited-") for t in win._presentation.tracks)
+
+
+def test_curve_version_combo_toggles_tracks(qtbot, tmp_path: Path) -> None:
+    from well_log_workstation.shell import WellLogWorkstationWindow
+    from well_log_workstation.workspace import create_workspace
+
+    def _las(path: Path, well: str) -> Path:
+        path.write_text(
+            f"""~VERSION INFORMATION
+VERS. 2.0
+WRAP. NO
+~WELL INFORMATION
+STRT.M 1000.0
+STOP.M 1003.0
+STEP.M 1.0
+NULL. -999.25
+WELL. {well}
+~CURVE INFORMATION
+DEPT.M
+GR.GAPI
+~ASCII
+1000 20
+1001 50
+1002 21
+1003 22
+""",
+            encoding="utf-8",
+        )
+        return path
+
+    ws = create_workspace(tmp_path / "ws")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    wid = win.import_las_path(_las(tmp_path / "a.las", "A"))
+
+    from well_log_workstation.plot_document import create_single_well_plot
+
+    plot = create_single_well_plot(
+        ws, well_id=wid, well_name="A", template_id="std-gr-rt-den"
+    )
+    win.open_plot_document(plot.id)
+    win._selected_well_id = wid
+    save_curve_edits_for_well(
+        ws, wid, [CurveEdit(mnemonic="GR", method="despike", window=3, threshold=3.0)]
+    )
+
+    def _has_edited() -> bool:
+        return any(
+            t.id.startswith("edited-")
+            for t in win._presentation.tracks
+        )
+
+    # Default: corrected.
+    assert win.curve_version_combo.currentData() == "corrected"
+    win._apply_curve_edits(show_edited=True)
+    assert _has_edited() is True
+
+    # Switch to original: tracks removed.
+    idx_orig = win.curve_version_combo.findData("original")
+    win.curve_version_combo.setCurrentIndex(idx_orig)
+    assert win._show_curve_edits is False
+    assert _has_edited() is False
+
+    # Switch back to corrected: tracks restored.
+    idx_corr = win.curve_version_combo.findData("corrected")
+    win.curve_version_combo.setCurrentIndex(idx_corr)
+    assert win._show_curve_edits is True
+    assert _has_edited() is True
+
+
+def test_curve_version_preference_survives_reapply(qtbot, tmp_path: Path) -> None:
+    """After editing, the version combo snaps back to corrected and the
+    session preference is honored on the next apply."""
+    from well_log_workstation.shell import WellLogWorkstationWindow
+    from well_log_workstation.workspace import create_workspace
+
+    def _las(path: Path, well: str) -> Path:
+        path.write_text(
+            f"""~VERSION INFORMATION
+VERS. 2.0
+WRAP. NO
+~WELL INFORMATION
+STRT.M 1000.0
+STOP.M 1003.0
+STEP.M 1.0
+NULL. -999.25
+WELL. {well}
+~CURVE INFORMATION
+DEPT.M
+GR.GAPI
+~ASCII
+1000 20
+1001 50
+1002 21
+1003 22
+""",
+            encoding="utf-8",
+        )
+        return path
+
+    ws = create_workspace(tmp_path / "ws")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    wid = win.import_las_path(_las(tmp_path / "a.las", "A"))
+
+    from well_log_workstation.plot_document import create_single_well_plot
+
+    plot = create_single_well_plot(
+        ws, well_id=wid, well_name="A", template_id="std-gr-rt-den"
+    )
+    win.open_plot_document(plot.id)
+    win._selected_well_id = wid
+    save_curve_edits_for_well(
+        ws, wid, [CurveEdit(mnemonic="GR", method="despike", window=3, threshold=3.0)]
+    )
+
+    # Switch to original, then commit a new freehand stroke: the combo snaps
+    # back to corrected so the user sees the new stroke.
+    idx_orig = win.curve_version_combo.findData("original")
+    win.curve_version_combo.setCurrentIndex(idx_orig)
+    assert win._show_curve_edits is False
+
+    win._on_curve_drawn_committed("GR", [(1001.0, 5.0), (1002.0, 6.0)])
+    assert win._show_curve_edits is True
+    assert win.curve_version_combo.currentData() == "corrected"
+    assert any(
+        t.id.startswith("edited-") for t in win._presentation.tracks
+    )
