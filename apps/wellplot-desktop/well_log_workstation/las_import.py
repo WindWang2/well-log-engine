@@ -38,6 +38,10 @@ class ImportedCurve:
     # depth coordinates instead of being truncated/padded onto the shared
     # axis. None = shares ``ImportedWellDocument.depth`` (index-aligned).
     depth: np.ndarray | None = None
+    # Version identity (Epic A): same mnemonic may exist in several versions
+    # (e.g. "raw" vs "resample-0.5m"); identity = mnemonic + version, never
+    # the mnemonic alone. "raw" is the historic default for imported curves.
+    version: str = "raw"
 
 
 @dataclass
@@ -67,11 +71,22 @@ class ImportedWellDocument:
     # ``wells/<id>/core_photos.json`` model before applying templates.
     core_photos: CorePhotoModel | None = None
 
-    def curve_by_mnemonic(self, mnemonic: str) -> ImportedCurve | None:
+    def curve_by_mnemonic(
+        self, mnemonic: str, version: str | None = None
+    ) -> ImportedCurve | None:
+        """Find a curve by mnemonic (+ optional version).
+
+        ``version=None`` returns the first match (historic behaviour);
+        otherwise only curves whose ``version`` equals the requested one
+        qualify (multi-rate versions, Epic A).
+        """
         key = mnemonic.strip().upper()
         for c in self.curves:
-            if c.mnemonic.upper() == key:
-                return c
+            if c.mnemonic.upper() != key:
+                continue
+            if version is not None and getattr(c, "version", "raw") != version:
+                continue
+            return c
         return None
 
     def sample_value(self, mnemonic: str, index: int) -> float | None:

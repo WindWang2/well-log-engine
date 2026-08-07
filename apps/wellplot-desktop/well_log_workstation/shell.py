@@ -293,6 +293,12 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_well_header.setObjectName("Action_EditWellHeader")
         self._act_well_header.triggered.connect(self._on_edit_well_header)
         self._act_well_header.setEnabled(False)
+        # Multi-rate (Epic A): explicit resampling → derived curve version
+        # with its own sampling axis.
+        self._act_curve_resample = file_menu.addAction("曲线重采样…")
+        self._act_curve_resample.setObjectName("Action_ResampleCurve")
+        self._act_curve_resample.triggered.connect(self._on_curve_resample)
+        self._act_curve_resample.setEnabled(False)
         self._act_formula = file_menu.addAction("公式计算器…")
         self._act_formula.setObjectName("Action_FormulaCalc")
         self._act_formula.triggered.connect(self._on_formula_calculator)
@@ -1613,6 +1619,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_alias_dict.setEnabled(ws is not None)
         self._act_survey.setEnabled(ws is not None)
         self._act_well_header.setEnabled(ws is not None)
+        self._act_curve_resample.setEnabled(ws is not None)
         self._act_formula.setEnabled(ws is not None)
         self._act_curve_edit.setEnabled(ws is not None)
         self._act_draw_curve.setEnabled(ws is not None)
@@ -2554,6 +2561,19 @@ class WellLogWorkstationWindow(QMainWindow):
         if self._workspace is None:
             raise WorkspaceError("请先打开工区")
         doc = self.session.ensure_well_loaded(self._workspace, well_id)
+        # Multi-rate (Epic A): re-derive persisted resampled versions onto
+        # the loaded document (definitions in curve_resamples.json, samples
+        # recomputed — mirror curve_edits.json).
+        from well_log_workstation.curve_resample import (
+            apply_resamples_to_document,
+            load_curve_resamples_for_well,
+        )
+
+        resamples, _rdiags = load_curve_resamples_for_well(
+            self._workspace, well_id
+        )
+        if resamples:
+            apply_resamples_to_document(doc, resamples)
         # Attach per-well lithology segments (FRS §2.x) so template binding
         # and canvas rendering always see the latest data.
         from well_log_workstation.lithology_model import load_lithology_for_well
@@ -5391,6 +5411,98 @@ class WellLogWorkstationWindow(QMainWindow):
             f"（KB={updated.kb_m if updated.kb_m is not None else '—'} m）",
             4000,
         )
+
+    def _on_curve_resample(self) -> None:
+        """Multi-rate (Epic A): explicitly resample a curve onto a new axis.
+
+        Produces a derived curve version (own sampling axis, version label),
+        persists the definition to ``curve_resamples.json``, and re-binds the
+        current template so the new version appears in the tree/plot.
+        """
+        if self._workspace is None:
+            return
+        from PySide6.QtWidgets import QInputDialog
+
+        from well_log_workstation.curve_resample import (
+            CurveResample,
+            apply_resamples_to_document,
+            load_curve_resamples_for_well,
+            save_curve_resamples_for_well,
+        )
+        from well_log_workstation.display_set import leaf_id_for_curve
+
+        well_ids = self._pick_wells_for_correlation()
+        if not well_ids:
+            return
+        well_id = well_ids[0]
+        entry = next((w for w in self._workspace.wells if w.id == well_id), None)
+        if entry is None:
+            return
+        try:
+            doc = self.session.ensure_well_loaded(self._workspace, well_id)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "加载井数据失败", str(exc))
+            return
+        mnemonics = sorted({c.mnemonic for c in doc.curves})
+        if not mnemonics:
+            QMessageBox.information(self, "曲线重采样", "井中无曲线。")
+            return
+        mnemonic, ok = QInputDialog.getItem(
+            self, "曲线重采样", "选择曲线：", mnemonics, 0, False
+        )
+        if not ok:
+            return
+        interval, ok2 = QInputDialog.getDouble(
+            self, "曲线重采样",
+            f"目标采样间隔（{doc.depth_unit or 'm'}）：",
+            0.5, 0.001, 100.0, 4,
+        )
+        if not ok2 or interval <= 0.0:
+            return
+        spec = CurveResample(
+            mnemonic=mnemonic,
+            interval=interval,
+            version=f"resample-{interval:g}",
+        )
+        current, _diags = load_curve_resamples_for_well(self._workspace, well_id)
+        current = [
+            r
+            for r in current
+            if not (r.mnemonic == spec.mnemonic and r.version == spec.version)
+        ]
+        current.append(spec)
+        try:
+            save_curve_resamples_for_well(self._workspace, well_id, current)
+        except (WorkspaceError, OSError) as exc:
+            QMessageBox.warning(self, "保存重采样定义失败", str(exc))
+            return
+        diags = apply_resamples_to_document(doc, [spec])
+        self._selected_well_id = well_id
+        # Auto-check the derived version in the active display set and
+        # re-apply the current template so it renders.
+        plot_id = (
+            self._active_plot_id
+            if self._active_plot_type == "single_well"
+            else None
+        )
+        key = self._display_set_key(well_id, plot_id=plot_id)
+        if key in self._display_sets:
+            derived_leaf = leaf_id_for_curve(
+                doc.document_id, mnemonic, spec.version
+            )
+            self._display_sets[key] = frozenset(
+                set(self._display_sets[key]) | {derived_leaf}
+            )
+        template_id = self._current_template_id()
+        if not template_id:
+            return
+        self.apply_template_to_well(well_id, template_id, plot_id=plot_id)
+        self._refresh_tree()
+        self._refresh_table_projection()
+        note = f"已生成 {entry.name} {spec.display_name}"
+        if diags:
+            note += f" · {diags[0]}"
+        self.statusBar().showMessage(note, 4000)
 
     def _on_edit_lithology(self) -> None:
         """Edit the selected well's lithology segments (FRS §2.x)."""

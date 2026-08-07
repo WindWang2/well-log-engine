@@ -126,13 +126,36 @@ def build_table_projections(
         ]
 
     # Group by value length vs depth length for split tables (ADR 0022 spirit).
+    # Multi-rate (Epic A): a curve with its own sampling axis gets its own
+    # table carrying its REAL depth — never merged into the shared-axis table
+    # (no implicit alignment across axes).
     depth = np.asarray(document.depth, dtype=np.float64)
     groups: dict[int, list[CurveColumn]] = {}
+    per_axis_tables: list[TableProjection] = []
     for desc in styled:
         curve = document.curve_by_mnemonic(desc.mnemonic)
         if curve is None:
             continue
         n = int(curve.values.size)
+        own_depth = getattr(curve, "depth", None)
+        if own_depth is not None:
+            per_axis_tables.append(
+                TableProjection(
+                    axis_id=f"curve-{curve.mnemonic}",
+                    depth=np.asarray(own_depth, dtype=np.float64),
+                    depth_unit=document.depth_unit or "m",
+                    columns=(
+                        CurveColumn(
+                            leaf_id=desc.leaf_id,
+                            mnemonic=curve.mnemonic,
+                            title=desc.title,
+                            values=curve.values,
+                            null_mask=curve.null_mask,
+                        ),
+                    ),
+                )
+            )
+            continue
         groups.setdefault(n, []).append(
             CurveColumn(
                 leaf_id=desc.leaf_id,
@@ -144,7 +167,7 @@ def build_table_projections(
         )
 
     if not groups:
-        return [
+        return per_axis_tables or [
             TableProjection(
                 axis_id="md",
                 depth=depth,
@@ -153,7 +176,7 @@ def build_table_projections(
             )
         ]
 
-    out: list[TableProjection] = []
+    out: list[TableProjection] = list(per_axis_tables)
     for n, cols in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
         if n == depth.size:
             axis_depth = depth

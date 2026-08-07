@@ -325,20 +325,36 @@ def display_set_from_ids(ids: Iterable[str]) -> frozenset[str]:
     return frozenset(str(i) for i in ids if str(i))
 
 
-def leaf_id_for_curve(document_id: str, mnemonic: str) -> str:
-    """Stable Displayable Track Leaf id for a scalar curve on a document."""
+def leaf_id_for_curve(document_id: str, mnemonic: str, version: str = "raw") -> str:
+    """Stable Displayable Track Leaf id for a scalar curve on a document.
+
+    Multi-rate versions (Epic A): the id carries the version when it is not
+    the default "raw", so the same mnemonic can bind several sampling
+    versions without colliding. "raw" keeps the historic id shape, so
+    persisted display sets stay valid.
+    """
+    if version and version != "raw":
+        return f"{document_id}:{mnemonic}:{version}"
     return f"{document_id}:{mnemonic}"
 
 
 def leaves_from_document(document: ImportedWellDocument) -> list[DisplayableTrackLeaf]:
-    """Build first-ship scalar leaves for an imported well document (one source)."""
+    """Build scalar leaves for an imported well document (one source)."""
     source_id = document.source_path or document.document_id
     return [
         DisplayableTrackLeaf(
-            id=leaf_id_for_curve(document.document_id, curve.mnemonic),
+            id=leaf_id_for_curve(
+                document.document_id,
+                curve.mnemonic,
+                getattr(curve, "version", "raw"),
+            ),
             mnemonic=curve.mnemonic,
             source_id=source_id,
-            label=curve.mnemonic,
+            label=(
+                f"{curve.mnemonic} ({curve.version})"
+                if getattr(curve, "version", "raw") != "raw"
+                else curve.mnemonic
+            ),
         )
         for curve in document.curves
     ]
@@ -406,7 +422,15 @@ def presentation_from_display_set(
             )
 
     for desc in styled:
-        curve = document.curve_by_mnemonic(desc.mnemonic)
+        # Multi-rate (Epic A): a versioned leaf ("doc:mnemonic:version")
+        # resolves to that exact curve version; plain leaves keep the
+        # historic first-match behaviour.
+        version: str | None = None
+        if ":" in desc.leaf_id:
+            parts = desc.leaf_id.split(":")
+            if len(parts) >= 3:
+                version = ":".join(parts[2:])
+        curve = document.curve_by_mnemonic(desc.mnemonic, version=version)
         if curve is None:
             continue
         scale = desc.scale
@@ -431,6 +455,7 @@ def presentation_from_display_set(
                         unit=curve.unit,
                         values=curve.values,
                         null_mask=curve.null_mask,
+                        depth=curve.depth,
                     )
                 ],
             )
