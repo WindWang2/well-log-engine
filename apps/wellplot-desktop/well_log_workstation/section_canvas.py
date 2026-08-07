@@ -23,6 +23,7 @@ from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF, QBrush, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
 from well_log_workstation.correlation_links import HorizonLink
+from well_log_workstation.depth_ruler import RULER_WIDTH, paint_depth_ruler
 from well_log_workstation.section_geometry import (
     FluidContact2D,
     LensBody2D,
@@ -377,7 +378,7 @@ class SectionCanvas(QWidget):
             return None
         n = len(self._columns)
         gap = 6
-        col_w = max(40, (width - 16 - gap * (n - 1)) // n)
+        col_w = max(40, (width - 16 - RULER_WIDTH - gap * (n - 1)) // n)
         top, bottom = 36, height - 24
         return n, col_w, gap, top, bottom, self._d0, self._d1
 
@@ -500,7 +501,7 @@ class SectionCanvas(QWidget):
 
         n = len(self._columns)
         gap = 6
-        col_w = max(40, (w - 16 - gap * (n - 1)) // n)
+        col_w = max(40, (w - 16 - RULER_WIDTH - gap * (n - 1)) // n)
         top, bottom = 36, h - 24
         d0, d1 = self._d0, self._d1
 
@@ -512,6 +513,10 @@ class SectionCanvas(QWidget):
 
         def x_unit(u: float) -> float:
             return self.unit_to_pixel(u, col_w, gap)
+
+        # Shared depth ruler (FRS §3.x 多深度刻度): left-margin strip with
+        # tick marks + labels for the current depth window (follows pan/zoom).
+        paint_depth_ruler(p, QRectF(0, top, RULER_WIDTH, bottom - top), d0, d1)
 
         # 0. Tie quads (under everything). Apply fault throws to the corners
         # so quads crossing a fault plane show the down-dip offset; then split
@@ -882,10 +887,11 @@ class SectionCanvas(QWidget):
         With per-well lateral offsets set, the offset is linearly interpolated
         between the two bounding wells so quads/faults/contacts spanning a gap
         follow the offset wells. Without offsets this is the classic
-        ``8 + u*(col_w+gap) + col_w/2`` mapping.
+        ``8 + RULER_WIDTH + u*(col_w+gap) + col_w/2`` mapping (the ruler strip
+        reserves the left margin).
         """
         u = max(0.0, min(float(u), float(max(len(self._columns) - 1, 0))))
-        base = 8 + u * (col_w + gap) + col_w / 2
+        base = 8 + RULER_WIDTH + u * (col_w + gap) + col_w / 2
         if not self._well_x_offsets:
             return base
         n = len(self._columns)
@@ -907,7 +913,7 @@ class SectionCanvas(QWidget):
         """
         n = len(self._columns)
         uu = np.clip(np.asarray(u, dtype=np.float64), 0.0, float(max(n - 1, 0)))
-        base = 8.0 + uu * (col_w + gap) + col_w / 2.0
+        base = 8.0 + RULER_WIDTH + uu * (col_w + gap) + col_w / 2.0
         if not self._well_x_offsets or n < 2:
             return base
         offs = np.asarray(self._well_x_offsets, dtype=np.float64)

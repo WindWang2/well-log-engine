@@ -203,10 +203,13 @@ def test_hit_test_top_on_canvas(qtbot, tmp_path: Path) -> None:
     canvas.show()
     qtbot.waitExposed(canvas)
     canvas.set_depth_range(1000.0, 1004.0)
-    # Column 0 center-ish x; y for depth 1002
+    # Column 0 inside the strip (right of the depth ruler); y for depth 1002.
+    from well_log_workstation.depth_ruler import RULER_WIDTH
+
     top_band, bottom = 36, canvas.height() - 24
+    x = 8 + RULER_WIDTH + 40
     y = top_band + ((1002.0 - 1000.0) / 4.0) * (bottom - top_band)
-    hit = canvas.hit_test_top(20.0, y, y_tol_px=20.0)
+    hit = canvas.hit_test_top(x, y, y_tol_px=20.0)
     assert hit is not None
     well_id, top = hit
     assert well_id == id1

@@ -114,11 +114,15 @@ def _make_canvas():
 
 
 def test_canvas_x_well_equal_default(qtbot) -> None:
+    from well_log_workstation.depth_ruler import RULER_WIDTH
+
     canvas = _make_canvas()
     qtbot.addWidget(canvas)
-    # Equal spacing: well 1 centre = 8 + 1*(col_w+gap) + col_w/2.
+    # Equal spacing: well 1 centre = 8 + RULER_WIDTH + 1*(col_w+gap) + col_w/2.
     col_w = max(40, (600 - 16 - 6 * 2) // 3)
-    assert canvas._x_well(1, col_w, 6) == pytest.approx(8 + (col_w + 6) + col_w / 2)
+    assert canvas._x_well(1, col_w, 6) == pytest.approx(
+        8 + RULER_WIDTH + (col_w + 6) + col_w / 2
+    )
 
 
 def test_canvas_x_well_with_offsets(qtbot) -> None:

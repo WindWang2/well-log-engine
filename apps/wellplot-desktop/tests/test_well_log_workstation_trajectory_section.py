@@ -142,6 +142,7 @@ def test_path_segment_frame_empty() -> None:
 
 
 def test_unit_to_pixel_equal_spacing_is_legacy(qtbot) -> None:
+    from well_log_workstation.depth_ruler import RULER_WIDTH
     from well_log_workstation.section_canvas import SectionCanvas
     from well_log_workstation.template_model import HostPresentation
 
@@ -154,13 +155,14 @@ def test_unit_to_pixel_equal_spacing_is_legacy(qtbot) -> None:
     )
     canvas.set_section([pres, pres, pres])
     col_w, gap = 80, 6
-    # Legacy mapping: 8 + u*(col_w+gap) + col_w/2.
-    assert canvas.unit_to_pixel(0, col_w, gap) == pytest.approx(8 + 0 + 40)
-    assert canvas.unit_to_pixel(1, col_w, gap) == pytest.approx(8 + 86 + 40)
-    assert canvas.unit_to_pixel(0.5, col_w, gap) == pytest.approx(8 + 43 + 40)
+    # Legacy mapping: 8 + RULER_WIDTH + u*(col_w+gap) + col_w/2 (ruler margin).
+    assert canvas.unit_to_pixel(0, col_w, gap) == pytest.approx(8 + RULER_WIDTH + 0 + 40)
+    assert canvas.unit_to_pixel(1, col_w, gap) == pytest.approx(8 + RULER_WIDTH + 86 + 40)
+    assert canvas.unit_to_pixel(0.5, col_w, gap) == pytest.approx(8 + RULER_WIDTH + 43 + 40)
 
 
 def test_unit_to_pixel_with_offsets_interpolates(qtbot) -> None:
+    from well_log_workstation.depth_ruler import RULER_WIDTH
     from well_log_workstation.section_canvas import SectionCanvas
     from well_log_workstation.template_model import HostPresentation
 
@@ -176,13 +178,13 @@ def test_unit_to_pixel_with_offsets_interpolates(qtbot) -> None:
     col_w, gap = 80, 6
     stride = col_w + gap
     # Well 0: base(0u) + 0*stride. Well 1: base(1u) + 0.5*stride.
-    assert canvas.unit_to_pixel(0, col_w, gap) == pytest.approx(8 + 0 * stride + 40)
+    assert canvas.unit_to_pixel(0, col_w, gap) == pytest.approx(8 + RULER_WIDTH + 0 * stride + 40)
     assert canvas.unit_to_pixel(1, col_w, gap) == pytest.approx(
-        8 + 1 * stride + 40 + 0.5 * stride
+        8 + RULER_WIDTH + 1 * stride + 40 + 0.5 * stride
     )
     # Midway 0→1: offset = 0.25 → base(0.5u) + 0.25*stride.
     assert canvas.unit_to_pixel(0.5, col_w, gap) == pytest.approx(
-        8 + 0.5 * stride + 40 + 0.25 * stride
+        8 + RULER_WIDTH + 0.5 * stride + 40 + 0.25 * stride
     )
 
 
@@ -364,11 +366,12 @@ def _blueish_at(img, cx: int, cy: int, radius: int = 4) -> bool:
 def test_unfolded_warps_curve_along_path(qtbot) -> None:
     """The curve bottom must follow the deviated wellbore, not the column.
 
-    Well 1 has a straight 0.15-column-stride deviated path. At the bottom
-    depth (200 m) the value maps to the strip edge (+136 px lateral): in
-    equal mode the sample sits at the well-1 column; in Unfolded mode it
-    moves along the path normal to ≈(68, 470) — the differential proves the
-    warp (a plain vertical strip would keep both samples in the column).
+    Well 1 has a straight 0.15-column-stride deviated path (its own offset
+    interp adds +0.0225 stride at u=0.15). At the bottom depth (200 m) the
+    value maps to the strip edge (+123 px lateral, col_w = 263): in equal
+    mode the sample sits at the well-1 column (315, 456); in Unfolded mode
+    it moves along the path normal to ≈(115, 470) — the differential proves
+    the warp (a plain vertical strip would keep both samples in the column).
     """
     from well_log_workstation.section_canvas import SectionCanvas
     from well_log_workstation.template_model import HostPresentation
@@ -401,21 +404,21 @@ def test_unfolded_warps_curve_along_path(qtbot) -> None:
     canvas.set_section([pres, pres])
     canvas.set_depth_range(0.0, 200.0)
 
-    # Equal mode: curve bottom at the well-1 column (289, 456), not at (68, 470).
+    # Equal mode: curve bottom at the well-1 column (315, 456), not at (115, 470).
     img_equal = _render_canvas(canvas)
-    assert _blueish_at(img_equal, 289, 456)
-    assert not _blueish_at(img_equal, 68, 470)
+    assert _blueish_at(img_equal, 315, 456)
+    assert not _blueish_at(img_equal, 115, 470)
 
     # Unfolded: deviated path + lateral offsets; the bottom sample warps to
-    # (68, 470) and the column bottom is left empty.
+    # (115, 470) and the column bottom is left empty.
     traj = np.array([[0.0, 0.0], [0.15, 200.0]])
     canvas.set_well_x_offsets([0.0, 0.15])
     canvas.set_well_trajectories([traj, None])
     canvas.set_unfolded(True)
     canvas.set_depth_shifts({"w1": 0.0, "w2": 0.0})
     img_unfolded = _render_canvas(canvas)
-    assert _blueish_at(img_unfolded, 68, 470)
-    assert not _blueish_at(img_unfolded, 289, 456)
+    assert _blueish_at(img_unfolded, 115, 470)
+    assert not _blueish_at(img_unfolded, 315, 456)
 
 
 # ---------------------------------------------------------------------------

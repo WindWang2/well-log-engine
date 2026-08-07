@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QPainter,
@@ -17,6 +17,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QWidget
 
 from well_log_workstation.correlation_links import HorizonLink
+from well_log_workstation.depth_ruler import RULER_WIDTH, paint_depth_ruler
 from well_log_workstation.interwell_fill import (
     PINCH_LEFT,
     PINCH_OFF,
@@ -124,13 +125,14 @@ class CorrelationCanvas(QWidget):
     def _x_well(self, i: int, col_w: int, gap: int) -> float:
         """X-centre (px) of well column ``i``.
 
-        Without per-well offsets this is the classic ``8 + i*(col_w+gap) +
-        col_w/2``. With offsets (well-index units), each well's centre is
+        Without per-well offsets this is the classic ``8 + RULER_WIDTH +
+        i*(col_w+gap) + col_w/2`` (the depth-ruler strip reserves the left
+        margin). With offsets (well-index units), each well's centre is
         shifted by ``offset_i`` strides so columns spread to real ground
         distance — same convention as the section canvas ``unit_to_pixel``.
         """
         stride = col_w + gap
-        base = 8 + i * stride + col_w / 2
+        base = 8 + RULER_WIDTH + i * stride + col_w / 2
         if not self._well_x_offsets or i < 0:
             return base
         if i < len(self._well_x_offsets):
@@ -572,9 +574,19 @@ class CorrelationCanvas(QWidget):
 
         n = len(self._columns)
         gap = self._column_gap
-        col_w = max(40, (w - 16 - gap * (n - 1)) // n) if n else 40
+        col_w = max(40, (w - 16 - RULER_WIDTH - gap * (n - 1)) // n) if n else 40
         top, bottom = 36, h - 24
         d0, d1 = self._d0, self._d1
+
+        # Shared depth ruler (FRS §3.x 多深度刻度): left-margin strip, tick y
+        # follows the same vertical-exaggeration mapping as the curve layers.
+        paint_depth_ruler(
+            p,
+            QRectF(0, top, RULER_WIDTH, bottom - top),
+            d0,
+            d1,
+            vertical_exaggeration=self._vertical_exaggeration,
+        )
 
         # Inter-well fill behind curves (#297)
         if self._show_interwell_fill and n >= 2:
