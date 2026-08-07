@@ -23,6 +23,7 @@ def _paint_presentation(
     rect: QRectF,
     *,
     depth_range: tuple[float, float] | None = None,
+    core_photo_resolver=None,
 ) -> None:
     """Shared paint path for canvas export (multi-track)."""
     w, h = rect.width(), rect.height()
@@ -105,6 +106,14 @@ def _paint_presentation(
             paint_litho_bands(
                 painter, int(x), int(top), int(tw - 6), int(bottom - top),
                 d0, d1, track,
+            )
+        elif track.role == "image":
+            from well_log_workstation.multi_track_canvas import paint_core_photos
+
+            resolver = core_photo_resolver or (lambda _p: None)
+            paint_core_photos(
+                painter, int(x), int(top), int(tw - 6), int(bottom - top),
+                d0, d1, track, resolver,
             )
         else:
             # Crossover fill (FRS §2.x 双曲线交叉充填) — under the curve lines.

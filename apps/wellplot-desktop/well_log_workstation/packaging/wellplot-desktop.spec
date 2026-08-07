@@ -59,6 +59,8 @@ hiddenimports = list(pyside_hidden) + [
     "well_log_workstation.formula_dialog",
     "well_log_workstation.lithology_model",
     "well_log_workstation.lithology_dialog",
+    "well_log_workstation.core_photo_model",
+    "well_log_workstation.core_photo_dialog",
     "well_log_workstation.export_options_dialog",
     "well_log_workstation.section_line",
     "well_log_workstation.section_line_dialog",

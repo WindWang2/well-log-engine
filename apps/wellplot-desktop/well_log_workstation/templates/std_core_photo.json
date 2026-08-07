@@ -1,0 +1,46 @@
+{
+  "id": "std-core-photo",
+  "name": "标准岩心照片图",
+  "schemaVersion": 1,
+  "header": {
+    "title": "单井岩心照片图",
+    "show_well_name": true,
+    "show_depth_scale": true,
+    "show_template_name": true
+  },
+  "footer": {
+    "show_depth_range": true
+  },
+  "tracks": [
+    {
+      "id": "depth",
+      "role": "depth",
+      "title": "深度",
+      "width_fraction": 0.12,
+      "scale": null,
+      "layers": []
+    },
+    {
+      "id": "gr",
+      "role": "curve",
+      "title": "GR",
+      "width_fraction": 0.38,
+      "scale": { "mode": "linear", "min": 0, "max": 150, "unit": "GAPI" },
+      "layers": [
+        {
+          "type": "curve",
+          "mnemonics": ["GR", "GAM", "GAMMA", "SGR"],
+          "color": "#1a6fb5"
+        }
+      ]
+    },
+    {
+      "id": "core_photo",
+      "role": "image",
+      "title": "岩心照片",
+      "width_fraction": 0.5,
+      "scale": null,
+      "layers": []
+    }
+  ]
+}

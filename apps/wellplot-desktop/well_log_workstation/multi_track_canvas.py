@@ -11,7 +11,7 @@ import math
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QWheelEvent
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
 from well_log_workstation.template_model import HostPresentation, ScaleSpec
@@ -126,6 +126,69 @@ def paint_litho_bands(
                 )
 
 
+def paint_core_photos(
+    painter: QPainter,
+    x: int,
+    y_top: int,
+    tw: int,
+    th: int,
+    d0: float,
+    d1: float,
+    track,
+    resolve_path,
+) -> None:
+    """Draw depth-ranged core photographs into a track body (FRS §2.x).
+
+    Shared by the interactive canvas and plot export. Each segment's image
+    is scaled to fill its depth band (aspect-ratio ignored - core photos
+    are columnar). ``resolve_path(seg.image_path)`` returns the absolute
+    path to the image file (or None if unresolvable). Segments whose image
+    cannot be loaded fall back to a gray tint. Images are cached per paint
+    by absolute path.
+    """
+    if tw < 4 or th < 4:
+        return
+    span = d1 - d0
+    if span <= 0:
+        return
+    segments = getattr(track, "core_photo_segments", None) or []
+    img_cache: dict[str, QImage | None] = {}
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    for seg in segments:
+        if not math.isfinite(seg.top) or not math.isfinite(seg.bottom):
+            continue
+        if seg.bottom < d0 or seg.top > d1:
+            continue
+        y0 = max(float(y_top), y_top + ((seg.top - d0) / span) * th)
+        y1 = min(float(y_top + th), y_top + ((seg.bottom - d0) / span) * th)
+        if y1 - y0 < 0.5:
+            continue
+        abs_path = resolve_path(seg.image_path)
+        if abs_path and abs_path not in img_cache:
+            img = QImage(abs_path)
+            img_cache[abs_path] = img if not img.isNull() else None
+        img = img_cache.get(abs_path) if abs_path else None
+        rect = QRectF(x, y0, tw, y1 - y0)
+        if img is not None:
+            painter.drawImage(rect, img)
+        else:
+            painter.fillRect(rect, QColor("#cbd5e1"))
+        # Band boundary.
+        if y0 > y_top + 0.5:
+            painter.setPen(QPen(QColor("#8a8a8a"), 1))
+            painter.drawLine(x, int(round(y0)), x + tw, int(round(y0)))
+        # Label when the track is wide enough.
+        if tw >= 44 and seg.label:
+            painter.setPen(QColor("#222222"))
+            painter.drawText(
+                QRectF(x + 2, y0 + 2, tw - 4, 14),
+                Qt.AlignmentFlag.AlignLeft,
+                seg.label,
+            )
+    painter.restore()
+
+
 class MultiTrackCanvas(QWidget):
     """Single-well multi-track view with shared depth window (pan/zoom)."""
 
@@ -154,6 +217,10 @@ class MultiTrackCanvas(QWidget):
         self.setObjectName("MultiTrackCanvas")
         self.setMinimumSize(400, 400)
         self._presentation: HostPresentation | None = None
+        # Core-photo image path resolver (FRS §2.x): maps a segment's
+        # relative image_path to an absolute path via the active workspace.
+        # Set by the shell when the active well changes; None -> gray tint.
+        self._core_photo_resolver = None
         self._tops: list[FormationTop] = []
         self._d0: float | None = None
         self._d1: float | None = None
@@ -340,6 +407,11 @@ class MultiTrackCanvas(QWidget):
     def set_presentation(self, presentation: HostPresentation | None) -> None:
         self._presentation = presentation
         self._fit_depth()
+        self.update()
+
+    def set_core_photo_resolver(self, resolver) -> None:
+        """Set the callback mapping a core-photo ``image_path`` -> abs path."""
+        self._core_photo_resolver = resolver
         self.update()
 
     def set_tops(self, tops: list[FormationTop] | None) -> None:
@@ -793,9 +865,10 @@ class MultiTrackCanvas(QWidget):
 
         pres = self._presentation
         # Empty Display Set: depth track only (or no visible curve layers).
-        # A visible lithology track alone is still a usable plot (FRS §2.x).
+        # A visible lithology or core-photo track alone is still a usable
+        # plot (FRS §2.x).
         if pres.curve_track_count < 1 and not any(
-            t.role == "litho" and t.visible for t in pres.tracks
+            t.role in ("litho", "image") and t.visible for t in pres.tracks
         ):
             p.setPen(QColor("#666"))
             p.drawText(
@@ -865,6 +938,11 @@ class MultiTrackCanvas(QWidget):
             elif track.role == "litho":
                 paint_litho_bands(
                     p, x, top, tw, bottom - top, d0, d1, track
+                )
+            elif track.role == "image":
+                resolver = self._core_photo_resolver or (lambda _p: None)
+                paint_core_photos(
+                    p, x, top, tw, bottom - top, d0, d1, track, resolver
                 )
             else:
                 # Crossover fill (FRS §2.x 双曲线交叉充填): dual-curve track

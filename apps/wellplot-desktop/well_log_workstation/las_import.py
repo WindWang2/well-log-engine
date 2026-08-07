@@ -20,6 +20,7 @@ from well_log_workstation.workspace import Workspace, add_well
 
 if TYPE_CHECKING:
     from well_log_workstation.lithology_model import LithologyModel
+    from well_log_workstation.core_photo_model import CorePhotoModel
 
 
 class LasImportError(Exception):
@@ -53,6 +54,9 @@ class ImportedWellDocument:
     # Per-well lithology segments (FRS §2.x): the shell attaches the loaded
     # ``wells/<id>/lithology.json`` model before applying templates.
     lithology: LithologyModel | None = None
+    # Per-well core-photo segments (FRS §2.x): the shell attaches the loaded
+    # ``wells/<id>/core_photos.json`` model before applying templates.
+    core_photos: CorePhotoModel | None = None
 
     def curve_by_mnemonic(self, mnemonic: str) -> ImportedCurve | None:
         key = mnemonic.strip().upper()

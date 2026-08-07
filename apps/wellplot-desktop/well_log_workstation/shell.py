@@ -318,6 +318,10 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_litho.setObjectName("Action_EditLithology")
         self._act_litho.triggered.connect(self._on_edit_lithology)
         self._act_litho.setEnabled(False)
+        self._act_core_photo = file_menu.addAction("岩心照片道编辑…")
+        self._act_core_photo.setObjectName("Action_EditCorePhoto")
+        self._act_core_photo.triggered.connect(self._on_edit_core_photos)
+        self._act_core_photo.setEnabled(False)
         file_menu.addSeparator()
         act_quit = file_menu.addAction("退出")
         act_quit.triggered.connect(self.close)
@@ -1605,6 +1609,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_curve_edit.setEnabled(ws is not None)
         self._act_draw_curve.setEnabled(ws is not None)
         self._act_litho.setEnabled(ws is not None)
+        self._act_core_photo.setEnabled(ws is not None)
         # Phase-2 PR-C: new plot-type menu items (fence_3d needs 3D).
         self._act_new_plane_map.setEnabled(ws is not None)
         self._act_new_fence_3d.setEnabled(
@@ -2544,8 +2549,10 @@ class WellLogWorkstationWindow(QMainWindow):
         # Attach per-well lithology segments (FRS §2.x) so template binding
         # and canvas rendering always see the latest data.
         from well_log_workstation.lithology_model import load_lithology_for_well
+        from well_log_workstation.core_photo_model import load_core_photos_for_well
 
         doc.lithology = load_lithology_for_well(self._workspace, well_id)[0]
+        doc.core_photos = load_core_photos_for_well(self._workspace, well_id)[0]
         template = get_builtin_template(template_id)
         if template is None:
             raise WorkspaceError(f"未知图版: {template_id}")
@@ -2610,6 +2617,8 @@ class WellLogWorkstationWindow(QMainWindow):
         if plot_id is not None:
             self._active_plot_id = plot_id
         self.multi_track_canvas.set_presentation(presentation)
+        # Wire the core-photo image resolver for this well (FRS §2.x).
+        self._install_core_photo_resolver(well_id)
         # Attach derived curves from the well's formulas (FRS §2.4 / P2-A).
         self._apply_derived_curves()
         # Attach non-destructive curve edits (FRS §2.x despike/baseline)
@@ -5335,6 +5344,75 @@ class WellLogWorkstationWindow(QMainWindow):
         self.statusBar().showMessage(
             f"已保存 {entry.name} 岩性（{len(model.segments)} 段）", 4000
         )
+
+    def _on_edit_core_photos(self) -> None:
+        """Edit the selected well's core-photo segments (FRS §2.x)."""
+        if self._workspace is None or not self._workspace.wells:
+            QMessageBox.information(self, "岩心照片道编辑", "请先打开含井的工区。")
+            return
+        from well_log_workstation.core_photo_dialog import CorePhotoDialog
+        from well_log_workstation.core_photo_model import (
+            core_photo_dir,
+            load_core_photos_for_well,
+            save_core_photos_for_well,
+        )
+
+        well_ids = self._pick_wells_for_correlation()
+        if not well_ids:
+            return
+        well_id = well_ids[0]
+        entry = next((w for w in self._workspace.wells if w.id == well_id), None)
+        if entry is None:
+            return
+        try:
+            img_dir = core_photo_dir(self._workspace, well_id)
+        except WorkspaceError:
+            img_dir = None
+        current, _diags = load_core_photos_for_well(self._workspace, well_id)
+        dlg = CorePhotoDialog(current, self, image_dir=img_dir)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        model, copy_diags = dlg.value()
+        try:
+            save_core_photos_for_well(self._workspace, model)
+        except (WorkspaceError, OSError) as exc:
+            QMessageBox.warning(self, "保存岩心照片失败", str(exc))
+            return
+        self._selected_well_id = well_id
+        self._install_core_photo_resolver(well_id)
+        # Re-apply the current template so the image track shows new segments.
+        if self._active_plot_type == "single_well" and self._presentation is not None:
+            self.apply_template_to_well(well_id, self._presentation.template_id)
+        else:
+            self.multi_track_canvas.update()
+        msg = f"已保存 {entry.name} 岩心照片（{len(model.segments)} 段）"
+        if copy_diags:
+            msg += f"；{len(copy_diags)} 个图片复制警告"
+        self.statusBar().showMessage(msg, 4000)
+
+    def _install_core_photo_resolver(self, well_id: str | None) -> None:
+        """Wire the canvas image-path resolver for the active well (FRS §2.x)."""
+        if self._workspace is None or not well_id:
+            self.multi_track_canvas.set_core_photo_resolver(None)
+            return
+        from well_log_workstation.core_photo_model import core_photo_dir
+
+        try:
+            base = core_photo_dir(self._workspace, well_id)
+        except WorkspaceError:
+            self.multi_track_canvas.set_core_photo_resolver(None)
+            return
+
+        def resolve(rel: str) -> str | None:
+            # Absolute paths are used as-is; relative names resolve under the
+            # well's core_photos directory.
+            p = Path(str(rel))
+            if p.is_absolute():
+                return str(p) if p.is_file() else None
+            full = base / rel
+            return str(full) if full.is_file() else None
+
+        self.multi_track_canvas.set_core_photo_resolver(resolve)
 
     def _on_formula_calculator(self) -> None:
         """Edit derived-curve formulas for the selected well (FRS §2.4 / P2-A)."""
