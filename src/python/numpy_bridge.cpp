@@ -517,6 +517,86 @@ PyObject *sample_value_impl(WellLogView *view, const QString &curve_id_text,
   Py_RETURN_NONE;
 }
 
+// Multi-rate support (Epic A): a curve dict may carry an optional "depth"
+// array. When present the curve gets its own SamplingAxis and its values
+// must match THAT axis length; otherwise it shares the document-level axis.
+// The per-curve invariant (values == own axis) is preserved either way.
+// Adds the axis (when present) + curve to the builder and returns the
+// adapted values buffer so the caller can keep it alive in its bookkeeping.
+[[nodiscard]] std::optional<AdaptedBuffer>
+add_curve_with_optional_axis(WellLogDocumentBuilder &builder,
+                             PyObject *curve_dict, PyObject *values_obj,
+                             const EntityId &curve_id, const char *mnemonic,
+                             const char *value_unit,
+                             const BufferView &shared_depth,
+                             const EntityId &shared_axis_id,
+                             const char *depth_unit) {
+  auto value_buffer = adapt_buffer(values_obj, "values");
+  if (!value_buffer) {
+    return std::nullopt;
+  }
+  auto *curve_depth_obj = PyDict_GetItemString(curve_dict, "depth");
+  if (curve_depth_obj == nullptr) {
+    if (value_buffer->buffer.length() != shared_depth.length()) {
+      set_welllog_error("WellLogValidationError", "length_mismatch",
+                        "curve values length must match depth");
+      return std::nullopt;
+    }
+    builder.add_curve(Curve{
+        .id = curve_id,
+        .mnemonic = mnemonic,
+        .display_name = mnemonic,
+        .unit = value_unit,
+        .sampling_axis_id = shared_axis_id,
+        .values = value_buffer->buffer,
+        .nulls = {},
+    });
+    return value_buffer;
+  }
+  auto curve_depth = adapt_buffer(curve_depth_obj, "curve.depth");
+  if (!curve_depth) {
+    return std::nullopt;
+  }
+  if (curve_depth->buffer.length() < 2) {
+    set_welllog_error("WellLogValidationError", "invalid_buffer",
+                      "curve.depth must have at least 2 samples");
+    return std::nullopt;
+  }
+  if (value_buffer->buffer.length() != curve_depth->buffer.length()) {
+    set_welllog_error("WellLogValidationError", "length_mismatch",
+                      "curve values length must match its depth");
+    return std::nullopt;
+  }
+  const auto axis_uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+  const auto curve_axis_id = parse_id(axis_uuid, "curve axis_id");
+  if (!curve_axis_id) {
+    return std::nullopt;
+  }
+  const auto curve_first = curve_depth->buffer.value_as_double(0).value();
+  const auto curve_last = curve_depth->buffer
+                              .value_as_double(
+                                  curve_depth->buffer.length() - 1)
+                              .value();
+  builder.add_sampling_axis(SamplingAxis{
+      .id = *curve_axis_id,
+      .coordinates = curve_depth->buffer,
+      .domain = DepthDomain::measured_depth,
+      .unit = depth_unit,
+      .direction = curve_last < curve_first ? AxisDirection::decreasing
+                                            : AxisDirection::increasing,
+  });
+  builder.add_curve(Curve{
+      .id = curve_id,
+      .mnemonic = mnemonic,
+      .display_name = mnemonic,
+      .unit = value_unit,
+      .sampling_axis_id = *curve_axis_id,
+      .values = value_buffer->buffer,
+      .nulls = {},
+  });
+  return value_buffer;
+}
+
 } // namespace
 
 PyObject *submit_curve(WellLogView *view, PyObject *depth, PyObject *values,
@@ -783,26 +863,15 @@ submit_multi_track_impl(WellLogView *view, PyObject *payload) {
     if (!curve_id) {
       return nullptr;
     }
-    auto value_buffer = adapt_buffer(values_obj, "values");
+    const auto mnemonic_utf8 = mnemonic.toUtf8();
+    const auto value_unit_utf8 = value_unit.toUtf8();
+    auto value_buffer = add_curve_with_optional_axis(
+        builder, curve, values_obj, *curve_id, mnemonic_utf8.constData(),
+        value_unit_utf8.constData(), depth_buffer->buffer, *axis_id,
+        depth_unit_utf8.constData());
     if (!value_buffer) {
       return nullptr;
     }
-    if (value_buffer->buffer.length() != depth_buffer->buffer.length()) {
-      set_welllog_error("WellLogValidationError", "length_mismatch",
-                        "curve values length must match depth");
-      return nullptr;
-    }
-    const auto mnemonic_utf8 = mnemonic.toUtf8();
-    const auto value_unit_utf8 = value_unit.toUtf8();
-    builder.add_curve(Curve{
-        .id = *curve_id,
-        .mnemonic = mnemonic_utf8.constData(),
-        .display_name = mnemonic_utf8.constData(),
-        .unit = value_unit_utf8.constData(),
-        .sampling_axis_id = *axis_id,
-        .values = value_buffer->buffer,
-        .nulls = {},
-    });
     curve_index_by_id[curve_id->to_string()] = curves.size();
     curves.push_back(CurveEntry{
         .id = *curve_id,
@@ -1469,26 +1538,15 @@ submit_multi_well_section_impl(WellLogView *view, PyObject *payload) {
         if (!curve_id) {
           return nullptr;
         }
-        auto value_buffer = adapt_buffer(values_obj, "values");
+        const auto mnemonic_utf8 = mnemonic.toUtf8();
+        const auto value_unit_utf8 = value_unit.toUtf8();
+        auto value_buffer = add_curve_with_optional_axis(
+            builder, curve, values_obj, *curve_id, mnemonic_utf8.constData(),
+            value_unit_utf8.constData(), depth_buffer->buffer, *axis_id,
+            depth_unit_utf8.constData());
         if (!value_buffer) {
           return nullptr;
         }
-        if (value_buffer->buffer.length() != depth_buffer->buffer.length()) {
-          set_welllog_error("WellLogValidationError", "length_mismatch",
-                            "curve values length must match depth");
-          return nullptr;
-        }
-        const auto mnemonic_utf8 = mnemonic.toUtf8();
-        const auto value_unit_utf8 = value_unit.toUtf8();
-        builder.add_curve(Curve{
-            .id = *curve_id,
-            .mnemonic = mnemonic_utf8.constData(),
-            .display_name = mnemonic_utf8.constData(),
-            .unit = value_unit_utf8.constData(),
-            .sampling_axis_id = *axis_id,
-            .values = value_buffer->buffer,
-            .nulls = {},
-        });
         curve_index[curve_id->to_string()] = curve_bufs.size();
         curve_bufs.push_back(CurveBuf{*curve_id, value_unit,
                                       std::move(*value_buffer)});

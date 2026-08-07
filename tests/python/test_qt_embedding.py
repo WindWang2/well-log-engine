@@ -400,6 +400,70 @@ class WellLogViewEmbeddingTest(unittest.TestCase):
         self.app.processEvents()
         gc.collect()
 
+    def test_multi_rate_curves_with_own_depth_axes(self) -> None:
+        # Epic A: a curve may carry its own "depth" (independent sampling
+        # axis); curves without one share the document depth. Both must reach
+        # the engine document and appear in the exported SVG.
+        view = WellLogView()
+        depth = np.asarray([1000.0, 1000.5, 1001.0, 1001.5])
+        gr = np.asarray([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
+        rt = np.asarray([10.0, 20.0, 30.0], dtype=np.float32)
+        rt_depth = np.asarray([1000.1, 1000.6, 1001.1])
+        for arr in (depth, gr, rt, rt_depth):
+            arr.flags.writeable = False
+        doc_id = "20000000-0000-4000-8000-000000000001"
+        gr_id = "20000000-0000-4000-8000-000000000010"
+        rt_id = "20000000-0000-4000-8000-000000000020"
+        payload = {
+            "document_id": doc_id,
+            "depth": depth,
+            "depth_unit": "m",
+            "curves": [
+                {"curve_id": gr_id, "mnemonic": "GR", "values": gr,
+                 "value_unit": "API"},
+                {"curve_id": rt_id, "mnemonic": "RT", "values": rt,
+                 "value_unit": "OHMM", "depth": rt_depth},
+            ],
+            "tracks": [
+                {"width_mm": 40.0, "scale_min": 0.0, "scale_max": 10.0,
+                 "layers": [{"curve_id": gr_id, "color": "#1972b8"}]},
+                {"width_mm": 40.0, "scale_min": 0.0, "scale_max": 50.0,
+                 "layers": [{"curve_id": rt_id, "color": "#d62728"}]},
+            ],
+        }
+        report = view.submit_multi_track(payload)
+        self.assertIs(report["render_prepared"], True)
+        self.assertEqual(report["curve_count"], 2)
+
+        svg = view.export_scene_svg(doc_id)
+        self.assertIsInstance(svg, bytes)
+        text = svg.decode("utf-8", errors="replace")
+        self.assertIn(gr_id, text, "exported SVG must reference the shared-axis curve")
+        self.assertIn(rt_id, text, "exported SVG must reference the per-curve-axis curve")
+
+        # A curve whose values do not match ITS depth axis must be rejected.
+        bad_values = np.asarray([1.0, 2.0])
+        bad_values.flags.writeable = False
+        bad = dict(payload)
+        bad["curves"] = [dict(payload["curves"][1], values=bad_values)]
+        with self.assertRaises(Exception) as ctx:
+            view.submit_multi_track(bad)
+        self.assertIn("length", str(ctx.exception).lower(),
+                      "per-curve length mismatch must be reported")
+
+        # Shared-depth curves keep the old contract (mismatch still rejected).
+        bad2 = dict(payload)
+        bad2["curves"] = [dict(payload["curves"][0], values=bad_values)]
+        with self.assertRaises(Exception) as ctx2:
+            view.submit_multi_track(bad2)
+        self.assertIn("length", str(ctx2.exception).lower(),
+                      "shared-axis length mismatch must be reported")
+
+        view.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.app.processEvents()
+        gc.collect()
+
 
 if __name__ == "__main__":
     unittest.main()
