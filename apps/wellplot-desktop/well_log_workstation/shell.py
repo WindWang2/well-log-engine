@@ -967,6 +967,38 @@ class WellLogWorkstationWindow(QMainWindow):
         self.corr_gap_spin.valueChanged.connect(self._on_correlation_gap_changed)
         gap_row.addWidget(self.corr_gap_spin)
         layout.addLayout(gap_row)
+        # Real well distance + vertical exaggeration (FRS §3.x).
+        spacing_row = QHBoxLayout()
+        spacing_row.addWidget(QLabel("井距模式"))
+        self.corr_spacing_combo = QComboBox()
+        self.corr_spacing_combo.setObjectName("CorrelationWellSpacing")
+        self.corr_spacing_combo.addItem("等井距", "equal")
+        self.corr_spacing_combo.addItem("实际井距（井口经纬度）", "real")
+        self.corr_spacing_combo.setEnabled(False)
+        self.corr_spacing_combo.setToolTip(
+            "实际井距：按井口经纬度真实地面距离比例摆放井列（缺坐标的井降级为等距）。"
+        )
+        self.corr_spacing_combo.currentIndexChanged.connect(
+            self._on_correlation_spacing_changed
+        )
+        spacing_row.addWidget(self.corr_spacing_combo, 1)
+        layout.addLayout(spacing_row)
+        ve_row = QHBoxLayout()
+        ve_row.addWidget(QLabel("纵向放大 VE"))
+        self.corr_ve_spin = QDoubleSpinBox()
+        self.corr_ve_spin.setObjectName("CorrelationVE")
+        self.corr_ve_spin.setRange(0.1, 20.0)
+        self.corr_ve_spin.setSingleStep(0.1)
+        self.corr_ve_spin.setDecimals(2)
+        self.corr_ve_spin.setValue(1.0)
+        self.corr_ve_spin.setSuffix(" ×")
+        self.corr_ve_spin.setEnabled(False)
+        self.corr_ve_spin.setToolTip(
+            "纵向放大倍数：单独拉伸深度轴显示（1.0 = 不变，与滚轮缩放正交）。"
+        )
+        self.corr_ve_spin.valueChanged.connect(self._on_correlation_ve_changed)
+        ve_row.addWidget(self.corr_ve_spin)
+        layout.addLayout(ve_row)
         layout.addWidget(QLabel("对比基准 / 拉平"))
         datum_row = QHBoxLayout()
         self.corr_datum_mode = QComboBox()
@@ -2524,6 +2556,30 @@ class WellLogWorkstationWindow(QMainWindow):
         self.correlation_canvas.set_fill_pattern_map(
             dict(getattr(plot, "litho_pattern_map", None) or {})
         )
+        # Real well distance + vertical exaggeration (FRS §3.x).
+        corr_spacing = str(getattr(plot, "correlation_spacing", None) or "equal")
+        if corr_spacing not in ("equal", "real"):
+            corr_spacing = "equal"
+        well_x_offsets: list[float] | None = None
+        if corr_spacing == "real" and self._workspace is not None:
+            from well_log_workstation.well_spacing import wellhead_offsets
+
+            positions: list[tuple[float | None, float | None]] = []
+            for wid in plot.well_ids:
+                entry = next(
+                    (w for w in self._workspace.wells if w.id == wid), None
+                )
+                positions.append(
+                    (
+                        float(entry.lng) if entry and entry.lng is not None else None,
+                        float(entry.lat) if entry and entry.lat is not None else None,
+                    )
+                )
+            offsets, _spacing_m = wellhead_offsets(positions)
+            well_x_offsets = offsets
+        self.correlation_canvas.set_well_x_offsets(well_x_offsets)
+        ve = float(getattr(plot, "vertical_exaggeration", 1.0) or 1.0)
+        self.correlation_canvas.set_vertical_exaggeration(ve)
         self._apply_correlation_datum_shifts(plot, presentations, tops_cols)
         self._refresh_links_list()
         self._refresh_correlation_well_list(plot)
@@ -2925,6 +2981,9 @@ class WellLogWorkstationWindow(QMainWindow):
         self.corr_well_up_btn.setEnabled(enabled)
         self.corr_well_down_btn.setEnabled(enabled)
         self.corr_gap_spin.setEnabled(enabled)
+        if hasattr(self, "corr_spacing_combo"):
+            self.corr_spacing_combo.setEnabled(enabled)
+            self.corr_ve_spin.setEnabled(enabled)
         if hasattr(self, "corr_datum_mode"):
             self.corr_datum_mode.setEnabled(enabled)
             self.corr_datum_horizon.setEnabled(enabled)
@@ -2978,6 +3037,13 @@ class WellLogWorkstationWindow(QMainWindow):
                 self.corr_datum_mode.setCurrentIndex(idx if idx >= 0 else 0)
                 self.corr_datum_horizon.setText(
                     str(getattr(plot, "datum_horizon", None) or "")
+                )
+            if hasattr(self, "corr_spacing_combo"):
+                sp = str(getattr(plot, "correlation_spacing", None) or "equal")
+                sidx = self.corr_spacing_combo.findData(sp)
+                self.corr_spacing_combo.setCurrentIndex(sidx if sidx >= 0 else 0)
+                self.corr_ve_spin.setValue(
+                    float(getattr(plot, "vertical_exaggeration", 1.0) or 1.0)
                 )
             if hasattr(self, "corr_fill_check"):
                 self.corr_fill_check.setChecked(
@@ -3068,6 +3134,56 @@ class WellLogWorkstationWindow(QMainWindow):
         self._sync_primary_correlation_surface()
         self._set_correlation_layout_enabled(True)
 
+    def _on_correlation_spacing_changed(self) -> None:
+        """Toggle real vs equal well-distance spacing for the correlation."""
+        if self._corr_layout_guard:
+            return
+        if (
+            self._workspace is None
+            or self._active_plot_type != "correlation"
+            or not self._active_plot_id
+        ):
+            return
+        spacing = self.corr_spacing_combo.currentData() or "equal"
+        try:
+            plot = load_plot_document(self._workspace, self._active_plot_id)
+        except WorkspaceError:
+            return
+        self._push_correlation_layout_undo(plot)
+        plot.correlation_spacing = str(spacing)
+        try:
+            save_plot_document(self._workspace, plot)
+        except WorkspaceError:
+            return
+        self._show_correlation(plot)
+        self.statusBar().showMessage(
+            f"井距模式：{'实际井距' if spacing == 'real' else '等井距'}", 4000
+        )
+
+    def _on_correlation_ve_changed(self, value: float) -> None:
+        """Set vertical exaggeration for the correlation depth axis."""
+        if self._corr_layout_guard:
+            return
+        if (
+            self._workspace is None
+            or self._active_plot_type != "correlation"
+            or not self._active_plot_id
+        ):
+            return
+        ve = max(0.1, min(20.0, float(value)))
+        self.correlation_canvas.set_vertical_exaggeration(ve)
+        try:
+            plot = load_plot_document(self._workspace, self._active_plot_id)
+        except WorkspaceError:
+            return
+        self._push_correlation_layout_undo(plot)
+        plot.vertical_exaggeration = ve
+        try:
+            save_plot_document(self._workspace, plot)
+        except WorkspaceError:
+            return
+        self._set_correlation_layout_enabled(True)
+
     def _correlation_layout_snapshot(self, plot: PlotDocument) -> dict[str, Any]:
         return {
             "links": [lk.to_json() for lk in plot.links],
@@ -3075,6 +3191,12 @@ class WellLogWorkstationWindow(QMainWindow):
             "datum_mode": str(getattr(plot, "datum_mode", None) or "md"),
             "datum_horizon": getattr(plot, "datum_horizon", None),
             "well_ids": list(plot.well_ids),
+            "correlation_spacing": str(
+                getattr(plot, "correlation_spacing", None) or "equal"
+            ),
+            "vertical_exaggeration": float(
+                getattr(plot, "vertical_exaggeration", 1.0) or 1.0
+            ),
         }
 
     def _push_correlation_layout_undo(self, plot: PlotDocument) -> None:
@@ -3196,6 +3318,13 @@ class WellLogWorkstationWindow(QMainWindow):
         plot.datum_horizon = snap.get("datum_horizon")
         if snap.get("well_ids"):
             plot.well_ids = [str(x) for x in snap["well_ids"]]
+        plot.correlation_spacing = str(snap.get("correlation_spacing") or "equal")
+        try:
+            plot.vertical_exaggeration = float(
+                snap.get("vertical_exaggeration", 1.0) or 1.0
+            )
+        except (TypeError, ValueError):
+            plot.vertical_exaggeration = 1.0
         try:
             save_plot_document(self._workspace, plot)
         except WorkspaceError:
@@ -5751,11 +5880,24 @@ class WellLogWorkstationWindow(QMainWindow):
 
         presentations = self._correlation_presentations
         n = max(1, len(presentations))
-        gap = 6.0
-        col_w = (rect.width() - gap * (n - 1)) / n if n else rect.width()
+        # Match the interactive canvas: read its column gap + per-well
+        # offsets + vertical exaggeration so the export is WYSIWYG (B0 #300).
+        gap = float(getattr(self.correlation_canvas, "_column_gap", 6) or 6)
+        offsets = getattr(self.correlation_canvas, "_well_x_offsets", None)
+        ve = float(getattr(self.correlation_canvas, "_vertical_exaggeration", 1.0) or 1.0)
+        stride = (rect.width() - gap * (n - 1)) / n if n else float(rect.width())
+        col_w = stride
+
+        def _col_center(i: int) -> float:
+            base = rect.x() + i * (col_w + gap) + col_w / 2
+            if offsets and 0 <= i < len(offsets):
+                return base + offsets[i] * (col_w + gap)
+            return base
+
         for i, pres in enumerate(presentations):
+            cx = _col_center(i)
             sub = QRectF(
-                rect.x() + i * (col_w + gap),
+                cx - col_w / 2,
                 rect.y(),
                 col_w,
                 rect.height(),
@@ -5793,7 +5935,7 @@ class WellLogWorkstationWindow(QMainWindow):
         id_to_i = {p.well_document_id: i for i, p in enumerate(presentations)}
 
         def y_of(d_disp: float) -> float:
-            return top + ((d_disp - d0) / (d1 - d0)) * (bottom - top)
+            return top + ((d_disp - d0) / (d1 - d0)) * (bottom - top) * ve
 
         for link in links:
             li = id_to_i.get(link.left_well_id)
@@ -5806,8 +5948,8 @@ class WellLogWorkstationWindow(QMainWindow):
             rd = float(link.right_depth) + float(
                 shifts.get(link.right_well_id, 0.0)
             )
-            x_l = rect.x() + li * (col_w + gap) + col_w - 4
-            x_r = rect.x() + ri * (col_w + gap) + 4
+            x_l = _col_center(li) + col_w / 2 - 4
+            x_r = _col_center(ri) - col_w / 2 + 4
             painter.setPen(QPen(QColor(link.color or "#c0392b"), 1.2))
             painter.drawLine(
                 int(x_l), int(y_of(ld)), int(x_r), int(y_of(rd))

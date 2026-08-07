@@ -158,6 +158,14 @@ class PlotDocument:
     # "geographic" = wells placed by survey closure projected on the section
     # azimuth (+ curved trajectory polylines). Optional; default equal.
     well_spacing: str = "equal"
+    # Correlation real well distance (FRS §3.x 实际井距): "equal" = fixed
+    # column stride, "real" = columns spread to wellhead surface distance.
+    # Distinct from section ``well_spacing`` (which uses survey closure).
+    # Optional; default equal.
+    correlation_spacing: str = "equal"
+    # Vertical exaggeration (FRS §3.x 纵横比例尺解耦): depth-axis display
+    # stretch factor, 1.0 = unchanged. Optional; default 1.0.
+    vertical_exaggeration: float = 1.0
     # Publication ornaments (FRS §5 / P2-C): title block / legend / location
     # map overlay on the section canvas and exports. Default off.
     ornaments: bool = False
@@ -244,6 +252,13 @@ def _to_json(doc: PlotDocument) -> dict[str, Any]:
         payload["well_spacing"] = str(doc.well_spacing)
     if doc.type == "section" or doc.ornaments:
         payload["ornaments"] = bool(doc.ornaments)
+    # Correlation real-distance + vertical exaggeration (FRS §3.x). Written
+    # together so stale files never carry a half-set; only emitted for
+    # correlation plots or when non-default.
+    if doc.type == "correlation" or doc.correlation_spacing != "equal":
+        payload["correlation_spacing"] = str(doc.correlation_spacing)
+    if doc.type == "correlation" or abs(doc.vertical_exaggeration - 1.0) > 1e-9:
+        payload["vertical_exaggeration"] = float(doc.vertical_exaggeration)
     return payload
 
 
@@ -425,6 +440,14 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
     if well_spacing not in ("equal", "geographic"):
         well_spacing = "equal"
     ornaments = bool(data.get("ornaments", False))
+    correlation_spacing = str(data.get("correlation_spacing") or "equal")
+    if correlation_spacing not in ("equal", "real"):
+        correlation_spacing = "equal"
+    try:
+        vertical_exaggeration = float(data.get("vertical_exaggeration", 1.0))
+    except (TypeError, ValueError):
+        vertical_exaggeration = 1.0
+    vertical_exaggeration = max(0.1, min(20.0, vertical_exaggeration))
     return PlotDocument(
         id=str(data["id"]),
         name=str(data.get("name") or data["id"]),
@@ -455,6 +478,8 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
         lenses=lenses,
         well_spacing=well_spacing,
         ornaments=ornaments,
+        correlation_spacing=correlation_spacing,
+        vertical_exaggeration=vertical_exaggeration,
     )
 
 
@@ -543,6 +568,8 @@ def load_plot_document(workspace: Workspace, plot_id: str) -> PlotDocument:
             lenses=list(doc.lenses),
             well_spacing=doc.well_spacing,
             ornaments=doc.ornaments,
+            correlation_spacing=doc.correlation_spacing,
+            vertical_exaggeration=doc.vertical_exaggeration,
         )
     # Lazy import: keep this module importable without PySide6 (see save).
     from well_log_workstation.events import restore_plot_revision

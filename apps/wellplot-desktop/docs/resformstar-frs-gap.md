@@ -58,7 +58,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 平面画线生成剖面 | 🟡 | `section_line.py` 缓冲带选井（点到线段距离 + 沿线投影排序）+ `SectionLineDialog`（端点/缓冲输入 + 井选取端点 + 实时预览井数）+ 一键生成地层对比图（工作流 1 ✅）；平面图切线可视化（PaleoMapCanvas 无 overlay API）、剖面修正刷新平面（需等厚图）、光标同步（工作流 2/3）仍缺 | **P2(工作流1✅)/后续**: 工作流 2/3 → Desktop(联动) |
 | 高程剖面 (MSL) / 拉平剖面 | 🟡 | `datum/well_section_datum.py:19-79` md/tvdss/horizon；tvdss 为 -kb 近似（非真海拔） | 真 TVDSS（需测斜+KB）→ SDK(轨迹) |
 | 斜井 TVD 剖面 / 沿轨迹展布 (Unfolded) | 🟡 | `survey.py` 最小曲率法 + datum tvd 模式 + **地理井距展布**（井列按测斜闭合位移投影摆放 + 井内弯曲轨迹线，`well_spacing="geographic"`）；Unfolded（沿 MD 展布剖面类型）仍缺 | **P1(计算+datum+展布✅)/后续**: Unfolded 剖面类型 |
-| 实际井距/等井距、纵横比例尺解耦 | ❌ | correlation 等距列 | → Desktop(画布布局) |
+| 实际井距/等井距、纵横比例尺解耦 | ✅ | 已交付：correlation 画布**实际井距**（`correlation_spacing=real`，按井口经纬度 haversine 真实地面距离比例摆放井列，缺坐标降级等距；`well_spacing.haversine_m`/`wellhead_offsets` 纯 Python 无 Qt）+ **纵向放大 VE**（`vertical_exaggeration`，0.1–20.0 clamp，独立拉伸深度轴，与滚轮缩放正交）；`CorrelationCanvas._x_well` 统一收口 4 处内联列位（含 offset 线性插值）；`hit_test_top` VE 反投影；导出 `_paint_correlation_export` 同步 gap/offset/VE；画布全局 combo「井距模式」+ spinbox「纵向放大 VE」+ undo 快照 | **P3(实际井距+VE✅)** |
 | 分层线拖拽吸附 (Snap Picking) | 🟡 | link 拾取 10px 容差 (`correlation_canvas.py:162-202`)；无曲线极值吸附 | → Desktop(磁吸) |
 | 曲线形态自动对比 | 🟡 | 仅名字匹配 (`correlation_links.match_tops_by_name:88-132`) | → Desktop(相似度) + SDK(信号处理) |
 | **地层尖灭/透镜体/剥蚀超覆** | 🟡 | 楔形尖灭 P0-C ✅；剥蚀/超覆截断 P1 ✅；**透镜体手绘** ✅；流体过渡带另见流体界面行 | **P0/P1/透镜体✅** |

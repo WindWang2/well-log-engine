@@ -68,6 +68,13 @@ class CorrelationCanvas(QWidget):
         # Lithology pattern map: top-name → pattern id (SY/T 5615). Empty
         # means solid-color fills only.
         self._fill_pattern_map: dict[str, str] = {}
+        # Real well distance (FRS §3.x 实际井距): per-well lateral offsets in
+        # well-index units (None = equal spacing). Mirrors the section canvas
+        # convention; offsets are linearly interpolated between columns.
+        self._well_x_offsets: list[float] | None = None
+        # Vertical exaggeration (FRS §3.x 纵横比例尺解耦): depth-axis display
+        # stretch factor; 1.0 = unchanged. Independent of pan/zoom (d0/d1).
+        self._vertical_exaggeration: float = 1.0
 
     def column_gap(self) -> int:
         return self._column_gap
@@ -90,6 +97,22 @@ class CorrelationCanvas(QWidget):
 
     def _shift_for(self, well_id: str) -> float:
         return float(self._depth_shifts.get(well_id, 0.0))
+
+    def _x_well(self, i: int, col_w: int, gap: int) -> float:
+        """X-centre (px) of well column ``i``.
+
+        Without per-well offsets this is the classic ``8 + i*(col_w+gap) +
+        col_w/2``. With offsets (well-index units), each well's centre is
+        shifted by ``offset_i`` strides so columns spread to real ground
+        distance — same convention as the section canvas ``unit_to_pixel``.
+        """
+        stride = col_w + gap
+        base = 8 + i * stride + col_w / 2
+        if not self._well_x_offsets or i < 0:
+            return base
+        if i < len(self._well_x_offsets):
+            return base + self._well_x_offsets[i] * stride
+        return base
 
     def show_interwell_fill(self) -> bool:
         return self._show_interwell_fill
@@ -135,6 +158,25 @@ class CorrelationCanvas(QWidget):
         self._fill_pattern_map = {
             str(k): str(v) for k, v in (mapping or {}).items() if k and v
         }
+        self.update()
+
+    def well_x_offsets(self) -> list[float] | None:
+        return None if self._well_x_offsets is None else list(self._well_x_offsets)
+
+    def set_well_x_offsets(self, offsets: list[float] | None) -> None:
+        """Set per-well lateral offsets (well-index units, None = equal)."""
+        if offsets is None:
+            self._well_x_offsets = None
+        else:
+            self._well_x_offsets = [float(o) for o in offsets]
+        self.update()
+
+    def vertical_exaggeration(self) -> float:
+        return self._vertical_exaggeration
+
+    def set_vertical_exaggeration(self, ve: float) -> None:
+        """Set depth-axis display stretch factor (clamped 0.1–20.0)."""
+        self._vertical_exaggeration = max(0.1, min(20.0, float(ve)))
         self.update()
 
     def set_columns(
@@ -228,28 +270,32 @@ class CorrelationCanvas(QWidget):
         top_band, bottom = 36, h - 24
         if y < top_band or y > bottom or bottom <= top_band:
             return None
-        # Column index from x
-        rel = x - 8
-        if rel < 0:
-            return None
-        stride = col_w + gap
-        idx = int(rel // stride) if stride > 0 else 0
-        if idx < 0 or idx >= n:
-            return None
-        # x within column body
-        x0 = 8 + idx * stride
-        if x < x0 or x > x0 + col_w:
+        # Column index from x: scan each column centre (offsets break the
+        # linear stride assumption, so a direct divide won't do).
+        idx = -1
+        for ci in range(n):
+            cx = self._x_well(ci, col_w, gap)
+            if x < cx - col_w / 2 or x > cx + col_w / 2:
+                continue
+            idx = ci
+            break
+        if idx < 0:
             return None
         d0, d1 = self._d0, self._d1
-        depth_at = d0 + ((y - top_band) / (bottom - top_band)) * (d1 - d0)
+        ve = self._vertical_exaggeration
+        depth_at = (
+            d0 + ((y - top_band) / (bottom - top_band)) * (d1 - d0) / ve
+            if ve > 0
+            else d0
+        )
         well_id = self._columns[idx].well_document_id
         shift = self._shift_for(well_id)
         best: FormationTop | None = None
         best_dd = float("inf")
         for ft in self._tops_per_column[idx] if idx < len(self._tops_per_column) else []:
             dd = abs((ft.depth + shift) - depth_at)
-            # convert depth delta to pixels
-            px = abs(dd) / (d1 - d0) * (bottom - top_band) if d1 > d0 else 1e9
+            # convert depth delta to pixels (VE stretches the y axis)
+            px = abs(dd) / (d1 - d0) * (bottom - top_band) * ve if d1 > d0 else 1e9
             if px <= y_tol_px and dd < best_dd:
                 best_dd = dd
                 best = ft
@@ -359,7 +405,7 @@ class CorrelationCanvas(QWidget):
             self._paint_interwell_fills(p, n, gap, col_w, top, bottom, d0, d1)
 
         for i, pres in enumerate(self._columns):
-            x0 = 8 + i * (col_w + gap)
+            x0 = self._x_well(i, col_w, gap) - col_w / 2
             well_shift = self._shift_for(pres.well_document_id)
             p.setPen(QPen(QColor("#333"), 1))
             p.drawRect(x0, 8, col_w - 2, 22)
@@ -399,7 +445,9 @@ class CorrelationCanvas(QWidget):
                 return x0 + 4 + max(0.0, min(1.0, t)) * (col_w - 12)
 
             def y_map(d_display: float) -> float:
-                return top + ((d_display - d0) / (d1 - d0)) * (bottom - top)
+                return top + ((d_display - d0) / (d1 - d0)) * (
+                    bottom - top
+                ) * self._vertical_exaggeration
 
             p.setPen(QPen(QColor(layer.color), 1.5))
             prev = None
@@ -463,12 +511,16 @@ class CorrelationCanvas(QWidget):
                     continue
                 if rd < d0 or rd > d1:
                     continue
-                lx0 = 8 + li * (col_w + gap)
-                rx0 = 8 + ri * (col_w + gap)
+                lx0 = self._x_well(li, col_w, gap) - col_w / 2
+                rx0 = self._x_well(ri, col_w, gap) - col_w / 2
                 x_left = lx0 + col_w - 4
                 x_right = rx0 + 2
-                y_left = top + ((ld - d0) / (d1 - d0)) * (bottom - top)
-                y_right = top + ((rd - d0) / (d1 - d0)) * (bottom - top)
+                y_left = top + ((ld - d0) / (d1 - d0)) * (bottom - top) * (
+                    self._vertical_exaggeration
+                )
+                y_right = top + ((rd - d0) / (d1 - d0)) * (bottom - top) * (
+                    self._vertical_exaggeration
+                )
                 pen = QPen(QColor(link.color), 1.4, Qt.PenStyle.SolidLine)
                 p.setPen(pen)
                 p.drawLine(int(x_left), int(y_left), int(x_right), int(y_right))
@@ -499,12 +551,16 @@ class CorrelationCanvas(QWidget):
         if wedge_n:
             parts.append(f"尖灭 {wedge_n}")
         fill_note = f" · {' · '.join(parts)}" if self._show_interwell_fill else ""
+        spacing_note = "实际井距" if self._well_x_offsets else "等井距"
+        ve_note = f" · VE {self._vertical_exaggeration:g}" if (
+            abs(self._vertical_exaggeration - 1.0) > 1e-9
+        ) else ""
         p.setPen(QColor("#555"))
         p.drawText(
             8,
             h - 6,
-            f"对比-lite · {n} 井 · 共享深度 {d0:.1f}–{d1:.1f} · "
-            f"层位 {tops_n} · 连线 {links_n}{fill_note} · 滚轮缩放 / 拖动平移"
+            f"对比-lite · {n} 井 · {spacing_note} · 共享深度 {d0:.1f}–{d1:.1f} · "
+            f"层位 {tops_n} · 连线 {links_n}{fill_note}{ve_note} · 滚轮缩放 / 拖动平移"
             f"{pick_note}",
         )
         p.end()
@@ -555,7 +611,9 @@ class CorrelationCanvas(QWidget):
             return brush
 
         def y_of(d_disp: float) -> float:
-            return top + ((d_disp - d0) / (d1 - d0)) * (bottom - top)
+            return top + ((d_disp - d0) / (d1 - d0)) * (
+                bottom - top
+            ) * self._vertical_exaggeration
 
         for band in bands:
             if band.left_col >= n or band.right_col >= n:
@@ -578,8 +636,8 @@ class CorrelationCanvas(QWidget):
             )
             if max(depths) < d0 or min(depths) > d1:
                 continue
-            x_l = 8 + band.left_col * (col_w + gap) + col_w - 2
-            x_r = 8 + band.right_col * (col_w + gap) + 2
+            x_l = self._x_well(band.left_col, col_w, gap) + col_w / 2 - 2
+            x_r = self._x_well(band.right_col, col_w, gap) - col_w / 2 + 2
             if band.pinch == PINCH_OFF:
                 poly = QPolygonF(
                     [
