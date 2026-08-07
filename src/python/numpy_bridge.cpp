@@ -1023,13 +1023,22 @@ submit_multi_track_impl(WellLogView *view, PyObject *payload) {
     const auto scale_id = derive_presentation_id(
         *document_id, scale_role, {*document_id, *axis_id, track_id});
     const auto scale_unit_utf8 = scale_unit.toUtf8();
+    // FRS §2.x 反向刻度 (density pair track): host-side ScaleSpec.reverse is
+    // serialized as ``scale_reverse``. The C++ renderer already implements
+    // right_to_left as ``1.0 - normalized_value`` (scene.cpp), so this only
+    // needs payload plumbing - no new C++ rendering logic.
+    bool scale_reverse = false;
+    if (auto *rev_obj = PyDict_GetItemString(track, "scale_reverse")) {
+      scale_reverse = PyObject_IsTrue(rev_obj) != 0;
+    }
     presentation_builder.add_scale(TrackScaleSpec{
         .id = scale_id,
         .track_id = track_id,
         .mode = scale_mode,
         .minimum = scale_min,
         .maximum = scale_max,
-        .direction = ScaleDirection::left_to_right,
+        .direction = scale_reverse ? ScaleDirection::right_to_left
+                                   : ScaleDirection::left_to_right,
         .unit = scale_unit_utf8.constData(),
     });
 

@@ -607,6 +607,7 @@ class CorrelationCanvas(QWidget):
             vmax = scale.max if scale else 100.0
             mode = scale.mode if scale else "linear"
             wrap = bool(getattr(scale, "wrap", False)) if scale else False
+            reverse = bool(getattr(scale, "reverse", False)) if scale else False
             if mode == "log":
                 vmin = max(vmin, 1e-6)
                 vmax = max(vmax, vmin * 10)
@@ -625,6 +626,8 @@ class CorrelationCanvas(QWidget):
                     t = t - math.floor(t)  # fold back instead of clipping
                 else:
                     t = max(0.0, min(1.0, t))
+                if reverse:
+                    t = 1.0 - t  # FRS §2.x 反向刻度: scale runs right->left
                 return x0 + 4 + t * (col_w - 12)
 
             def y_map(d_display: float) -> float:
@@ -642,7 +645,7 @@ class CorrelationCanvas(QWidget):
                 polys = baseline_fill_polygons(
                     x_map,
                     y_map,
-                    x0 + col_w - 8,  # right edge of the curve x-range
+                    x0 + 4 if reverse else x0 + col_w - 8,  # high-value edge
                     depth,
                     d0,
                     d1,

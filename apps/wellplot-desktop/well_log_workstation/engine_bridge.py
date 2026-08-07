@@ -425,6 +425,10 @@ def presentation_to_multi_track_payload(
             entry["scale_mode"] = (
                 "log" if track.scale.mode == "log" else "linear"
             )
+            # FRS §2.x 反向刻度: the C++ renderer applies right_to_left as
+            # ``1.0 - normalized_value`` (scene.cpp); payload-only plumbing.
+            if getattr(track.scale, "reverse", False):
+                entry["scale_reverse"] = True
         tracks_payload.append(entry)
 
     if not tracks_payload:

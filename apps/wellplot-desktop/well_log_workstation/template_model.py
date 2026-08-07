@@ -26,9 +26,14 @@ class ScaleSpec:
     max: float = 100.0
     unit: str = ""
     # Wrap-around (FRS §2.x 超量程折叠): when set, curve values beyond the
-    # scale range fold back via modulo instead of clipping at the edge —
+    # scale range fold back via modulo instead of clipping at the edge -
     # classic wireline-log rendering. Optional; default off.
     wrap: bool = False
+    # Reverse scale (FRS §2.x 反向刻度, 密度对道): when set, the scale axis
+    # runs right->left (min on the right, max on the left), so high values
+    # map to the left edge - the standard density/neutron facing layout.
+    # Implemented as ``t = 1 - t`` after normalize/wrap/clamp. Optional.
+    reverse: bool = False
     # Baseline fill (FRS §2.x 基线充填, e.g. GR>80): when ``fill_threshold``
     # is not None, the area between the curve and the track's right edge is
     # filled (semi-transparent) wherever the value is above (direction
@@ -173,6 +178,8 @@ class HostPresentation:
             )
             if t.scale.wrap:
                 line += " 折叠"
+            if getattr(t.scale, "reverse", False):
+                line += " 反向"
             bits.append(line)
             if len(bits) >= 3:
                 break
@@ -280,6 +287,7 @@ def _parse_scale(raw: dict[str, Any] | None) -> ScaleSpec | None:
         max=float(raw.get("max", 100.0)),
         unit=str(raw.get("unit") or ""),
         wrap=bool(raw.get("wrap", False)),
+        reverse=bool(raw.get("reverse", False)),
         fill_threshold=fill_threshold,
         fill_direction=fill_direction,
         crossover_fill=bool(raw.get("crossover_fill", False)),
@@ -411,6 +419,7 @@ def track_overrides_snapshot(presentation: HostPresentation) -> dict[str, dict[s
             entry["scale_max"] = float(track.scale.max)
             entry["scale_mode"] = str(track.scale.mode)
             entry["scale_wrap"] = bool(track.scale.wrap)
+            entry["scale_reverse"] = bool(track.scale.reverse)
             if track.scale.fill_threshold is not None:
                 entry["scale_fill_threshold"] = float(track.scale.fill_threshold)
                 entry["scale_fill_direction"] = str(track.scale.fill_direction)
@@ -460,6 +469,8 @@ def apply_track_overrides(
                     track.scale.mode = mode  # type: ignore[assignment]
             if "scale_wrap" in raw:
                 track.scale.wrap = bool(raw["scale_wrap"])
+            if "scale_reverse" in raw:
+                track.scale.reverse = bool(raw["scale_reverse"])
             if "scale_fill_threshold" in raw:
                 try:
                     track.scale.fill_threshold = float(raw["scale_fill_threshold"])
@@ -484,6 +495,7 @@ def apply_track_overrides(
                 "scale_max",
                 "scale_mode",
                 "scale_wrap",
+                "scale_reverse",
                 "scale_fill_threshold",
                 "scale_crossover_fill",
             )
@@ -513,6 +525,7 @@ def apply_track_overrides(
                 min=smin,
                 max=smax,
                 wrap=bool(raw.get("scale_wrap", False)),
+                reverse=bool(raw.get("scale_reverse", False)),
                 fill_threshold=ft,
                 fill_direction=fd if fd in ("above", "below") else "above",
                 crossover_fill=bool(raw.get("scale_crossover_fill", False)),

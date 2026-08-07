@@ -111,6 +111,7 @@ def _parse_scale(raw: object) -> ScaleSpec | None:
         max=float(raw.get("max", 100.0)),
         unit=str(raw.get("unit") or ""),
         wrap=bool(raw.get("wrap", False)),
+        reverse=bool(raw.get("reverse", False)),
         fill_threshold=fill_threshold,
         fill_direction=fill_direction,
         crossover_fill=bool(raw.get("crossover_fill", False)),

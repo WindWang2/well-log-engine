@@ -587,6 +587,7 @@ class SectionCanvas(QWidget):
             vmin = scale.min if scale else 0.0
             vmax = scale.max if scale else 100.0
             wrap = bool(getattr(scale, "wrap", False)) if scale else False
+            reverse = bool(getattr(scale, "reverse", False)) if scale else False
 
             def x_map(v: float) -> float:
                 if not math.isfinite(v):
@@ -596,6 +597,8 @@ class SectionCanvas(QWidget):
                     t = t - math.floor(t)  # fold back instead of clipping
                 else:
                     t = max(0.0, min(1.0, t))
+                if reverse:
+                    t = 1.0 - t  # FRS §2.x 反向刻度: scale runs right->left
                 return x0 + 4 + t * (col_w - 12)
 
             # Baseline fill (FRS §2.x 基线充填) — under the curve line.
@@ -608,7 +611,7 @@ class SectionCanvas(QWidget):
                 polys = baseline_fill_polygons(
                     x_map,
                     y_map,
-                    x0 + col_w - 8,  # right edge of the curve x-range
+                    x0 + 4 if reverse else x0 + col_w - 8,  # high-value edge
                     depth,
                     d0,
                     d1,

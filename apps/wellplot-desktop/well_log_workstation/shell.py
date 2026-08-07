@@ -993,6 +993,11 @@ class WellLogWorkstationWindow(QMainWindow):
         self.track_scale_wrap.setObjectName("TrackScaleWrap")
         self.track_scale_wrap.toggled.connect(self._on_track_props_changed)
         form.addRow("", self.track_scale_wrap)
+        # Reverse scale (FRS §2.x 反向刻度, 密度对道): axis runs right->left.
+        self.track_scale_reverse = QCheckBox("反向刻度（右→左，密度对道）")
+        self.track_scale_reverse.setObjectName("TrackScaleReverse")
+        self.track_scale_reverse.toggled.connect(self._on_track_props_changed)
+        form.addRow("", self.track_scale_reverse)
         # Baseline fill (FRS §2.x 基线充填, e.g. GR>80).
         self.track_fill_enable = QCheckBox("基线充填（曲线到右缘）")
         self.track_fill_enable.setObjectName("TrackFillEnable")
@@ -1921,6 +1926,7 @@ class WellLogWorkstationWindow(QMainWindow):
                 self.track_scale_max.setValue(100.0)
                 self.track_scale_mode.setCurrentIndex(0)
                 self.track_scale_wrap.setChecked(False)
+                self.track_scale_reverse.setChecked(False)
                 self.track_fill_enable.setChecked(False)
                 self.track_crossover_fill.setChecked(False)
                 self._set_track_props_enabled(False)
@@ -1931,6 +1937,7 @@ class WellLogWorkstationWindow(QMainWindow):
             self.track_scale_max.setEnabled(has_scale)
             self.track_scale_mode.setEnabled(has_scale)
             self.track_scale_wrap.setEnabled(has_scale)
+            self.track_scale_reverse.setEnabled(has_scale)
             self.track_fill_enable.setEnabled(has_scale)
             fill_on = has_scale and bool(getattr(track.scale, "fill_threshold", None) is not None)
             self.track_fill_threshold.setEnabled(fill_on)
@@ -1945,6 +1952,9 @@ class WellLogWorkstationWindow(QMainWindow):
                 idx = self.track_scale_mode.findData(mode)
                 self.track_scale_mode.setCurrentIndex(idx if idx >= 0 else 0)
                 self.track_scale_wrap.setChecked(bool(track.scale.wrap))
+                self.track_scale_reverse.setChecked(
+                    bool(getattr(track.scale, "reverse", False))
+                )
                 ft = getattr(track.scale, "fill_threshold", None)
                 self.track_fill_enable.setChecked(ft is not None)
                 if ft is not None:
@@ -1989,6 +1999,7 @@ class WellLogWorkstationWindow(QMainWindow):
             if mode in ("linear", "log"):
                 track.scale.mode = mode  # type: ignore[assignment]
             track.scale.wrap = self.track_scale_wrap.isChecked()
+            track.scale.reverse = self.track_scale_reverse.isChecked()
             if self.track_fill_enable.isChecked():
                 track.scale.fill_threshold = float(self.track_fill_threshold.value())
                 fd = self.track_fill_direction.currentData() or "above"

@@ -313,13 +313,15 @@ class MultiTrackCanvas(QWidget):
         vmin = scale.min if scale else 0.0
         vmax = scale.max if scale else 100.0
         mode = scale.mode if scale else "linear"
+        reverse = bool(getattr(scale, "reverse", False)) if scale else False
+        t = (px - body.x()) / max(1, body.width())
+        if reverse:
+            t = 1.0 - t  # FRS §2.x 反向刻度: inverse of the right->left mapping
         if mode == "log":
             vmin = max(vmin, 1e-6)
             vmax = max(vmax, vmin * 10)
             log_min, log_max = math.log10(vmin), math.log10(vmax)
-            t = (px - body.x()) / max(1, body.width())
             return 10 ** (log_min + t * (log_max - log_min))
-        t = (px - body.x()) / max(1, body.width())
         return vmin + t * (vmax - vmin)
 
     def depth_at_y(self, y: float) -> float | None:
@@ -898,6 +900,7 @@ class MultiTrackCanvas(QWidget):
                         str(getattr(eff_scale, "fill_direction", "above"))
                         if eff_scale
                         else "above",
+                        bool(getattr(eff_scale, "reverse", False)) if eff_scale else False,
                     )
 
         # Track-header drag insertion indicator (FRS §2.x): a vertical line at
@@ -978,6 +981,7 @@ class MultiTrackCanvas(QWidget):
             vmin = scale.min if scale else 0.0
             vmax = scale.max if scale else 100.0
             mode = scale.mode if scale else "linear"
+            reverse = bool(getattr(scale, "reverse", False)) if scale else False
             if mode == "log":
                 vmin = max(vmin, 1e-6)
                 vmax = max(vmax, vmin * 10)
@@ -991,6 +995,8 @@ class MultiTrackCanvas(QWidget):
                 else:
                     t = (v - vmin) / (vmax - vmin) if vmax > vmin else 0.5
                 t = max(0.0, min(1.0, t))
+                if reverse:
+                    t = 1.0 - t  # FRS §2.x 反向刻度: scale runs right->left
                 return QPointF(body.x() + t * body.width(), yy)
 
             pen = QPen(QColor("#e74c3c"), 2.0)
@@ -1050,6 +1056,7 @@ class MultiTrackCanvas(QWidget):
         wrap: bool = False,
         fill_threshold: float | None = None,
         fill_direction: str = "above",
+        reverse: bool = False,
     ) -> None:
         vals = np.asarray(values, dtype=np.float64)
         n = min(depth.size, vals.size, null_mask.size if null_mask is not None else vals.size)
@@ -1073,6 +1080,8 @@ class MultiTrackCanvas(QWidget):
                 t = t - math.floor(t)  # fold back instead of clipping
             else:
                 t = max(0.0, min(1.0, t))
+            if reverse:
+                t = 1.0 - t  # FRS §2.x 反向刻度: scale runs right->left
             return x0 + t * tw
 
         def y_map(d: float) -> float:
@@ -1089,7 +1098,7 @@ class MultiTrackCanvas(QWidget):
             polys = baseline_fill_polygons(
                 x_map,
                 y_map,
-                x0 + tw,
+                x0 if reverse else x0 + tw,  # fill to the high-value edge
                 depth,
                 d0,
                 d1,

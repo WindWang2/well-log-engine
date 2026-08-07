@@ -119,6 +119,7 @@ def _layer_x_map(
         vmax = max(vmax, vmin * 10)
         log_min, log_max = math.log10(vmin), math.log10(vmax)
         wrap = bool(getattr(eff, "wrap", False))
+        reverse = bool(getattr(eff, "reverse", False))
 
         def x_map(v: float) -> float:
             if v <= 0 or not math.isfinite(v):
@@ -128,10 +129,13 @@ def _layer_x_map(
                 t = t - math.floor(t)
             else:
                 t = max(0.0, min(1.0, t))
+            if reverse:
+                t = 1.0 - t  # FRS §2.x 反向刻度: scale runs right->left
             return x0 + t * tw
 
         return x_map
     wrap = bool(getattr(eff, "wrap", False))
+    reverse = bool(getattr(eff, "reverse", False))
 
     def x_map(v: float) -> float:
         if not math.isfinite(v):
@@ -141,6 +145,8 @@ def _layer_x_map(
             t = t - math.floor(t)
         else:
             t = max(0.0, min(1.0, t))
+        if reverse:
+            t = 1.0 - t  # FRS §2.x 反向刻度: scale runs right->left
         return x0 + t * tw
 
     return x_map

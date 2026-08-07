@@ -140,6 +140,7 @@ def _paint_presentation(
                     str(getattr(eff_scale, "fill_direction", "above"))
                     if eff_scale
                     else "above",
+                    bool(getattr(eff_scale, "reverse", False)) if eff_scale else False,
                 )
         x += tw
 
@@ -180,6 +181,7 @@ def _paint_curve(
     wrap: bool = False,
     fill_threshold: float | None = None,
     fill_direction: str = "above",
+    reverse: bool = False,
 ) -> None:
     n = min(depth.size, values.size, null_mask.size)
     if n < 2 or tw < 4 or th < 4:
@@ -202,6 +204,8 @@ def _paint_curve(
             t = t - math.floor(t)  # fold back instead of clipping
         else:
             t = max(0.0, min(1.0, t))
+        if reverse:
+            t = 1.0 - t  # FRS §2.x 反向刻度: scale runs right->left
         return x0 + t * tw
 
     def y_map(d: float) -> float:
@@ -216,7 +220,7 @@ def _paint_curve(
         polys = baseline_fill_polygons(
             x_map,
             y_map,
-            x0 + tw,
+            x0 if reverse else x0 + tw,  # fill to the high-value edge
             depth,
             d0,
             d1,
