@@ -1138,6 +1138,11 @@ class WellLogWorkstationWindow(QMainWindow):
         self.corr_undo_btn.clicked.connect(self._on_correlation_layout_undo)
         self.corr_undo_btn.setEnabled(False)
         layout.addWidget(self.corr_undo_btn)
+        self.corr_redo_btn = QPushButton("重做连线/拉平")
+        self.corr_redo_btn.setObjectName("Button_CorrLayoutRedo")
+        self.corr_redo_btn.clicked.connect(self._on_correlation_layout_redo)
+        self.corr_redo_btn.setEnabled(False)
+        layout.addWidget(self.corr_redo_btn)
         self.corr_fill_check = QCheckBox("显示井间充填")
         self.corr_fill_check.setObjectName("CorrelationInterwellFill")
         self.corr_fill_check.toggled.connect(self._on_correlation_fill_toggled)
@@ -1194,6 +1199,7 @@ class WellLogWorkstationWindow(QMainWindow):
         layout.addWidget(self.corr_refresh_btn)
         self._corr_layout_guard = False
         self._corr_layout_undo: list[dict[str, Any]] = []
+        self._corr_layout_redo: list[dict[str, Any]] = []
         self._set_correlation_layout_enabled(False)
 
         layout.addWidget(QLabel("对比连线"))
@@ -1569,6 +1575,8 @@ class WellLogWorkstationWindow(QMainWindow):
             self._tops_diagnostics = []
             self._tops_history.clear_all()
             self._curve_edit_history.clear_all()
+            self._corr_layout_undo.clear()
+            self._corr_layout_redo.clear()
             self.multi_track_canvas.set_presentation(None)
             self._refresh_track_list()
             self.multi_track_canvas.set_tops(None)
@@ -3194,6 +3202,10 @@ class WellLogWorkstationWindow(QMainWindow):
             self.corr_undo_btn.setEnabled(
                 enabled and bool(self._corr_layout_undo)
             )
+            if hasattr(self, "corr_redo_btn"):
+                self.corr_redo_btn.setEnabled(
+                    enabled and bool(self._corr_layout_redo)
+                )
         if hasattr(self, "corr_fill_check"):
             self.corr_fill_check.setEnabled(enabled)
             self.corr_refresh_btn.setEnabled(enabled)
@@ -3537,6 +3549,7 @@ class WellLogWorkstationWindow(QMainWindow):
 
     def _correlation_layout_snapshot(self, plot: PlotDocument) -> dict[str, Any]:
         return {
+            "plot_id": str(plot.id),
             "links": [lk.to_json() for lk in plot.links],
             "column_gap_px": int(getattr(plot, "column_gap_px", 6) or 6),
             "datum_mode": str(getattr(plot, "datum_mode", None) or "md"),
@@ -3550,12 +3563,20 @@ class WellLogWorkstationWindow(QMainWindow):
             ),
         }
 
+    def _enable_corr_layout_undo_redo(self) -> None:
+        """Sync the undo/redo button enabled states with the stacks."""
+        if not hasattr(self, "corr_undo_btn"):
+            return
+        self.corr_undo_btn.setEnabled(bool(self._corr_layout_undo))
+        if hasattr(self, "corr_redo_btn"):
+            self.corr_redo_btn.setEnabled(bool(self._corr_layout_redo))
+
     def _push_correlation_layout_undo(self, plot: PlotDocument) -> None:
         self._corr_layout_undo.append(self._correlation_layout_snapshot(plot))
         if len(self._corr_layout_undo) > 32:
             self._corr_layout_undo = self._corr_layout_undo[-32:]
-        if hasattr(self, "corr_undo_btn"):
-            self.corr_undo_btn.setEnabled(True)
+        self._corr_layout_redo.clear()  # new commit invalidates redo
+        self._enable_corr_layout_undo_redo()
 
     def _apply_correlation_datum_shifts(
         self,
@@ -3641,20 +3662,41 @@ class WellLogWorkstationWindow(QMainWindow):
         horizon = self.corr_datum_horizon.text().strip() or None
         self.set_correlation_datum(mode=str(mode), horizon=horizon, persist=True)
 
-    def undo_correlation_layout(self) -> bool:
-        """Restore previous links / gap / datum / well order for active correlation."""
+    def _pop_corr_snapshot(
+        self, stack: list[dict[str, Any]]
+    ) -> tuple[dict[str, Any], PlotDocument] | None:
+        """Pop the most recent snapshot for the active plot from ``stack``.
+
+        Skips entries whose ``plot_id`` does not match the active plot
+        (defends against cross-plot stale state). Returns the snapshot
+        and the freshly-loaded current plot, or None if nothing applies.
+        """
         if (
             self._workspace is None
             or self._active_plot_type != "correlation"
             or not self._active_plot_id
-            or not self._corr_layout_undo
+            or not stack
         ):
-            return False
-        snap = self._corr_layout_undo.pop()
+            return None
+        # Walk from the top; remove the first entry matching this plot.
+        idx = None
+        for i in range(len(stack) - 1, -1, -1):
+            if str(stack[i].get("plot_id", "")) == str(self._active_plot_id):
+                idx = i
+                break
+        if idx is None:
+            return None
+        snap = stack.pop(idx)
         try:
             plot = load_plot_document(self._workspace, self._active_plot_id)
         except WorkspaceError:
-            return False
+            # Put it back; we could not load the current doc.
+            stack.insert(idx, snap)
+            return None
+        return snap, plot
+
+    def _apply_corr_snapshot(self, snap: dict[str, Any], plot: PlotDocument) -> None:
+        """Restore snapshot fields (links/gap/datum/well_ids/spacing/VE)."""
         from well_log_workstation.correlation_links import HorizonLink as HL
 
         restored: list[HorizonLink] = []
@@ -3676,20 +3718,56 @@ class WellLogWorkstationWindow(QMainWindow):
             )
         except (TypeError, ValueError):
             plot.vertical_exaggeration = 1.0
+
+    def undo_correlation_layout(self) -> bool:
+        """Restore previous layout for the active correlation plot.
+
+        Pushes the current (post-mutation) state to the redo stack before
+        restoring the undo snapshot, mirroring the tops/curve books.
+        """
+        got = self._pop_corr_snapshot(self._corr_layout_undo)
+        if got is None:
+            return False
+        snap, plot = got
+        # Push current state to redo (caller-passes-current contract).
+        self._corr_layout_redo.append(self._correlation_layout_snapshot(plot))
+        self._apply_corr_snapshot(snap, plot)
         try:
             save_plot_document(self._workspace, plot)
         except WorkspaceError:
             return False
         self._show_correlation(plot)
-        if hasattr(self, "corr_undo_btn"):
-            self.corr_undo_btn.setEnabled(bool(self._corr_layout_undo))
+        self._enable_corr_layout_undo_redo()
+        return True
+
+    def redo_correlation_layout(self) -> bool:
+        """Re-apply a previously undone layout change on the active plot."""
+        got = self._pop_corr_snapshot(self._corr_layout_redo)
+        if got is None:
+            return False
+        snap, plot = got
+        # Push current state back to undo before re-applying.
+        self._corr_layout_undo.append(self._correlation_layout_snapshot(plot))
+        self._apply_corr_snapshot(snap, plot)
+        try:
+            save_plot_document(self._workspace, plot)
+        except WorkspaceError:
+            return False
+        self._show_correlation(plot)
+        self._enable_corr_layout_undo_redo()
         return True
 
     def _on_correlation_layout_undo(self) -> None:
         if not self.undo_correlation_layout():
             self.statusBar().showMessage("无可撤销的对比布局编辑", 3000)
             return
-        self.statusBar().showMessage("已撤销连线/拉平/井序编辑", 3000)
+        self.statusBar().showMessage("已撤销对比布局（连线/井序/间距/拉平）", 3000)
+
+    def _on_correlation_layout_redo(self) -> None:
+        if not self.redo_correlation_layout():
+            self.statusBar().showMessage("无可重做的对比布局编辑", 3000)
+            return
+        self.statusBar().showMessage("已重做对比布局（连线/井序/间距/拉平）", 3000)
 
     def refresh_correlation_from_sources(self, *, reason: str = "manual") -> None:
         """Reload tops for open correlation columns; update links & fill (T10).
