@@ -1053,9 +1053,19 @@ class WellLogWorkstationWindow(QMainWindow):
         self.corr_mirror_btn = QPushButton("镜像翻转")
         self.corr_mirror_btn.setObjectName("Button_CorrMirror")
         self.corr_mirror_btn.clicked.connect(self._on_correlation_mirror)
+        self.corr_add_well_btn = QPushButton("增井")
+        self.corr_add_well_btn.setObjectName("Button_CorrAddWell")
+        self.corr_add_well_btn.setToolTip("从工区选择一口井追加到对比图末尾")
+        self.corr_add_well_btn.clicked.connect(self._on_correlation_add_well)
+        self.corr_remove_well_btn = QPushButton("删井")
+        self.corr_remove_well_btn.setObjectName("Button_CorrRemoveWell")
+        self.corr_remove_well_btn.setToolTip("移除选中的井（至少保留 2 口）")
+        self.corr_remove_well_btn.clicked.connect(self._on_correlation_remove_well)
         corr_order_row.addWidget(self.corr_well_up_btn)
         corr_order_row.addWidget(self.corr_well_down_btn)
         corr_order_row.addWidget(self.corr_mirror_btn)
+        corr_order_row.addWidget(self.corr_add_well_btn)
+        corr_order_row.addWidget(self.corr_remove_well_btn)
         layout.addLayout(corr_order_row)
         gap_row = QHBoxLayout()
         gap_row.addWidget(QLabel("井间距(px)"))
@@ -3160,6 +3170,8 @@ class WellLogWorkstationWindow(QMainWindow):
         self.corr_well_up_btn.setEnabled(enabled)
         self.corr_well_down_btn.setEnabled(enabled)
         self.corr_mirror_btn.setEnabled(enabled)
+        self.corr_add_well_btn.setEnabled(enabled)
+        self.corr_remove_well_btn.setEnabled(enabled)
         self.corr_gap_spin.setEnabled(enabled)
         if hasattr(self, "corr_spacing_combo"):
             self.corr_spacing_combo.setEnabled(enabled)
@@ -3309,6 +3321,128 @@ class WellLogWorkstationWindow(QMainWindow):
         self._show_correlation(plot)
         self.corr_well_list.setCurrentRow(0)
         self.statusBar().showMessage("已镜像翻转井序", 4000)
+
+    def _pick_single_well_to_add(self, present_ids: list[str]) -> str | None:
+        """Single-select dialog for wells not yet on the correlation plot.
+
+        Mirrors ``_pick_wells_for_correlation`` but single-select and
+        filters out wells already in the plot. Returns a well id or None
+        when the user cancels (or no wells are available).
+        """
+        if self._workspace is None:
+            return None
+        available = [w for w in self._workspace.wells if w.id not in present_ids]
+        if not available:
+            QMessageBox.information(self, "增井", "工区中的井已全部在图中。")
+            return None
+        dlg = QDialog(self)
+        dlg.setWindowTitle("选择要追加的井")
+        dlg.setObjectName("Dialog_PickWellToAdd")
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(QLabel("选择一口井追加到对比图末尾："))
+        lst = QListWidget()
+        lst.setObjectName("List_WellToAdd")
+        for well in available:
+            item = QListWidgetItem(well.name)
+            item.setData(Qt.ItemDataRole.UserRole, well.id)
+            lst.addItem(item)
+        if lst.count() > 0:
+            lst.setCurrentRow(0)
+        layout.addWidget(lst)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        cur = lst.currentItem()
+        if cur is None:
+            return None
+        wid = cur.data(Qt.ItemDataRole.UserRole)
+        return str(wid) if wid else None
+
+    def _on_correlation_add_well(self) -> None:
+        """Append a well (picked from the workspace) to the correlation."""
+        if (
+            self._workspace is None
+            or self._active_plot_type != "correlation"
+            or not self._active_plot_id
+        ):
+            return
+        try:
+            plot = load_plot_document(self._workspace, self._active_plot_id)
+        except WorkspaceError:
+            return
+        new_id = self._pick_single_well_to_add(list(plot.well_ids))
+        if not new_id:
+            return
+        self._push_correlation_layout_undo(plot)
+        plot.well_ids.append(new_id)
+        # Save first, then render. If the well has no bound curves for the
+        # template, _show_correlation raises WorkspaceError - roll back so a
+        # saved-but-unrenderable plot does not brick reopening.
+        try:
+            save_plot_document(self._workspace, plot)
+            self._show_correlation(plot)
+        except (WorkspaceError, ExportError) as exc:
+            plot.well_ids.pop()
+            try:
+                save_plot_document(self._workspace, plot)
+            except WorkspaceError:
+                pass
+            self._show_correlation(plot)
+            QMessageBox.warning(self, "增井失败", str(exc))
+            return
+        name_by_id = {w.id: w.name for w in self._workspace.wells}
+        self.corr_well_list.setCurrentRow(self.corr_well_list.count() - 1)
+        self.statusBar().showMessage(
+            f"已添加井 {name_by_id.get(new_id, new_id[:8])}", 4000
+        )
+
+    def _on_correlation_remove_well(self) -> None:
+        """Remove the selected well from the correlation (keep >= 2)."""
+        if (
+            self._workspace is None
+            or self._active_plot_type != "correlation"
+            or not self._active_plot_id
+        ):
+            return
+        try:
+            plot = load_plot_document(self._workspace, self._active_plot_id)
+        except WorkspaceError:
+            return
+        if len(plot.well_ids) <= 2:
+            QMessageBox.information(
+                self, "删井", "对比图至少需要保留 2 口井。"
+            )
+            return
+        row = self.corr_well_list.currentRow()
+        if row < 0 or row >= len(plot.well_ids):
+            return
+        remove_id = plot.well_ids[row]
+        self._push_correlation_layout_undo(plot)
+        plot.well_ids = [w for w in plot.well_ids if w != remove_id]
+        # Prune horizon links that reference the removed well (undo restores).
+        plot.links = [
+            lk
+            for lk in plot.links
+            if lk.left_well_id != remove_id and lk.right_well_id != remove_id
+        ]
+        try:
+            save_plot_document(self._workspace, plot)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "删井失败", str(exc))
+            return
+        self._show_correlation(plot)
+        new_count = self.corr_well_list.count()
+        self.corr_well_list.setCurrentRow(min(row, new_count - 1))
+        name_by_id = {w.id: w.name for w in self._workspace.wells}
+        self.statusBar().showMessage(
+            f"已移除井 {name_by_id.get(remove_id, remove_id[:8])}", 4000
+        )
 
     def _on_correlation_gap_changed(self, value: int) -> None:
         if self._corr_layout_guard:

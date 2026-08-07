@@ -54,7 +54,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 
 | FRS 需求 | 状态 | 现状 | 缺口 → 归属 |
 |---|---|---|---|
-| 剖面选井/排序/增删/镜像 | 🟡 | correlation 列排序/间隙持久化 (`test_..._correlation_layout.py`)；**镜像翻转已交付**（`_on_correlation_mirror` 反转 `plot.well_ids`，走 layout undo 快照，画布/导出自动跟随）；增删井 UI 仍缺 | 增删井 → Desktop |
+| 剖面选井/排序/增删/镜像 | ✅ | correlation 列排序/间隙持久化 (`test_..._correlation_layout.py`)；**镜像翻转已交付**（`_on_correlation_mirror` 反转 `plot.well_ids`，走 layout undo 快照，画布/导出自动跟随）；**增删井 UI 已交付**：侧边栏「增井」/「删井」按钮（`_on_correlation_add_well`/`_on_correlation_remove_well`，镜像 mirror/reorder 的 guard->load->undo->mutate->save->`_show_correlation` 模式）；增井走单选 picker（`_pick_single_well_to_add`，过滤已在列的井，追加到末尾，模板无效回滚）；删井选中行移除（≥2 守卫对齐 `create_correlation_plot` min_count + `_refresh_correlation_well_list` 禁用阈值，prune 引用已删井的 `HorizonLink`）；undo 快照已含 well_ids+links 免费恢复；无 schema bump、无新持久化字段 | **P3(增删井✅)** |
 | 平面画线生成剖面 | 🟡 | `section_line.py` 缓冲带选井（点到线段距离 + 沿线投影排序）+ `SectionLineDialog`（端点/缓冲输入 + 井选取端点 + 实时预览井数）+ 一键生成地层对比图（工作流 1 ✅）；平面图切线可视化（PaleoMapCanvas 无 overlay API）、剖面修正刷新平面（需等厚图）、光标同步（工作流 2/3）仍缺 | **P2(工作流1✅)/后续**: 工作流 2/3 → Desktop(联动) |
 | 高程剖面 (MSL) / 拉平剖面 | 🟡 | `datum/well_section_datum.py:19-79` md/tvdss/horizon；tvdss 为 -kb 近似（非真海拔） | 真 TVDSS（需测斜+KB）→ SDK(轨迹) |
 | 斜井 TVD 剖面 / 沿轨迹展布 (Unfolded) | 🟡 | `survey.py` 最小曲率法 + datum tvd 模式 + **地理井距展布**（井列按测斜闭合位移投影摆放 + 井内弯曲轨迹线，`well_spacing="geographic"`）；Unfolded（沿 MD 展布剖面类型）仍缺 | **P1(计算+datum+展布✅)/后续**: Unfolded 剖面类型 |
