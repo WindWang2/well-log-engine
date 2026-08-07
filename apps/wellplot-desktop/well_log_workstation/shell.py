@@ -972,6 +972,26 @@ class WellLogWorkstationWindow(QMainWindow):
         self.track_scale_wrap.setObjectName("TrackScaleWrap")
         self.track_scale_wrap.toggled.connect(self._on_track_props_changed)
         form.addRow("", self.track_scale_wrap)
+        # Baseline fill (FRS §2.x 基线充填, e.g. GR>80).
+        self.track_fill_enable = QCheckBox("基线充填（曲线到右缘）")
+        self.track_fill_enable.setObjectName("TrackFillEnable")
+        self.track_fill_enable.toggled.connect(self._on_track_props_changed)
+        form.addRow("", self.track_fill_enable)
+        self.track_fill_threshold = QDoubleSpinBox()
+        self.track_fill_threshold.setObjectName("TrackFillThreshold")
+        self.track_fill_threshold.setRange(-1e9, 1e9)
+        self.track_fill_threshold.setDecimals(2)
+        self.track_fill_threshold.setValue(80.0)
+        self.track_fill_threshold.valueChanged.connect(self._on_track_props_changed)
+        form.addRow("充填阈值", self.track_fill_threshold)
+        self.track_fill_direction = QComboBox()
+        self.track_fill_direction.setObjectName("TrackFillDirection")
+        self.track_fill_direction.addItem("超过阈值充填", "above")
+        self.track_fill_direction.addItem("低于阈值充填", "below")
+        self.track_fill_direction.currentIndexChanged.connect(
+            self._on_track_props_changed
+        )
+        form.addRow("充填方向", self.track_fill_direction)
         layout.addWidget(props)
         self._track_props_guard = False
         self._set_track_props_enabled(False)
@@ -1861,6 +1881,7 @@ class WellLogWorkstationWindow(QMainWindow):
                 self.track_scale_max.setValue(100.0)
                 self.track_scale_mode.setCurrentIndex(0)
                 self.track_scale_wrap.setChecked(False)
+                self.track_fill_enable.setChecked(False)
                 self._set_track_props_enabled(False)
                 return
             self.track_visible.setChecked(bool(track.visible))
@@ -1869,6 +1890,10 @@ class WellLogWorkstationWindow(QMainWindow):
             self.track_scale_max.setEnabled(has_scale)
             self.track_scale_mode.setEnabled(has_scale)
             self.track_scale_wrap.setEnabled(has_scale)
+            self.track_fill_enable.setEnabled(has_scale)
+            fill_on = has_scale and bool(getattr(track.scale, "fill_threshold", None) is not None)
+            self.track_fill_threshold.setEnabled(fill_on)
+            self.track_fill_direction.setEnabled(fill_on)
             self.track_visible.setEnabled(True)
             if track.scale is not None:
                 self.track_scale_min.setValue(float(track.scale.min))
@@ -1877,11 +1902,19 @@ class WellLogWorkstationWindow(QMainWindow):
                 idx = self.track_scale_mode.findData(mode)
                 self.track_scale_mode.setCurrentIndex(idx if idx >= 0 else 0)
                 self.track_scale_wrap.setChecked(bool(track.scale.wrap))
+                ft = getattr(track.scale, "fill_threshold", None)
+                self.track_fill_enable.setChecked(ft is not None)
+                if ft is not None:
+                    self.track_fill_threshold.setValue(float(ft))
+                fd = str(getattr(track.scale, "fill_direction", "above"))
+                fidx = self.track_fill_direction.findData(fd)
+                self.track_fill_direction.setCurrentIndex(fidx if fidx >= 0 else 0)
             else:
                 self.track_scale_min.setValue(0.0)
                 self.track_scale_max.setValue(100.0)
                 self.track_scale_mode.setCurrentIndex(0)
                 self.track_scale_wrap.setChecked(False)
+                self.track_fill_enable.setChecked(False)
         finally:
             self._track_props_guard = False
 
@@ -1916,6 +1949,19 @@ class WellLogWorkstationWindow(QMainWindow):
             if mode in ("linear", "log"):
                 track.scale.mode = mode  # type: ignore[assignment]
             track.scale.wrap = self.track_scale_wrap.isChecked()
+            if self.track_fill_enable.isChecked():
+                track.scale.fill_threshold = float(self.track_fill_threshold.value())
+                fd = self.track_fill_direction.currentData() or "above"
+                track.scale.fill_direction = (
+                    fd if fd in ("above", "below") else "above"
+                )
+                # Keep the threshold/direction enabled while fill is on.
+                self.track_fill_threshold.setEnabled(True)
+                self.track_fill_direction.setEnabled(True)
+            else:
+                track.scale.fill_threshold = None
+                self.track_fill_threshold.setEnabled(False)
+                self.track_fill_direction.setEnabled(False)
         # Refresh list labels (hidden marker) without losing selection
         self._refresh_track_list_labels_only()
         self.multi_track_canvas.set_presentation(self._presentation)

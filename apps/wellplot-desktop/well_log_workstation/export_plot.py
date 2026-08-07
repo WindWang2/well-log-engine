@@ -124,6 +124,12 @@ def _paint_presentation(
                     track.scale.mode if track.scale else "linear",
                     QColor(layer.color),
                     bool(getattr(track.scale, "wrap", False)) if track.scale else False,
+                    getattr(track.scale, "fill_threshold", None)
+                    if track.scale
+                    else None,
+                    str(getattr(track.scale, "fill_direction", "above"))
+                    if track.scale
+                    else "above",
                 )
         x += tw
 
@@ -162,6 +168,8 @@ def _paint_curve(
     mode: str,
     color: QColor,
     wrap: bool = False,
+    fill_threshold: float | None = None,
+    fill_direction: str = "above",
 ) -> None:
     n = min(depth.size, values.size, null_mask.size)
     if n < 2 or tw < 4 or th < 4:
@@ -188,6 +196,34 @@ def _paint_curve(
 
     def y_map(d: float) -> float:
         return y0 + ((d - d0) / (d1 - d0)) * th
+
+    # Baseline fill (FRS §2.x 基线充填) — under the curve line, same
+    # geometry as the interactive canvas so exports match.
+    if fill_threshold is not None:
+        from well_log_workstation.baseline_fill import baseline_fill_polygons
+
+        step_fill = max(1, n // 2500)
+        polys = baseline_fill_polygons(
+            x_map,
+            y_map,
+            x0 + tw,
+            depth,
+            d0,
+            d1,
+            np.asarray(values, dtype=np.float64),
+            np.asarray(null_mask, dtype=bool),
+            step=step_fill,
+            threshold=fill_threshold,
+            direction=fill_direction,
+        )
+        if polys:
+            fill = QColor(color)
+            fill.setAlpha(96)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(fill)
+            for poly in polys:
+                painter.drawPolygon(poly)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
 
     painter.setPen(QPen(color, 1.2))
     prev = None

@@ -29,6 +29,12 @@ class ScaleSpec:
     # scale range fold back via modulo instead of clipping at the edge —
     # classic wireline-log rendering. Optional; default off.
     wrap: bool = False
+    # Baseline fill (FRS §2.x 基线充填, e.g. GR>80): when ``fill_threshold``
+    # is not None, the area between the curve and the track's right edge is
+    # filled (semi-transparent) wherever the value is above (direction
+    # "above") or below ("below") the threshold. Optional; default off.
+    fill_threshold: float | None = None
+    fill_direction: str = "above"
 
 
 @dataclass
@@ -247,12 +253,24 @@ def _parse_scale(raw: dict[str, Any] | None) -> ScaleSpec | None:
     mode = str(raw.get("mode") or "linear")
     if mode not in ("linear", "log"):
         mode = "linear"
+    fill_raw = raw.get("fill_threshold")
+    try:
+        fill_threshold = (
+            float(fill_raw) if fill_raw is not None and str(fill_raw) != "" else None
+        )
+    except (TypeError, ValueError):
+        fill_threshold = None
+    fill_direction = str(raw.get("fill_direction") or "above")
+    if fill_direction not in ("above", "below"):
+        fill_direction = "above"
     return ScaleSpec(
         mode=mode,  # type: ignore[arg-type]
         min=float(raw.get("min", 0.0)),
         max=float(raw.get("max", 100.0)),
         unit=str(raw.get("unit") or ""),
         wrap=bool(raw.get("wrap", False)),
+        fill_threshold=fill_threshold,
+        fill_direction=fill_direction,
     )
 
 
@@ -377,6 +395,9 @@ def track_overrides_snapshot(presentation: HostPresentation) -> dict[str, dict[s
             entry["scale_max"] = float(track.scale.max)
             entry["scale_mode"] = str(track.scale.mode)
             entry["scale_wrap"] = bool(track.scale.wrap)
+            if track.scale.fill_threshold is not None:
+                entry["scale_fill_threshold"] = float(track.scale.fill_threshold)
+                entry["scale_fill_direction"] = str(track.scale.fill_direction)
         out[track.id] = entry
     return out
 
@@ -420,10 +441,29 @@ def apply_track_overrides(
                     track.scale.mode = mode  # type: ignore[assignment]
             if "scale_wrap" in raw:
                 track.scale.wrap = bool(raw["scale_wrap"])
+            if "scale_fill_threshold" in raw:
+                try:
+                    track.scale.fill_threshold = float(raw["scale_fill_threshold"])
+                except (TypeError, ValueError):
+                    track.scale.fill_threshold = None
+            if "scale_fill_direction" in raw:
+                fd = str(raw["scale_fill_direction"] or "above")
+                track.scale.fill_direction = (
+                    fd if fd in ("above", "below") else "above"
+                )
             # Keep scale valid
             if track.scale.max <= track.scale.min:
                 track.scale.max = track.scale.min + 1.0
-        elif any(k in raw for k in ("scale_min", "scale_max", "scale_mode", "scale_wrap")):
+        elif any(
+            k in raw
+            for k in (
+                "scale_min",
+                "scale_max",
+                "scale_mode",
+                "scale_wrap",
+                "scale_fill_threshold",
+            )
+        ):
             # Curve tracks without scale (unusual) — create one if edited
             try:
                 smin = float(raw.get("scale_min", 0.0))
@@ -435,10 +475,21 @@ def apply_track_overrides(
             mode = str(raw.get("scale_mode") or "linear")
             if mode not in ("linear", "log"):
                 mode = "linear"
+            try:
+                ft = (
+                    float(raw["scale_fill_threshold"])
+                    if "scale_fill_threshold" in raw
+                    else None
+                )
+            except (TypeError, ValueError):
+                ft = None
+            fd = str(raw.get("scale_fill_direction") or "above")
             track.scale = ScaleSpec(
                 mode=mode,  # type: ignore[arg-type]
                 min=smin,
                 max=smax,
                 wrap=bool(raw.get("scale_wrap", False)),
+                fill_threshold=ft,
+                fill_direction=fd if fd in ("above", "below") else "above",
             )
     return presentation

@@ -95,12 +95,24 @@ def _parse_scale(raw: object) -> ScaleSpec | None:
     mode = str(raw.get("mode") or "linear")
     if mode not in ("linear", "log"):
         mode = "linear"
+    fill_raw = raw.get("fill_threshold")
+    try:
+        fill_threshold = (
+            float(fill_raw) if fill_raw is not None and str(fill_raw) != "" else None
+        )
+    except (TypeError, ValueError):
+        fill_threshold = None
+    fill_direction = str(raw.get("fill_direction") or "above")
+    if fill_direction not in ("above", "below"):
+        fill_direction = "above"
     return ScaleSpec(
         mode=mode,  # type: ignore[arg-type]
         min=float(raw.get("min", 0.0)),
         max=float(raw.get("max", 100.0)),
         unit=str(raw.get("unit") or ""),
         wrap=bool(raw.get("wrap", False)),
+        fill_threshold=fill_threshold,
+        fill_direction=fill_direction,
     )
 
 

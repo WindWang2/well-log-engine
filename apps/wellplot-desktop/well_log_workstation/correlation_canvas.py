@@ -454,6 +454,35 @@ class CorrelationCanvas(QWidget):
                     bottom - top
                 ) * self._vertical_exaggeration
 
+            # Baseline fill (FRS §2.x 基线充填) — under the curve line.
+            fill_threshold = getattr(scale, "fill_threshold", None) if scale else None
+            if fill_threshold is not None:
+                from well_log_workstation.baseline_fill import baseline_fill_polygons
+
+                npts_f = min(depth.size, vals.size, nulls.size)
+                step_f = max(1, npts_f // 1500)
+                polys = baseline_fill_polygons(
+                    x_map,
+                    y_map,
+                    x0 + col_w - 8,  # right edge of the curve x-range
+                    depth,
+                    d0,
+                    d1,
+                    vals,
+                    nulls,
+                    step=step_f,
+                    threshold=fill_threshold,
+                    direction=str(getattr(scale, "fill_direction", "above")),
+                )
+                if polys:
+                    fill = QColor(layer.color)
+                    fill.setAlpha(96)
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(fill)
+                    for poly in polys:
+                        p.drawPolygon(poly)
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+
             p.setPen(QPen(QColor(layer.color), 1.5))
             prev = None
             npts = min(depth.size, vals.size, nulls.size)

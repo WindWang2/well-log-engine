@@ -882,6 +882,12 @@ class MultiTrackCanvas(QWidget):
                         track.scale.mode if track.scale else "linear",
                         QColor(layer.color),
                         bool(getattr(track.scale, "wrap", False)) if track.scale else False,
+                        getattr(track.scale, "fill_threshold", None)
+                        if track.scale
+                        else None,
+                        str(getattr(track.scale, "fill_direction", "above"))
+                        if track.scale
+                        else "above",
                     )
 
         # Track-header drag insertion indicator (FRS §2.x): a vertical line at
@@ -1032,6 +1038,8 @@ class MultiTrackCanvas(QWidget):
         mode: str,
         color: QColor,
         wrap: bool = False,
+        fill_threshold: float | None = None,
+        fill_direction: str = "above",
     ) -> None:
         vals = np.asarray(values, dtype=np.float64)
         n = min(depth.size, vals.size, null_mask.size if null_mask is not None else vals.size)
@@ -1060,6 +1068,35 @@ class MultiTrackCanvas(QWidget):
         def y_map(d: float) -> float:
             t = (d - d0) / (d1 - d0)
             return y0 + t * th
+
+        # Baseline fill (FRS §2.x 基线充填): semi-transparent area from the
+        # curve to the track's right edge where the value passes the
+        # threshold, drawn under the curve line.
+        if fill_threshold is not None:
+            from well_log_workstation.baseline_fill import baseline_fill_polygons
+
+            step_fill = max(1, n // 2000)
+            polys = baseline_fill_polygons(
+                x_map,
+                y_map,
+                x0 + tw,
+                depth,
+                d0,
+                d1,
+                vals,
+                null_mask if null_mask is not None else np.zeros(n, bool),
+                step=step_fill,
+                threshold=fill_threshold,
+                direction=fill_direction,
+            )
+            if polys:
+                fill = QColor(color)
+                fill.setAlpha(96)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(fill)
+                for poly in polys:
+                    p.drawPolygon(poly)
+                p.setBrush(Qt.BrushStyle.NoBrush)
 
         pen = QPen(color, 1.5)
         p.setPen(pen)
