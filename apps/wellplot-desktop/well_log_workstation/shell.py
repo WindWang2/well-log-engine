@@ -55,6 +55,10 @@ from well_log_workstation.correlation_links import (
     make_horizon_link,
     match_tops_by_name,
 )
+from well_log_workstation.correlation_similarity import (
+    CurveSamples,
+    refine_link_depths,
+)
 from well_log_workstation.composite_view import CompositeView
 from well_log_workstation.crs_dialog import CoordinateReferenceDialog
 from well_log_workstation.datum.well_section_datum import WellSectionDatum
@@ -373,6 +377,13 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_auto_links.setObjectName("Action_AutoHorizonLinks")
         self._act_auto_links.triggered.connect(self._on_auto_horizon_links)
         self._act_auto_links.setEnabled(False)
+        self._act_refine_links = plot_menu.addAction("按曲线形态精化连线深度")
+        self._act_refine_links.setObjectName("Action_RefineLinkDepths")
+        self._act_refine_links.setToolTip(
+            "对已有连线，用相邻井 primary 曲线的窗口互相关微调右井深度"
+        )
+        self._act_refine_links.triggered.connect(self._on_refine_link_depths)
+        self._act_refine_links.setEnabled(False)
         self._act_clear_links = plot_menu.addAction("清除对比连线")
         self._act_clear_links.setObjectName("Action_ClearHorizonLinks")
         self._act_clear_links.triggered.connect(self._on_clear_horizon_links)
@@ -1343,6 +1354,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_pick_links.setEnabled(has_corr)
         has_links = has_corr and len(self._correlation_links) > 0
         self._act_clear_links.setEnabled(has_links)
+        self._act_refine_links.setEnabled(has_links)
         self.clear_links_btn.setEnabled(has_links)
         self.remove_link_btn.setEnabled(has_links)
         if not has_corr and self._act_pick_links.isChecked():
@@ -3886,6 +3898,57 @@ class WellLogWorkstationWindow(QMainWindow):
         links = match_tops_by_name(well_ids, tops_by_well)
         self._set_correlation_links(links, persist=True)
         return links
+
+    def refine_correlation_link_depths(self) -> tuple[int, int]:
+        """Refine right-depth on links via curve-shape cross-correlation.
+
+        For each existing link whose left/right wells both expose a
+        primary curve, slide a windowed normalized cross-correlation
+        around the picked tops and nudge ``right_depth`` to the
+        best-aligning lag (FRS §3.x 曲线形态自动对比). Links without
+        curves or below the score threshold are left unchanged.
+
+        Returns ``(refined_count, total_count)`` where ``refined_count``
+        is how many links had their right_depth adjusted.
+        """
+        if self._workspace is None:
+            raise WorkspaceError("请先打开工区")
+        if not self._correlation_links:
+            raise WorkspaceError("没有可精化的连线（请先按层位名自动连线）")
+        if len(self._correlation_presentations) < 2:
+            raise WorkspaceError("请先打开地层对比图（≥2 井）")
+        well_curves: dict[str, CurveSamples] = {}
+        for pres in self._correlation_presentations:
+            wid = pres.well_document_id
+            if wid in well_curves:
+                continue
+            for track in pres.tracks:
+                if track.role != "curve":
+                    continue
+                for layer in track.layers:
+                    if layer.values is None:
+                        continue
+                    well_curves[wid] = CurveSamples(
+                        depth=np.asarray(pres.depth, dtype=np.float64),
+                        values=np.asarray(layer.values, dtype=np.float64),
+                        null_mask=(
+                            np.asarray(layer.null_mask, dtype=bool)
+                            if layer.null_mask is not None
+                            else np.zeros(layer.values.shape, bool)
+                        ),
+                        mnemonic=str(layer.mnemonic or ""),
+                    )
+                    break  # primary curve only
+                if wid in well_curves:
+                    break
+        before = {lk.id: lk.right_depth for lk in self._correlation_links}
+        refined = refine_link_depths(self._correlation_links, well_curves)
+        self._set_correlation_links(refined, persist=True)
+        changed = sum(
+            1 for lk in refined
+            if abs(lk.right_depth - before.get(lk.id, lk.right_depth)) > 1e-6
+        )
+        return changed, len(refined)
 
     def clear_correlation_links(self) -> None:
         """Remove all horizon links from the active correlation plot."""
@@ -6860,6 +6923,27 @@ class WellLogWorkstationWindow(QMainWindow):
             )
         except WorkspaceError as exc:
             QMessageBox.warning(self, "自动连线失败", str(exc))
+
+    def _on_refine_link_depths(self) -> None:
+        """Refine link right-depths via curve-shape cross-correlation."""
+        try:
+            changed, total = self.refine_correlation_link_depths()
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "精化连线深度失败", str(exc))
+            return
+        if changed:
+            QMessageBox.information(
+                self,
+                "精化连线深度",
+                f"已用曲线形态互相关调整 {changed}/{total} 条连线的右井深度。\n"
+                f"主机画布已更新；可「撤销连线/拉平」恢复。",
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "精化连线深度",
+                f"{total} 条连线均无需调整（曲线形态已对齐或数据不足）。",
+            )
 
     def _on_clear_horizon_links(self) -> None:
         if not self._correlation_links:
