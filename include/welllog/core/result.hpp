@@ -15,6 +15,8 @@ enum class ErrorCode : std::uint16_t {
   invalid_buffer,
   arithmetic_overflow,
   invalid_sampling_axis,
+  // A TimeDepthRelationship is present but not a valid monotonic map.
+  invalid_time_depth,
   length_mismatch,
   duplicate_entity_id,
   missing_sampling_axis,
@@ -65,6 +67,8 @@ enum class MessageKey : std::uint16_t {
   sampling_axis_missing,
   // A SamplingAxis's nominal_interval is present but not finite/positive.
   sampling_axis_interval_invalid,
+  // A TimeDepthRelationship's points are not a valid monotonic depth↔TWT map.
+  time_depth_relationship_invalid,
   curve_length_mismatch,
   presentation_invalid,
   presentation_document_missing,

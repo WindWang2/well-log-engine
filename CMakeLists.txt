@@ -306,6 +306,7 @@ add_library(welllog_scene ${WELLLOG_LIBRARY_TYPE}
     src/scene/curve_lod.cpp
     src/scene/image_pyramid.cpp
     src/scene/scene.cpp
+    src/scene/time_depth.cpp
     src/scene/triangulate.cpp
 )
 add_library(WellLog::Scene ALIAS welllog_scene)
@@ -1052,6 +1053,23 @@ if(WELLLOG_BUILD_TESTS)
     add_test(
         NAME welllog.layer-preparation
         COMMAND welllog_layer_preparation_tests
+    )
+
+    add_executable(welllog_time_depth_tests
+        tests/integration/time_depth_test.cpp
+    )
+    target_compile_features(
+        welllog_time_depth_tests
+        PRIVATE cxx_std_20
+    )
+    welllog_enable_warnings(welllog_time_depth_tests)
+    target_link_libraries(
+        welllog_time_depth_tests
+        PRIVATE WellLog::Scene
+    )
+    add_test(
+        NAME welllog.time-depth
+        COMMAND welllog_time_depth_tests
     )
 
     if(WELLLOG_BUILD_TEXT)
