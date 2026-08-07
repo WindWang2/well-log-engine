@@ -1133,7 +1133,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self.corr_datum_mode.setObjectName("CorrelationDatumMode")
         self.corr_datum_mode.addItem("MD（原始深度）", "md")
         self.corr_datum_mode.addItem("层位拉平", "horizon")
-        self.corr_datum_mode.addItem("TVDSS（海拔，-KB）", "tvdss")
+        self.corr_datum_mode.addItem("TVDSS（海拔，测斜修正）", "tvdss")
         self.corr_datum_mode.addItem("TVD（测斜）", "tvd")
         self.corr_datum_mode.currentIndexChanged.connect(self._on_correlation_datum_changed)
         datum_row.addWidget(self.corr_datum_mode)
@@ -3069,7 +3069,7 @@ class WellLogWorkstationWindow(QMainWindow):
                 }
             )
         surveys: dict[str, list] = {}
-        if datum_mode == "tvd":
+        if datum_mode in ("tvd", "tvdss"):
             for well_id, pres in zip(plot.well_ids, presentations, strict=False):
                 stations, _diags = load_survey_for_well(self._workspace, well_id)
                 if stations:
@@ -3628,7 +3628,19 @@ class WellLogWorkstationWindow(QMainWindow):
                 }
             )
             id_by_name[pres.well_name] = pres.well_document_id
-        shifts_by_name = datum.compute_shifts(well_dicts)
+        # tvd / tvdss need the deviation surveys (tvdss = true subsea elevation
+        # when a survey exists, -kb fallback otherwise).
+        surveys: dict[str, list] = {}
+        if mode in ("tvd", "tvdss"):
+            for i, pres in enumerate(presentations):
+                stations, _diags = load_survey_for_well(
+                    self._workspace, pres.well_document_id
+                )
+                if stations:
+                    surveys[pres.well_name] = stations
+        shifts_by_name = datum.compute_shifts(
+            well_dicts, surveys=surveys or None
+        )
         shifts_by_id = {
             id_by_name.get(name, name): float(shift)
             for name, shift in shifts_by_name.items()

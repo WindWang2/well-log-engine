@@ -6,7 +6,9 @@ Covers:
 * interpolate_tvd: linear interp + clamping + empty;
 * serialization round-trip + tolerant parsing;
 * WellSectionDatum tvd mode: shift non-zero with survey, 0 without survey,
-  md/tvdss/horizon unaffected;
+  md/horizon unaffected;
+* WellSectionDatum tvdss mode: true subsea elevation with a deviated survey
+  (TVD(ref) - ref - kb), -kb fallback without a survey / with a vertical one;
 * per-well survey.json storage round-trip.
 """
 
@@ -158,20 +160,70 @@ def test_datum_tvd_without_survey_zero_shift() -> None:
     assert shifts == {"A": 0.0}
 
 
-def test_datum_md_tvdss_horizon_unaffected_by_surveys_arg() -> None:
+def test_datum_md_horizon_unaffected_by_surveys_arg() -> None:
     survey = [SurveyStation(0, 0, 0), SurveyStation(100, 45, 0)]
     wells = [{"name": "A", "kb_m": 25.0, "tops": [{"name": "T", "depth": 50.0}]}]
     assert WellSectionDatum("md").compute_shifts(wells, surveys={"A": survey}) == {"A": 0.0}
-    assert (
-        WellSectionDatum("tvdss").compute_shifts(wells, surveys={"A": survey})
-        == {"A": -25.0}
-    )
     assert (
         WellSectionDatum("horizon", target_horizon="T").compute_shifts(
             wells, surveys={"A": survey}
         )
         == {"A": -50.0}
     )
+
+
+def test_datum_tvdss_without_survey_uses_kb_fallback() -> None:
+    # No survey → historic approximation: shift = -kb (well treated as vertical).
+    d = WellSectionDatum(mode="tvdss")
+    wells = [{"name": "A", "kb_m": 25.0, "tops": [{"name": "T", "depth": 50.0}]}]
+    assert d.compute_shifts(wells) == {"A": -25.0}
+    # kb_elevations override wins.
+    assert d.compute_shifts(wells, kb_elevations={"A": 40.0}) == {"A": -40.0}
+
+
+def test_datum_tvdss_vertical_survey_keeps_kb_shift() -> None:
+    # Vertical well with a survey: TVD == MD → shift = -kb (same as fallback).
+    survey = [SurveyStation(0, 0, 0), SurveyStation(100, 0, 0)]
+    d = WellSectionDatum(mode="tvdss")
+    shifts = d.compute_shifts(
+        [{"name": "A", "kb_m": 25.0, "tops": [{"name": "T", "depth": 50.0}]}],
+        surveys={"A": survey},
+    )
+    assert shifts["A"] == pytest.approx(-25.0)
+
+
+def test_datum_tvdss_deviated_survey_true_subsea_shift() -> None:
+    # Well already at 45° (first station included): each 100 m MD adds
+    # 100·cos(45°) ≈ 70.71 m TVD, so TVD(200) ≈ 141.42. True placement:
+    # TVD(ref) - ref - kb = 141.42 - 200 - 25.
+    survey = [
+        SurveyStation(0, 45, 0),
+        SurveyStation(100, 45, 0),
+        SurveyStation(200, 45, 0),
+    ]
+    d = WellSectionDatum(mode="tvdss")
+    shifts = d.compute_shifts(
+        [{"name": "A", "kb_m": 25.0, "tops": [{"name": "T", "depth": 200.0}]}],
+        surveys={"A": survey},
+    )
+    assert shifts["A"] == pytest.approx(2 * 100 * np.cos(np.radians(45)) - 200.0 - 25.0)
+    # A deviated well must no longer read as vertical (naive would be -25).
+    assert shifts["A"] < -25.0
+
+
+def test_datum_tvdss_deviated_survey_zero_kb() -> None:
+    # kb = 0: the shift is the pure TVD-minus-MD deviation at the reference.
+    survey = [
+        SurveyStation(0, 45, 0),
+        SurveyStation(100, 45, 0),
+        SurveyStation(200, 45, 0),
+    ]
+    d = WellSectionDatum(mode="tvdss")
+    shifts = d.compute_shifts(
+        [{"name": "A", "tops": [{"name": "T", "depth": 200.0}]}],
+        surveys={"A": survey},
+    )
+    assert shifts["A"] == pytest.approx(2 * 100 * np.cos(np.radians(45)) - 200.0)
 
 
 def test_datum_tvd_mode_accepted() -> None:

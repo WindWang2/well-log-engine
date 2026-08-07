@@ -6,12 +6,17 @@ shape as the Workbench type, independent type per T1). Modes:
 - ``md``: no shift (raw measured depth)
 - ``tvd``: shift = TVD(MD) - MD at a reference depth (P1-C; needs a deviation
   survey — without one the shift degrades to 0)
-- ``tvdss``: shift = -kb elevation (true vertical depth subsea)
+- ``tvdss``: true subsea placement — shift = TVD(MD) - MD - kb at a reference
+  depth when a survey is present, falling back to the historic ``-kb``
+  approximation (well treated as vertical) without one
 - ``horizon``: shift = -depth of the named top (flatten on that horizon)
 
 The ``tvd`` mode was added in P1-C (FRS §1.1): the host computes TVD via the
 minimum-curvature method (``well_log_workstation.survey``) and uses the
-TVD-minus-MD delta at a reference MD as a scalar per-well shift.
+TVD-minus-MD delta at a reference MD as a scalar per-well shift. The
+``tvdss`` mode gained the same survey hook in a later pass: with a survey the
+reference depth lands at its true elevation (kb - TVD), so deviated wells no
+longer read as vertical.
 """
 
 from __future__ import annotations
@@ -45,8 +50,9 @@ class WellSectionDatum:
         Well dict shape (catalog-aligned): ``{"name", "tops": [{"name",
         "depth"}], "kb_m"?: float}``. ``kb_elevations`` may override the
         per-well kb (keyed by well name). ``surveys`` (P1-C) maps well name →
-        survey stations for the ``tvd`` mode; a well without a survey degrades
-        to a 0 shift.
+        survey stations for the ``tvd`` and ``tvdss`` modes; a well without a
+        survey degrades to a 0 shift (``tvd``) or the ``-kb`` approximation
+        (``tvdss``).
         """
         horizon = target_horizon or self.target_horizon
         surveys = surveys or {}
@@ -61,7 +67,9 @@ class WellSectionDatum:
                 kb = float(well.get("kb_m") or 0.0)
                 if kb_elevations and name in kb_elevations:
                     kb = float(kb_elevations[name])
-                shifts[name] = -kb
+                shifts[name] = self._tvdss_shift(
+                    name, well, surveys.get(name), kb
+                )
             else:  # horizon
                 shift = 0.0
                 if horizon:
@@ -76,6 +84,21 @@ class WellSectionDatum:
         return shifts
 
     @staticmethod
+    def _reference_md(well: dict[str, Any]) -> float:
+        """Reference MD: mean of the well's tops (or 0 when there are none).
+
+        The reference depth only sets an absolute offset; relative structural
+        shape between wells is preserved regardless of the chosen reference.
+        """
+        depths = []
+        for top in well.get("tops") or []:
+            try:
+                depths.append(float(top.get("depth", 0.0)))
+            except (TypeError, ValueError):
+                continue
+        return sum(depths) / len(depths) if depths else 0.0
+
+    @staticmethod
     def _tvd_shift(
         name: str,
         well: dict[str, Any],
@@ -84,8 +107,6 @@ class WellSectionDatum:
         """TVD-minus-MD at a reference depth (mean of the well's tops).
 
         Without a survey, the well is treated as vertical → TVD == MD → shift 0.
-        The reference depth only sets an absolute offset; relative structural
-        shape between wells is preserved regardless of the chosen reference.
         """
         if not survey:
             return 0.0
@@ -102,17 +123,41 @@ class WellSectionDatum:
         if not stations:
             return 0.0
         traj = compute_trajectory(stations)
-        # Reference MD: mean of the well's tops (or 0 when there are none).
-        tops = well.get("tops") or []
-        depths = []
-        for top in tops:
-            try:
-                depths.append(float(top.get("depth", 0.0)))
-            except (TypeError, ValueError):
-                continue
-        ref_md = sum(depths) / len(depths) if depths else 0.0
+        ref_md = WellSectionDatum._reference_md(well)
         tvd = interpolate_tvd(traj, ref_md)
         return float(tvd - ref_md)
+
+    @staticmethod
+    def _tvdss_shift(
+        name: str,
+        well: dict[str, Any],
+        survey: Sequence[Any] | None,
+        kb: float,
+    ) -> float:
+        """TVDSS-minus-MD at a reference depth (mean of the well's tops).
+
+        True subsea placement: the reference depth lands at TVD(ref) - kb
+        (its elevation kb - TVD(ref)). Without a survey the well is treated
+        as vertical (TVD == MD) → shift = -kb, the historic approximation.
+        """
+        if not survey:
+            return -kb
+        from well_log_workstation.survey import (
+            SurveyStation,
+            compute_trajectory,
+            interpolate_tvd,
+        )
+
+        stations = [
+            s if isinstance(s, SurveyStation) else SurveyStation(*s)
+            for s in survey
+        ]
+        if not stations:
+            return -kb
+        traj = compute_trajectory(stations)
+        ref_md = WellSectionDatum._reference_md(well)
+        tvd = interpolate_tvd(traj, ref_md)
+        return float(tvd - ref_md - kb)
 
     def align_depths(
         self,

@@ -107,3 +107,58 @@ def test_link_change_is_undoable(qtbot, tmp_path: Path) -> None:
     loaded = load_plot_document(ws, plot.id)
     assert loaded.links == []
     _ = n_before
+
+
+def test_tvdss_datum_true_subsea_with_survey(qtbot, tmp_path: Path) -> None:
+    """Correlation TVDSS datum: survey-fed true elevation, -kb fallback.
+
+    Well A carries a deviated survey (45° from MD 0) + KB; well B has KB but
+    no survey. A must land at its true subsea elevation (TVD(ref) - ref - kb),
+    B at the historic -kb approximation. Before the survey plumbing both
+    degraded to -kb (well treated as vertical).
+    """
+    from dataclasses import replace
+
+    from well_log_workstation.survey import (
+        SurveyStation,
+        compute_trajectory,
+        interpolate_tvd,
+    )
+    from well_log_workstation.tops_model import save_survey_for_well
+
+    ws = create_workspace(tmp_path / "ws3", name="TvdssSurvey")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    id1 = win.import_las_path(_write_las(tmp_path / "a.las", "A"))
+    id2 = win.import_las_path(_write_las(tmp_path / "b.las", "B"))
+    save_tops_for_well(
+        ws, id1, [FormationTop(name="T1", depth=1000.0, id="t1a")]
+    )
+    save_tops_for_well(
+        ws, id2, [FormationTop(name="T1", depth=1000.0, id="t1b")]
+    )
+    for wid in (id1, id2):
+        idx = next(i for i, w in enumerate(ws.wells) if w.id == wid)
+        ws.wells[idx] = replace(ws.wells[idx], kb_m=25.0)
+    # Deviated survey for A only: TVD(1000) < 1000.
+    save_survey_for_well(
+        ws, id1, [SurveyStation(0, 0, 0), SurveyStation(1000, 45, 0)]
+    )
+    plot = win.create_correlation_plot_document([id1, id2], "std-gr-rt-den")
+    win.set_correlation_datum(mode="tvdss", persist=True)
+
+    shifts = win.correlation_canvas.depth_shifts()
+    traj = compute_trajectory([SurveyStation(0, 0, 0), SurveyStation(1000, 45, 0)])
+    expected_a = interpolate_tvd(traj, 1000.0) - 1000.0 - 25.0
+    assert shifts[id1] == pytest.approx(expected_a, abs=1e-6)
+    # Deviated well must sit deeper than the naive -kb placement.
+    assert shifts[id1] < -25.0
+    # No survey → -kb fallback.
+    assert shifts[id2] == pytest.approx(-25.0)
+
+    # Persisted datum survives reload; undo restores md.
+    loaded = load_plot_document(ws, plot.id)
+    assert loaded.datum_mode == "tvdss"
+    assert win.undo_correlation_layout()
+    assert win.correlation_canvas.depth_shifts().get(id1, 0.0) == pytest.approx(0.0)
