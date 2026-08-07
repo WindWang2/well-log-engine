@@ -1,10 +1,15 @@
-"""Trajectory-spaced section wells (FRS §3.1 / P1-C).
+"""Trajectory-spaced section wells (FRS §3.1 / P1-C) + Unfolded (沿 MD 展布).
 
 Covers:
 * project_closure_to_section / normalize_offsets / section_trajectory_polyline;
+* path_segment_frame (Unfolded warp: position + segment direction at depth);
 * SectionCanvas unit_to_pixel (equal = legacy mapping; offsets interpolate
-  between wells) + offsets/trajectories state + render smoke;
-* plot-document well_spacing round-trip + invalid fallback + legacy default.
+  between wells) + offsets/trajectories state + render smoke; Unfolded state,
+  datum-shift window fit and the pixel-diff warp render;
+* plot-document well_spacing round-trip + invalid fallback + legacy default
+  (equal / geographic / unfolded);
+* shell wiring: section opens in unfolded / geographic with surveys under an
+  md datum (surveys now load for spacing regardless of datum mode).
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ import pytest
 
 from well_log_workstation.section_geometry import (
     normalize_offsets,
+    path_segment_frame,
     project_closure_to_section,
     section_trajectory_polyline,
 )
@@ -77,6 +83,57 @@ def test_section_trajectory_polyline_shape_and_shift() -> None:
 def test_section_trajectory_polyline_empty() -> None:
     pl = section_trajectory_polyline(compute_trajectory([]), 0.0, 200.0)
     assert pl.shape == (0, 2)
+
+
+# ---------------------------------------------------------------------------
+# path_segment_frame (Unfolded warp)
+# ---------------------------------------------------------------------------
+
+
+def test_path_segment_frame_interior_position_and_direction() -> None:
+    path = np.array([[0.0, 0.0], [0.3, 100.0], [0.6, 200.0]])
+    u, y, du, dy = path_segment_frame(path, np.array([50.0, 150.0]))
+    np.testing.assert_allclose(u, [0.15, 0.45])
+    np.testing.assert_allclose(y, [50.0, 150.0])
+    # Directions are the containing-segment endpoint deltas.
+    np.testing.assert_allclose(du, [0.3, 0.3])
+    np.testing.assert_allclose(dy, [100.0, 100.0])
+
+
+def test_path_segment_frame_nonuniform_segments() -> None:
+    path = np.array([[0.0, 0.0], [0.3, 50.0], [0.6, 200.0]])
+    u, y, du, dy = path_segment_frame(path, np.array([100.0]))
+    # In the 50→200 segment: x = 0.3 + (100-50)/150 * 0.3 = 0.4.
+    np.testing.assert_allclose(u, [0.4])
+    np.testing.assert_allclose(y, [100.0])
+    np.testing.assert_allclose(du, [0.3])
+    np.testing.assert_allclose(dy, [150.0])
+
+
+def test_path_segment_frame_clamps_endpoints() -> None:
+    path = np.array([[0.0, 0.0], [0.3, 100.0]])
+    u, y, du, dy = path_segment_frame(path, np.array([-50.0, 250.0]))
+    np.testing.assert_allclose(u, [0.0, 0.3])
+    np.testing.assert_allclose(y, [0.0, 100.0])
+    # Both carry the single segment direction.
+    np.testing.assert_allclose(du, [0.3, 0.3])
+    np.testing.assert_allclose(dy, [100.0, 100.0])
+
+
+def test_path_segment_frame_single_row_is_vertical() -> None:
+    path = np.array([[0.2, 150.0]])
+    u, y, du, dy = path_segment_frame(path, np.array([100.0, 200.0]))
+    np.testing.assert_allclose(u, [0.2, 0.2])
+    np.testing.assert_allclose(y, [150.0, 150.0])
+    # Degenerate path: vertical direction → pure lateral normal.
+    np.testing.assert_allclose(du, [0.0, 0.0])
+    np.testing.assert_allclose(dy, [1.0, 1.0])
+
+
+def test_path_segment_frame_empty() -> None:
+    u, y, du, dy = path_segment_frame(np.empty((0, 2)), np.array([10.0]))
+    assert u.size == 0
+    assert y.size == 0
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +254,168 @@ def test_canvas_paints_with_trajectories_no_crash(qtbot) -> None:
     img = QImage(canvas.size(), QImage.Format.Format_ARGB32)
     img.fill(0)
     canvas.render(img)  # crash smoke
+
+
+def test_canvas_unfolded_state_and_depth_shift_fit(qtbot) -> None:
+    from well_log_workstation.section_canvas import SectionCanvas
+    from well_log_workstation.template_model import HostPresentation
+
+    canvas = SectionCanvas()
+    qtbot.addWidget(canvas)
+    depth = np.array([0.0, 100.0])
+    pres = HostPresentation(
+        template_id="t", template_name="T", well_document_id="w1",
+        well_name="W1", depth=depth, depth_unit="m", tracks=[],
+    )
+    pres2 = HostPresentation(
+        template_id="t", template_name="T", well_document_id="w2",
+        well_name="W2", depth=depth, depth_unit="m", tracks=[],
+    )
+    canvas.set_section([pres, pres2])
+    assert canvas.unfolded() is False
+    assert canvas.depth_shifts() == {}
+
+    canvas.set_unfolded(True)
+    assert canvas.unfolded() is True
+    canvas.set_depth_shifts({"w1": 50.0, "w2": -25.0})
+    assert canvas.depth_shifts() == {"w1": 50.0, "w2": -25.0}
+    # Unfolded fit includes the per-well datum shifts.
+    assert canvas.depth_range() == pytest.approx((-25.0, 150.0))
+
+    # Leaving unfolded mode refits to raw depths (shifts ignored).
+    canvas.set_unfolded(False)
+    assert canvas.depth_range() == pytest.approx((0.0, 100.0))
+    canvas.set_depth_shifts(None)
+    assert canvas.depth_shifts() == {}
+
+
+def test_canvas_paints_unfolded_no_crash(qtbot) -> None:
+    from PySide6.QtGui import QImage
+
+    from well_log_workstation.section_canvas import SectionCanvas
+    from well_log_workstation.template_model import HostPresentation
+
+    canvas = SectionCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(600, 480)
+    depth = np.array([0.0, 100.0, 200.0])
+
+    class _Layer:
+        color = "#1f77b4"
+        values = np.array([10.0, 20.0, 30.0])
+        null_mask = np.array([False, False, False])
+
+    class _Scale:
+        mode = "linear"
+        min = 0.0
+        max = 100.0
+
+    class _Track:
+        role = "curve"
+        layers = [_Layer()]
+        scale = _Scale()
+
+    pres = HostPresentation(
+        template_id="t", template_name="T", well_document_id="w1",
+        well_name="W1", depth=depth, depth_unit="m",
+        tracks=[_Track()],  # type: ignore[arg-type]
+    )
+    canvas.set_section([pres, pres])
+    traj = np.array([[0.0, 0.0], [0.3, 50.0], [0.6, 200.0]])
+    canvas.set_well_x_offsets([0.0, 0.6])
+    canvas.set_well_trajectories([traj, None])
+    canvas.set_depth_range(0.0, 200.0)
+    canvas.set_unfolded(True)
+    canvas.set_depth_shifts({"w1": 0.0, "w2": 0.0})
+
+    img = QImage(canvas.size(), QImage.Format.Format_ARGB32)
+    img.fill(0)
+    canvas.render(img)  # crash smoke (warp path exercised)
+
+
+def _render_canvas(canvas) -> "QImage":
+    from PySide6.QtGui import QImage
+
+    img = QImage(canvas.size(), QImage.Format.Format_ARGB32)
+    img.fill(0xFFFFFFFF)
+    canvas.render(img)
+    return img
+
+
+def _blueish_at(img, cx: int, cy: int, radius: int = 4) -> bool:
+    """True when a curve-blue (#1f77b4-ish) pixel sits near (cx, cy).
+
+    The strip borders (#ccc), trajectory dashes (#94a3b8) and footer text
+    (#555) are all neutral enough that a blue-dominance test cannot misfire.
+    """
+    from PySide6.QtGui import QColor
+
+    w, h = img.width(), img.height()
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            x, y = int(cx) + dx, int(cy) + dy
+            if 0 <= x < w and 0 <= y < h:
+                c = QColor(img.pixel(x, y))
+                if c.blue() > 120 and c.blue() > c.red() + 40:
+                    return True
+    return False
+
+
+def test_unfolded_warps_curve_along_path(qtbot) -> None:
+    """The curve bottom must follow the deviated wellbore, not the column.
+
+    Well 1 has a straight 0.15-column-stride deviated path. At the bottom
+    depth (200 m) the value maps to the strip edge (+136 px lateral): in
+    equal mode the sample sits at the well-1 column; in Unfolded mode it
+    moves along the path normal to ≈(68, 470) — the differential proves the
+    warp (a plain vertical strip would keep both samples in the column).
+    """
+    from well_log_workstation.section_canvas import SectionCanvas
+    from well_log_workstation.template_model import HostPresentation
+
+    canvas = SectionCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(600, 480)
+    depth = np.linspace(0.0, 200.0, 201)
+
+    class _Layer:
+        color = "#1f77b4"
+        values = depth / 2.0  # t = v/100 runs 0 → 1 across the window
+        null_mask = np.zeros_like(depth, dtype=bool)
+
+    class _Scale:
+        mode = "linear"
+        min = 0.0
+        max = 100.0
+
+    class _Track:
+        role = "curve"
+        layers = [_Layer()]
+        scale = _Scale()
+
+    pres = HostPresentation(
+        template_id="t", template_name="T", well_document_id="w1",
+        well_name="W1", depth=depth, depth_unit="m",
+        tracks=[_Track()],  # type: ignore[arg-type]
+    )
+    canvas.set_section([pres, pres])
+    canvas.set_depth_range(0.0, 200.0)
+
+    # Equal mode: curve bottom at the well-1 column (289, 456), not at (68, 470).
+    img_equal = _render_canvas(canvas)
+    assert _blueish_at(img_equal, 289, 456)
+    assert not _blueish_at(img_equal, 68, 470)
+
+    # Unfolded: deviated path + lateral offsets; the bottom sample warps to
+    # (68, 470) and the column bottom is left empty.
+    traj = np.array([[0.0, 0.0], [0.15, 200.0]])
+    canvas.set_well_x_offsets([0.0, 0.15])
+    canvas.set_well_trajectories([traj, None])
+    canvas.set_unfolded(True)
+    canvas.set_depth_shifts({"w1": 0.0, "w2": 0.0})
+    img_unfolded = _render_canvas(canvas)
+    assert _blueish_at(img_unfolded, 68, 470)
+    assert not _blueish_at(img_unfolded, 289, 456)
 
 
 # ---------------------------------------------------------------------------

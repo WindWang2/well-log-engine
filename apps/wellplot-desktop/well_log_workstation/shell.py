@@ -904,6 +904,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self.section_spacing_combo.setObjectName("SectionWellSpacing")
         self.section_spacing_combo.addItem("等井距", "equal")
         self.section_spacing_combo.addItem("地理井距（测斜闭合位移）", "geographic")
+        self.section_spacing_combo.addItem("Unfolded（沿 MD 展布）", "unfolded")
         self.section_spacing_combo.setEnabled(False)
         self.section_spacing_combo.currentIndexChanged.connect(
             self._on_section_spacing_changed
@@ -3068,28 +3069,42 @@ class WellLogWorkstationWindow(QMainWindow):
                     "kb_m": entry.kb_m if entry is not None else None,
                 }
             )
+        # Well trajectory display (P1-C / FRS §3.1): geographic/unfolded
+        # spacing places each well by its survey closure projected on the
+        # section azimuth, plus a curved trajectory polyline per deviated
+        # well. Surveys feed both the trajectory layout and the tvd/tvdss
+        # datum shifts — loaded whenever either needs them.
+        well_spacing = str(getattr(plot, "well_spacing", None) or "equal")
+        if well_spacing not in ("equal", "geographic", "unfolded"):
+            well_spacing = "equal"
         surveys: dict[str, list] = {}
-        if datum_mode in ("tvd", "tvdss"):
+        if datum_mode in ("tvd", "tvdss") or well_spacing in ("geographic", "unfolded"):
             for well_id, pres in zip(plot.well_ids, presentations, strict=False):
                 stations, _diags = load_survey_for_well(self._workspace, well_id)
                 if stations:
                     surveys[pres.well_name] = stations
         shifts = datum.compute_shifts(well_dicts, surveys=surveys or None)
 
-        # Well trajectory display (P1-C / FRS §3.1): geographic spacing places
-        # each well by its survey closure projected on the section azimuth,
-        # plus a curved trajectory polyline per deviated well.
-        well_spacing = str(getattr(plot, "well_spacing", None) or "equal")
-        if well_spacing not in ("equal", "geographic"):
-            well_spacing = "equal"
         well_x_offsets: list[float] | None = None
         well_trajectories: list[np.ndarray | None] | None = None
-        if well_spacing == "geographic":
+        if well_spacing in ("geographic", "unfolded"):
             well_x_offsets, well_trajectories = self._section_trajectory_data(
                 plot, presentations, well_positions, shifts, surveys
             )
         self.section_canvas.set_well_x_offsets(well_x_offsets)
         self.section_canvas.set_well_trajectories(well_trajectories)
+        # Unfolded (FRS §3.1 沿 MD 展布): curve data warped onto the wellbore
+        # path; per-well datum shifts keep the data attached to the hole.
+        self.section_canvas.set_unfolded(well_spacing == "unfolded")
+        if well_spacing == "unfolded":
+            self.section_canvas.set_depth_shifts(
+                {
+                    pres.well_document_id: float(shifts.get(pres.well_name, 0.0))
+                    for pres in presentations
+                }
+            )
+        else:
+            self.section_canvas.set_depth_shifts(None)
 
         # Section geometry (T4): faults / contacts / surfaces / tie quads.
         faults: list[SectionFault2D] = faults_from_json(
@@ -6399,7 +6414,7 @@ class WellLogWorkstationWindow(QMainWindow):
         if not self._active_plot_id:
             return
         spacing = str(self.section_spacing_combo.currentData() or "equal")
-        if spacing not in ("equal", "geographic"):
+        if spacing not in ("equal", "geographic", "unfolded"):
             spacing = "equal"
         try:
             plot = load_plot_document(self._workspace, self._active_plot_id)
@@ -6412,7 +6427,7 @@ class WellLogWorkstationWindow(QMainWindow):
             pass
         self._show_section(plot)
         self.statusBar().showMessage(
-            f"井距模式：{'地理井距' if spacing == 'geographic' else '等井距'}",
+            f"井距模式：{'Unfolded（沿 MD 展布）' if spacing == 'unfolded' else ('地理井距' if spacing == 'geographic' else '等井距')}",
             4000,
         )
 

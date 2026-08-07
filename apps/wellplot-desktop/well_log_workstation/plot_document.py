@@ -156,7 +156,9 @@ class PlotDocument:
     lenses: list[dict] = field(default_factory=list)
     # Section well spacing (FRS §3.1 / P1-C): "equal" = fixed column interval,
     # "geographic" = wells placed by survey closure projected on the section
-    # azimuth (+ curved trajectory polylines). Optional; default equal.
+    # azimuth (+ curved trajectory polylines), "unfolded" = geographic layout
+    # with the curve data warped along the wellbore path (沿 MD 展布).
+    # Optional; default equal.
     well_spacing: str = "equal"
     # Correlation real well distance (FRS §3.x 实际井距): "equal" = fixed
     # column stride, "real" = columns spread to wellhead surface distance.
@@ -437,7 +439,7 @@ def _from_json(data: dict[str, Any], *, path: str) -> PlotDocument:
             if isinstance(s, dict):
                 lenses.append(dict(s))
     well_spacing = str(data.get("well_spacing") or "equal")
-    if well_spacing not in ("equal", "geographic"):
+    if well_spacing not in ("equal", "geographic", "unfolded"):
         well_spacing = "equal"
     ornaments = bool(data.get("ornaments", False))
     correlation_spacing = str(data.get("correlation_spacing") or "equal")

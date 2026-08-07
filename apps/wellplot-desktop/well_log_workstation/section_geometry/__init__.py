@@ -50,6 +50,7 @@ from well_log_workstation.section_geometry.lens_body import (
 )
 from well_log_workstation.section_geometry.trajectory_2d import (
     normalize_offsets,
+    path_segment_frame,
     project_closure_to_section,
     project_trajectory_2d,
     section_trajectory_polyline,

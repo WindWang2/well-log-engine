@@ -32,6 +32,7 @@ from well_log_workstation.section_geometry import (
     contact_segment_2d,
     fault_polyline,
     finalize_draft,
+    path_segment_frame,
     smooth_ring,
     split_quad_composite,
 )
@@ -70,6 +71,11 @@ class SectionCanvas(QWidget):
         # polylines [x_offset_units, display_depth].
         self._well_x_offsets: list[float] | None = None
         self._well_trajectories: list[np.ndarray | None] | None = None
+        # Unfolded section mode (FRS §3.1): curve data warped onto the
+        # wellbore path (per-sample lateral offset along the local normal).
+        # Per-well display-depth shifts (datum) feed the warp and the fit.
+        self._unfolded: bool = False
+        self._depth_shifts: dict[str, float] = {}
         # Publication ornaments (P2-C / FRS §5): legend/title/location map.
         self._show_ornaments: bool = False
         self._ornament_data: Any = None
@@ -172,6 +178,32 @@ class SectionCanvas(QWidget):
             else list(self._well_trajectories)
         )
 
+    def set_unfolded(self, enabled: bool) -> None:
+        """Toggle Unfolded (along-MD) rendering of the curve data."""
+        self._unfolded = bool(enabled)
+        self._fit_depth()
+        self.update()
+
+    def unfolded(self) -> bool:
+        return self._unfolded
+
+    def set_depth_shifts(self, shifts: dict[str, float] | None) -> None:
+        """Set per-well display-depth shifts keyed by well-document id.
+
+        Mirrors CorrelationCanvas: used by the Unfolded mode to attach curve
+        data to the (datum-shifted) wellbore path and to fit the depth window
+        accordingly. ``None``/empty clears.
+        """
+        self._depth_shifts = dict(shifts or {})
+        self._fit_depth()
+        self.update()
+
+    def depth_shifts(self) -> dict[str, float]:
+        return dict(self._depth_shifts)
+
+    def _shift_for(self, well_id: str) -> float:
+        return float(self._depth_shifts.get(well_id, 0.0))
+
     def show_ornaments(self) -> bool:
         return self._show_ornaments
 
@@ -211,8 +243,13 @@ class SectionCanvas(QWidget):
         for pres in self._columns:
             depth = np.asarray(pres.depth, dtype=np.float64)
             if depth.size:
-                mins.append(float(np.nanmin(depth)))
-                maxs.append(float(np.nanmax(depth)))
+                # Unfolded mode displays curves at md + datum shift; fit the
+                # window to the shifted depths so the warped data stays visible.
+                shift = (
+                    self._shift_for(pres.well_document_id) if self._unfolded else 0.0
+                )
+                mins.append(float(np.nanmin(depth)) + shift)
+                maxs.append(float(np.nanmax(depth)) + shift)
         if mins and maxs:
             self._d0, self._d1 = min(mins), max(maxs)
         else:
@@ -601,9 +638,29 @@ class SectionCanvas(QWidget):
                     t = 1.0 - t  # FRS §2.x 反向刻度: scale runs right->left
                 return x0 + 4 + t * (col_w - 12)
 
+            # Unfolded mode (FRS §3.1): the curve data follows the wellbore
+            # path — display depth = md + datum shift; wells without a survey
+            # fall back to a plain vertical strip at the same shifted depth.
+            shift = (
+                self._shift_for(pres.well_document_id) if self._unfolded else 0.0
+            )
+            traj_path = None
+            if (
+                self._unfolded
+                and self._well_trajectories is not None
+                and i < len(self._well_trajectories)
+            ):
+                tp = self._well_trajectories[i]
+                if tp is not None and tp.shape[0] >= 2:
+                    traj_path = tp
+
+            npts = min(depth.size, vals.size, nulls.size)
+            step = max(1, npts // 1500)
+
             # Baseline fill (FRS §2.x 基线充填) — under the curve line.
+            # Skipped in Unfolded mode: strip-oriented, no path-relative fill.
             fill_threshold = getattr(scale, "fill_threshold", None) if scale else None
-            if fill_threshold is not None:
+            if fill_threshold is not None and traj_path is None:
                 from well_log_workstation.baseline_fill import baseline_fill_polygons
 
                 npts_f = min(depth.size, vals.size, nulls.size)
@@ -631,7 +688,7 @@ class SectionCanvas(QWidget):
                     p.setBrush(Qt.BrushStyle.NoBrush)
 
             # Crossover fill (FRS §2.x 双曲线交叉充填) — under the curve line.
-            if len(curve_track.layers) >= 2:
+            if len(curve_track.layers) >= 2 and traj_path is None:
                 from well_log_workstation.crossover_fill import paint_crossover_fill
 
                 paint_crossover_fill(
@@ -640,24 +697,69 @@ class SectionCanvas(QWidget):
                 )
 
             p.setPen(QPen(QColor(layer.color), 1.5))
-            prev = None
-            npts = min(depth.size, vals.size, nulls.size)
-            step = max(1, npts // 1500)
-            for j in range(0, npts, step):
-                if bool(nulls[j]):
+            if traj_path is not None:
+                # Warp: each sample sits on the wellbore path at its display
+                # depth, offset laterally along the pixel-space normal
+                # (corridor style, perpendicular to the borehole as drawn).
+                sel = np.arange(0, npts, step)
+                sd = depth[sel] + shift
+                v_sel = vals[sel]
+                ok = (
+                    ~nulls[sel]
+                    & np.isfinite(v_sel)
+                    & (sd >= d0)
+                    & (sd <= d1)
+                )
+                if ok.any():
+                    uu, yy, duu, dyy = path_segment_frame(traj_path, sd[ok])
+                    # Path x is an offset in well-index units (0 = the well's
+                    # own column, cf. the trajectory painting below): add the
+                    # well index before mapping to pixels.
+                    cx = self._units_to_pixels(uu + float(i), col_w, gap)
+                    cy = y_map(yy)
+                    tx = self._units_to_pixels(uu + duu + float(i), col_w, gap) - cx
+                    ty = y_map(yy + dyy) - cy
+                    norm = np.hypot(tx, ty)
+                    good = norm > 1e-9
+                    safe = np.where(good, norm, 1.0)
+                    nx = np.where(good, -ty / safe, 1.0)
+                    ny = np.where(good, tx / safe, 0.0)
+                    tv = (v_sel[ok] - vmin) / (vmax - vmin) if vmax > vmin else np.full_like(v_sel[ok], 0.5)
+                    if wrap:
+                        tv = tv - np.floor(tv)
+                    else:
+                        tv = np.clip(tv, 0.0, 1.0)
+                    if reverse:
+                        tv = 1.0 - tv
+                    # Lateral offset from the column centre (x_map(v) - x0 - col_w/2).
+                    lateral = 4.0 + tv * (col_w - 12.0) - col_w / 2.0
                     prev = None
-                    continue
-                d = float(depth[j])
-                if d < d0 or d > d1:
-                    prev = None
-                    continue
-                xx, yy = x_map(float(vals[j])), y_map(d)
-                if not math.isfinite(xx) or not math.isfinite(yy):
-                    prev = None
-                    continue
-                if prev is not None:
-                    p.drawLine(int(prev[0]), int(prev[1]), int(xx), int(yy))
-                prev = (xx, yy)
+                    for k in range(int(ok.sum())):
+                        px = cx[k] + lateral[k] * nx[k]
+                        py = cy[k] + lateral[k] * ny[k]
+                        if not math.isfinite(px) or not math.isfinite(py):
+                            prev = None
+                            continue
+                        if prev is not None:
+                            p.drawLine(int(prev[0]), int(prev[1]), int(px), int(py))
+                        prev = (px, py)
+            else:
+                prev = None
+                for j in range(0, npts, step):
+                    if bool(nulls[j]):
+                        prev = None
+                        continue
+                    d = float(depth[j]) + shift
+                    if d < d0 or d > d1:
+                        prev = None
+                        continue
+                    xx, yy = x_map(float(vals[j])), y_map(d)
+                    if not math.isfinite(xx) or not math.isfinite(yy):
+                        prev = None
+                        continue
+                    if prev is not None:
+                        p.drawLine(int(prev[0]), int(prev[1]), int(xx), int(yy))
+                    prev = (xx, yy)
 
         # 2. Well trajectory polylines (P1-C / FRS §3.1): the deviated /
         # horizontal segments of each well, shown grey dashed. Drawn before
@@ -732,7 +834,12 @@ class SectionCanvas(QWidget):
                             )
                         prev = (cx, yy)
 
-        spacing_note = "地理井距" if self._well_x_offsets else "等井距"
+        if self._unfolded:
+            spacing_note = "Unfolded（沿 MD 展布）"
+        elif self._well_x_offsets:
+            spacing_note = "地理井距"
+        else:
+            spacing_note = "等井距"
         p.setPen(QColor("#555"))
         p.drawText(
             8,
@@ -790,4 +897,21 @@ class SectionCanvas(QWidget):
         off_i = self._well_x_offsets[i]
         off_j = self._well_x_offsets[j]
         interp = off_i + frac * (off_j - off_i)
+        return base + interp * (col_w + gap)
+
+    def _units_to_pixels(self, u: np.ndarray, col_w: int, gap: int) -> np.ndarray:
+        """Vectorized ``unit_to_pixel`` (the Unfolded warp maps whole arrays).
+
+        Same mapping — equal-stride base plus interpolated per-well offsets —
+        but numpy-friendly: the scalar version's ``float(u)`` rejects arrays.
+        """
+        n = len(self._columns)
+        uu = np.clip(np.asarray(u, dtype=np.float64), 0.0, float(max(n - 1, 0)))
+        base = 8.0 + uu * (col_w + gap) + col_w / 2.0
+        if not self._well_x_offsets or n < 2:
+            return base
+        offs = np.asarray(self._well_x_offsets, dtype=np.float64)
+        i = np.floor(uu).astype(np.int64)
+        j = np.minimum(i + 1, n - 1)
+        interp = offs[i] + (uu - i) * (offs[j] - offs[i])
         return base + interp * (col_w + gap)
