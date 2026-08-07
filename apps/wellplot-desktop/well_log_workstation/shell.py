@@ -284,6 +284,10 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_formula.setObjectName("Action_FormulaCalc")
         self._act_formula.triggered.connect(self._on_formula_calculator)
         self._act_formula.setEnabled(False)
+        self._act_curve_edit = file_menu.addAction("曲线编辑（去毛刺/基线平移）…")
+        self._act_curve_edit.setObjectName("Action_CurveEdit")
+        self._act_curve_edit.triggered.connect(self._on_curve_edit)
+        self._act_curve_edit.setEnabled(False)
         self._act_litho = file_menu.addAction("岩性道编辑…")
         self._act_litho.setObjectName("Action_EditLithology")
         self._act_litho.triggered.connect(self._on_edit_lithology)
@@ -1471,6 +1475,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_alias_dict.setEnabled(ws is not None)
         self._act_survey.setEnabled(ws is not None)
         self._act_formula.setEnabled(ws is not None)
+        self._act_curve_edit.setEnabled(ws is not None)
         self._act_litho.setEnabled(ws is not None)
         # Phase-2 PR-C: new plot-type menu items (fence_3d needs 3D).
         self._act_new_plane_map.setEnabled(ws is not None)
@@ -2432,6 +2437,8 @@ class WellLogWorkstationWindow(QMainWindow):
         self.multi_track_canvas.set_presentation(presentation)
         # Attach derived curves from the well's formulas (FRS §2.4 / P2-A).
         self._apply_derived_curves()
+        # Attach non-destructive curve edits (FRS §2.x despike/baseline).
+        self._apply_curve_edits()
         tops, diags = load_tops_for_well(self._workspace, well_id)
         self._active_tops = tops
         self._tops_diagnostics = diags
@@ -4917,6 +4924,130 @@ class WellLogWorkstationWindow(QMainWindow):
                 self, "公式求值提示",
                 "\n".join(diags[:5]) + ("\n…" if len(diags) > 5 else ""),
             )
+
+    def _on_curve_edit(self) -> None:
+        """Non-destructive curve edits (despike / baseline) for a well."""
+        if self._workspace is None:
+            return
+        from well_log_workstation.curve_edit import (
+            load_curve_edits_for_well,
+            save_curve_edits_for_well,
+        )
+        from well_log_workstation.curve_edit_dialog import CurveEditDialog
+
+        well_ids = self._pick_wells_for_correlation()
+        if not well_ids:
+            return
+        well_id = well_ids[0]
+        entry = next((w for w in self._workspace.wells if w.id == well_id), None)
+        if entry is None:
+            return
+        try:
+            doc = self.session.ensure_well_loaded(self._workspace, well_id)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "加载井数据失败", str(exc))
+            return
+        mnemonics = [c.mnemonic for c in doc.curves]
+        current, _diags = load_curve_edits_for_well(self._workspace, well_id)
+        dlg = CurveEditDialog(current, self, curve_mnemonics=mnemonics)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        edits = dlg.value()
+        try:
+            save_curve_edits_for_well(self._workspace, well_id, edits)
+        except (WorkspaceError, OSError) as exc:
+            QMessageBox.warning(self, "保存曲线编辑失败", str(exc))
+            return
+        self._selected_well_id = well_id
+        ok_n, diags = self._apply_curve_edits()
+        note = f"已保存 {entry.name} 曲线编辑（{len(edits)} 条）"
+        if diags:
+            note += f" · {len(diags)} 条应用失败"
+        self.statusBar().showMessage(note, 4000)
+        if diags:
+            QMessageBox.warning(
+                self, "曲线编辑提示",
+                "\n".join(diags[:5]) + ("\n…" if len(diags) > 5 else ""),
+            )
+
+    def _apply_curve_edits(self) -> tuple[int, list[str]]:
+        """(Re)attach edited curve tracks to the current single-well plot.
+
+        Removes any previous ``edited-*`` tracks, applies the well's curve
+        edits (despike / baseline) to the read-only source arrays, and
+        appends a green ``edited-<mnemonic>`` track per edited curve.
+        Returns ``(applied_count, diagnostics)``.
+        """
+        if self._presentation is None or self._workspace is None:
+            return 0, []
+        well_id = self._selected_well_id or ""
+        if not well_id:
+            return 0, []
+        self._presentation.tracks = [
+            t for t in self._presentation.tracks
+            if not str(t.id).startswith("edited-")
+        ]
+        from well_log_workstation.curve_edit import (
+            apply_curve_edits,
+            load_curve_edits_for_well,
+        )
+
+        edits, _ = load_curve_edits_for_well(self._workspace, well_id)
+        if not edits:
+            self.multi_track_canvas.set_presentation(self._presentation)
+            return 0, []
+        try:
+            doc = self.session.ensure_well_loaded(self._workspace, well_id)
+        except Exception:  # noqa: BLE001
+            return 0, ["井数据未加载"]
+        from well_log_workstation.template_model import (
+            BoundCurveLayer,
+            BoundTrack,
+            ScaleSpec,
+        )
+
+        diags: list[str] = []
+        applied = 0
+        seen: set[str] = set()
+        for edit in edits:
+            mnemonic = edit.mnemonic
+            if mnemonic in seen:
+                continue
+            seen.add(mnemonic)
+            curve = doc.curve_by_mnemonic(mnemonic)
+            if curve is None:
+                diags.append(f"{mnemonic}: 井中无此曲线")
+                continue
+            values, null_mask = apply_curve_edits(
+                curve.values, curve.null_mask,
+                [e for e in edits if e.mnemonic == mnemonic],
+            )
+            finite = values[np.isfinite(values)]
+            vmin = float(np.min(finite)) if finite.size else 0.0
+            vmax = float(np.max(finite)) if finite.size else 1.0
+            if vmax <= vmin:
+                vmin, vmax = vmin - 1.0, vmax + 1.0
+            self._presentation.tracks.append(
+                BoundTrack(
+                    id=f"edited-{mnemonic}",
+                    role="curve",
+                    title=f"{mnemonic} 校正",
+                    width_fraction=0.25,
+                    scale=ScaleSpec(mode="linear", min=vmin, max=vmax, unit=curve.unit),
+                    layers=[
+                        BoundCurveLayer(
+                            mnemonic=mnemonic,
+                            color="#10b981",
+                            unit=curve.unit,
+                            values=values,
+                            null_mask=null_mask,
+                        )
+                    ],
+                )
+            )
+            applied += 1
+        self.multi_track_canvas.set_presentation(self._presentation)
+        return applied, diags
 
     def _apply_derived_curves(self) -> tuple[int, list[str]]:
         """(Re)attach derived curve tracks to the current single-well plot.
