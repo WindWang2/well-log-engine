@@ -999,8 +999,12 @@ class WellLogWorkstationWindow(QMainWindow):
         self.corr_well_down_btn = QPushButton("下移")
         self.corr_well_down_btn.setObjectName("Button_CorrWellDown")
         self.corr_well_down_btn.clicked.connect(lambda: self._move_correlation_well(1))
+        self.corr_mirror_btn = QPushButton("镜像翻转")
+        self.corr_mirror_btn.setObjectName("Button_CorrMirror")
+        self.corr_mirror_btn.clicked.connect(self._on_correlation_mirror)
         corr_order_row.addWidget(self.corr_well_up_btn)
         corr_order_row.addWidget(self.corr_well_down_btn)
+        corr_order_row.addWidget(self.corr_mirror_btn)
         layout.addLayout(corr_order_row)
         gap_row = QHBoxLayout()
         gap_row.addWidget(QLabel("井间距(px)"))
@@ -3057,6 +3061,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self.corr_well_list.setEnabled(enabled)
         self.corr_well_up_btn.setEnabled(enabled)
         self.corr_well_down_btn.setEnabled(enabled)
+        self.corr_mirror_btn.setEnabled(enabled)
         self.corr_gap_spin.setEnabled(enabled)
         if hasattr(self, "corr_spacing_combo"):
             self.corr_spacing_combo.setEnabled(enabled)
@@ -3181,6 +3186,31 @@ class WellLogWorkstationWindow(QMainWindow):
             return
         self._show_correlation(plot)
         self.corr_well_list.setCurrentRow(new_row)
+
+    def _on_correlation_mirror(self) -> None:
+        """Mirror (reverse) the well-column order on the active correlation."""
+        if (
+            self._workspace is None
+            or self._active_plot_type != "correlation"
+            or not self._active_plot_id
+        ):
+            return
+        try:
+            plot = load_plot_document(self._workspace, self._active_plot_id)
+        except WorkspaceError:
+            return
+        if len(plot.well_ids) < 2:
+            return
+        self._push_correlation_layout_undo(plot)
+        plot.well_ids = list(reversed(plot.well_ids))
+        try:
+            save_plot_document(self._workspace, plot)
+        except WorkspaceError as exc:
+            QMessageBox.warning(self, "保存井序失败", str(exc))
+            return
+        self._show_correlation(plot)
+        self.corr_well_list.setCurrentRow(0)
+        self.statusBar().showMessage("已镜像翻转井序", 4000)
 
     def _on_correlation_gap_changed(self, value: int) -> None:
         if self._corr_layout_guard:
