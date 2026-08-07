@@ -11,6 +11,7 @@
 #include <welllog/export/pdf_scene.hpp>
 #include <welllog/export/svg.hpp>
 #include <welllog/qtwidgets/well_log_view.hpp>
+#include <welllog/scene/axis_ticks.hpp>
 
 #include <QByteArray>
 #include <QThread>
@@ -598,6 +599,37 @@ add_curve_with_optional_axis(WellLogDocumentBuilder &builder,
 }
 
 } // namespace
+
+PyObject *nice_axis_ticks(double d0, double d1,
+                            unsigned long max_ticks) noexcept {
+  try {
+    const auto ticks = welllog::nice_axis_ticks(d0, d1, max_ticks);
+    PyObject *list = PyList_New(static_cast<Py_ssize_t>(ticks.values.size()));
+    if (list == nullptr) {
+      return nullptr;
+    }
+    for (std::size_t i = 0; i < ticks.values.size(); ++i) {
+      PyObject *item = PyFloat_FromDouble(ticks.values[i]);
+      if (item == nullptr) {
+        Py_DECREF(list);
+        return nullptr;
+      }
+      PyList_SetItem(list, static_cast<Py_ssize_t>(i), item);
+    }
+    PyObject *tuple = PyTuple_New(2);
+    if (tuple == nullptr) {
+      Py_DECREF(list);
+      return nullptr;
+    }
+    PyTuple_SetItem(tuple, 0, PyFloat_FromDouble(ticks.step));
+    PyTuple_SetItem(tuple, 1, list);
+    return tuple;
+  } catch (const std::bad_alloc &) {
+    return PyErr_NoMemory();
+  } catch (...) {
+    return PyErr_SetString(PyExc_RuntimeError, "axis ticks failed"), nullptr;
+  }
+}
 
 PyObject *submit_curve(WellLogView *view, PyObject *depth, PyObject *values,
                        const QString &document_id_text,

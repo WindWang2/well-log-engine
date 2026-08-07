@@ -224,3 +224,66 @@ def test_correlation_canvas_paints_ruler_strip(qtbot) -> None:
     )
     img = _render(canvas)
     assert _has_dark_pixels(img, 2, RULER_WIDTH - 2, 40, 440)
+
+
+# ---------------------------------------------------------------------------
+# SDK/Desktop tick parity (Epic B): one authoritative nice-step rule
+# ---------------------------------------------------------------------------
+
+
+def _binding_fn():
+    """The SDK nice_axis_ticks via the Python binding, or None."""
+    try:
+        import welllog  # type: ignore
+
+        fn = getattr(welllog, "nice_axis_ticks", None)
+        if not callable(fn):
+            ext = getattr(welllog, "_QtWidgets", None)
+            inner = getattr(ext, "welllog", None) if ext is not None else None
+            if inner is not None:
+                fn = getattr(inner, "nice_axis_ticks", None)
+        return fn if callable(fn) else None
+    except Exception:
+        return None
+
+
+def test_sdk_and_desktop_ticks_parity(monkeypatch) -> None:
+    """The Desktop ruler must reproduce the SDK authoritative ticks exactly.
+
+    The SDK (scene::nice_axis_ticks) is the single source of truth; the
+    Python implementation is the headless fallback. Both are exercised: the
+    binding path AND the monkeypatched fallback path must return identical
+    values across a window grid.
+    """
+    engine = _binding_fn()
+    if engine is None:
+        pytest.skip("Python binding not available — parity cannot run here")
+
+    windows = [
+        (0.0, 200.0),
+        (1000.0, 1100.0),
+        (1003.0, 1103.0),
+        (0.0, 4.0),
+        (0.0, 5.0),
+        (0.0, 0.5),
+        (1234.0, 5678.0),
+        (-500.0, 500.0),
+        (1000.0, 1000.05),
+        (0.0, 1e6),
+    ]
+    for d0, d1 in windows:
+        for max_ticks in (5, 9, 12):
+            sdk_step, sdk_values = engine(d0, d1, max_ticks)
+            # Binding path (default). Desktop returns (ticks, step).
+            ticks, step = nice_depth_ticks(d0, d1, max_ticks)
+            assert step == pytest.approx(float(sdk_step), rel=1e-12)
+            assert ticks == pytest.approx([float(v) for v in sdk_values], rel=1e-12)
+            # Fallback path (engine unavailable).
+            monkeypatch.setattr(
+                "well_log_workstation.depth_ruler._binding_ticks",
+                lambda: None,
+            )
+            ticks2, step2 = nice_depth_ticks(d0, d1, max_ticks)
+            assert step2 == pytest.approx(float(sdk_step), rel=1e-12)
+            assert ticks2 == pytest.approx([float(v) for v in sdk_values], rel=1e-12)
+            monkeypatch.undo()

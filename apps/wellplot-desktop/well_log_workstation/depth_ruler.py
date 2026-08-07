@@ -9,6 +9,13 @@ are only guessable from the footer note. This module provides:
 * :func:`paint_depth_ruler` — the QPainter strip both canvases call, so the
   ruler follows the depth window and the vertical exaggeration exactly.
 
+**Authoritative semantics (Epic B):** the nice-step algorithm lives in the
+SDK (``scene::nice_axis_ticks``, exposed via the ``welllog`` Python binding)
+so Desktop, SDK scene, PDF and SVG share one rule. :func:`nice_depth_ticks`
+asks the binding first and falls back to the local implementation when the
+engine is unavailable; the two MUST stay identical — the parity test locks
+that.
+
 The ruler is painted into a reserved left-margin strip
 (:data:`RULER_WIDTH` px) that both canvases subtract from the column layout.
 """
@@ -23,6 +30,35 @@ from PySide6.QtGui import QColor, QPainter, QPen
 # Reserved left-margin width for the depth ruler (px).
 RULER_WIDTH = 52
 
+_engine_ticks: object | None = None
+_engine_ticks_checked = False
+
+
+def _binding_ticks() -> object | None:
+    """The SDK's ``nice_axis_ticks`` when the Python binding is importable.
+
+    The binding exposes the function on the inner ``welllog`` namespace
+    (``welllog._QtWidgets.welllog.nice_axis_ticks``).
+    """
+    global _engine_ticks, _engine_ticks_checked
+    if _engine_ticks_checked:
+        return _engine_ticks
+    _engine_ticks_checked = True
+    try:
+        import welllog  # type: ignore
+
+        fn = getattr(welllog, "nice_axis_ticks", None)
+        if not callable(fn):
+            ext = getattr(welllog, "_QtWidgets", None)
+            inner = getattr(ext, "welllog", None) if ext is not None else None
+            if inner is not None:
+                fn = getattr(inner, "nice_axis_ticks", None)
+        if callable(fn):
+            _engine_ticks = fn
+    except Exception:
+        _engine_ticks = None
+    return _engine_ticks
+
 
 def nice_depth_ticks(
     d0: float, d1: float, max_ticks: int = 9
@@ -35,6 +71,13 @@ def nice_depth_ticks(
     Returns ``(ticks, step)``; ``([], 0.0)`` for a degenerate/non-finite
     window. The first tick is the first multiple of ``step`` ≥ ``d0``.
     """
+    engine = _binding_ticks()
+    if engine is not None:
+        try:
+            step, values = engine(float(d0), float(d1), int(max_ticks))
+            return [float(v) for v in values], float(step)
+        except Exception:
+            pass  # fall back to the local implementation below
     if (
         not math.isfinite(float(d0))
         or not math.isfinite(float(d1))

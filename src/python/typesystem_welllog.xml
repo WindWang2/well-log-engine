@@ -9,6 +9,16 @@
              (copyToPython nullptr) — reject until converters exist. -->
         <rejection class="*" field-name="welllog_sdk_version"/>
         <rejection class="*" field-name="manifest_sdk_requirement"/>
+        <!-- Authoritative nice-step axis ticks (Epic B): module-level, shares
+             scene::nice_axis_ticks with the Desktop ruler and exports. -->
+        <add-function
+            signature="nice_axis_ticks(double@d0@,double@d1@,unsigned long@max_ticks@)"
+            return-type="PyObject*"
+        >
+            <inject-code class="target" position="beginning">
+                %PYARG_0 = welllog::python::nice_axis_ticks(%1, %2, %3);
+            </inject-code>
+        </add-function>
         <object-type name="WellLogView" parent-management="yes">
             <extra-includes>
                 <include file-name="numpy_bridge.hpp" location="local"/>

@@ -32,6 +32,12 @@ submit_multi_well_section(WellLogView *view, PyObject *payload) noexcept;
 [[nodiscard]] PyObject *sample_value(WellLogView *view, const QString &curve_id,
                                      unsigned long long sample_index) noexcept;
 
+// Authoritative nice-step tick selection for a depth window (Epic B): returns
+// ``(step, [values])`` — the single source of truth shared with the Desktop
+// ruler and exports (scene::nice_axis_ticks). Module-level (no view needed).
+[[nodiscard]] PyObject *nice_axis_ticks(double d0, double d1,
+                                        unsigned long max_ticks) noexcept;
+
 // Render the prepared scene for ``document_id`` to SVG and return the
 // document bytes (T1 / #273). The engine builds the SVG in memory only —
 // it never touches the filesystem; the host writes the returned bytes.

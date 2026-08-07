@@ -303,6 +303,7 @@ if(WELLLOG_BUILD_SHARED)
 endif()
 
 add_library(welllog_scene ${WELLLOG_LIBRARY_TYPE}
+    src/scene/axis_ticks.cpp
     src/scene/curve_lod.cpp
     src/scene/image_pyramid.cpp
     src/scene/scene.cpp
@@ -1070,6 +1071,23 @@ if(WELLLOG_BUILD_TESTS)
     add_test(
         NAME welllog.time-depth
         COMMAND welllog_time_depth_tests
+    )
+
+    add_executable(welllog_axis_ticks_tests
+        tests/integration/axis_ticks_test.cpp
+    )
+    target_compile_features(
+        welllog_axis_ticks_tests
+        PRIVATE cxx_std_20
+    )
+    welllog_enable_warnings(welllog_axis_ticks_tests)
+    target_link_libraries(
+        welllog_axis_ticks_tests
+        PRIVATE WellLog::Scene
+    )
+    add_test(
+        NAME welllog.axis-ticks
+        COMMAND welllog_axis_ticks_tests
     )
 
     if(WELLLOG_BUILD_TEXT)
