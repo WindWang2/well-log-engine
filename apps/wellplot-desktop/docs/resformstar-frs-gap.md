@@ -39,7 +39,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 图道增删/隐藏/顺序拖拽/宽度 | 🟡 | 显示/宽度/比例 via `track_overrides` 右面板 (`template_model.py:309-379`) | 画布内拖拽排序/拉伸 → Desktop |
 | 页眉/页脚自定义 | ✅ | `PlotHeaderSpec` (`template_model.py:50-111`) | — |
 | 线性/对数刻度 | ✅ | `ScaleSpec` linear/log (`template_model.py:22-26`; `multi_track_canvas._paint_curve:436-497`) | 对数 1-4 数量级、反向刻度(密度) → Desktop(画布) |
-| 超量程折叠 (Wrap-around) | ❌ | 无 | → SDK(曲线绘制) + Desktop |
+| 超量程折叠 (Wrap-around) | ✅ | 已交付：`ScaleSpec.wrap` 字段（与 min/max/mode 同组，随 display_set + override snapshot/apply 流转）；4 处渲染点（`multi_track_canvas._paint_curve` / `correlation_canvas.x_map` / `section_canvas.x_map` / `export_plot._paint_curve`）把 `t=clamp(0,1)` 换成 wrap 模式 `t = t - floor(t)`（锯齿折回，连续样本自动画折回对角线，log 模式同样对归一化 t 折回；section 仅线性）；track 属性面板「超量程折叠」checkbox（持久化 + load/handler）；渲染点用 `getattr(scale,'wrap',False)` 防御旧 scale stub | **P3(wrap✅)** |
 | 基线充填 (如 GR>80) | 🟡 | SDK `IntervalLayerSpec` + `PatternDefinition` (`scene/scene.hpp:210,193`); Desktop host 画布无 fill 图道（role 仅 depth/curve, `template_model.py:39-47`） | Desktop(画布 fill 图道) 复用 SDK interval 语义 |
 | 双曲线交叉充填 | 🟡 | SDK `CrossoverFillLayerSpec` (`scene/scene.hpp:232`) 已实现 (crossover 填充) | Desktop host 画布未渲染 → Desktop |
 | 岩性描述道 SY/T 5615 花纹库 | ✅ | SDK `PatternDefinition` 平铺图元（line/polyline/circle）已有；Desktop `litho_patterns/syt5615.json` 内置 7 种核心岩性（砂岩/泥岩/砾岩/灰岩/白云岩/膏盐岩/页岩），`make_qbrush` Qt 真矢量渲染（替换 Dense4 近似），section 四边形 + 井间充填（含楔形）接入；**单井岩性道已交付**：新 track role `litho`（`template_model`/`display_set` 绑定，`multi_track_canvas`/`export_plot` 共用 `paint_litho_bands`），岩性段数据模型 `lithology_model.py`（`wells/<id>/lithology.json`，Qt-free 可无头测）+ `LithologyDialog` 编辑器（含演示数据一键生成）+ 内置图版「标准岩性图」（`templates/std_litho.json`）；验收：单井岩性道可见 | **P0(库+剖面/对比/单井道✅)** |

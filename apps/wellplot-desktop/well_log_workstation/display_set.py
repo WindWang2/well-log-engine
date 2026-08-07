@@ -100,6 +100,7 @@ def _parse_scale(raw: object) -> ScaleSpec | None:
         min=float(raw.get("min", 0.0)),
         max=float(raw.get("max", 100.0)),
         unit=str(raw.get("unit") or ""),
+        wrap=bool(raw.get("wrap", False)),
     )
 
 

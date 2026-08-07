@@ -25,6 +25,10 @@ class ScaleSpec:
     min: float = 0.0
     max: float = 100.0
     unit: str = ""
+    # Wrap-around (FRS §2.x 超量程折叠): when set, curve values beyond the
+    # scale range fold back via modulo instead of clipping at the edge —
+    # classic wireline-log rendering. Optional; default off.
+    wrap: bool = False
 
 
 @dataclass
@@ -146,10 +150,13 @@ class HostPresentation:
             if t.role != "curve" or not t.visible or t.scale is None:
                 continue
             unit = t.scale.unit or ""
-            bits.append(
+            line = (
                 f"{t.title} {t.scale.min:g}–{t.scale.max:g}"
                 + (f" {unit}" if unit else "")
             )
+            if t.scale.wrap:
+                line += " 折叠"
+            bits.append(line)
             if len(bits) >= 3:
                 break
         return " · ".join(bits)
@@ -245,6 +252,7 @@ def _parse_scale(raw: dict[str, Any] | None) -> ScaleSpec | None:
         min=float(raw.get("min", 0.0)),
         max=float(raw.get("max", 100.0)),
         unit=str(raw.get("unit") or ""),
+        wrap=bool(raw.get("wrap", False)),
     )
 
 
@@ -368,6 +376,7 @@ def track_overrides_snapshot(presentation: HostPresentation) -> dict[str, dict[s
             entry["scale_min"] = float(track.scale.min)
             entry["scale_max"] = float(track.scale.max)
             entry["scale_mode"] = str(track.scale.mode)
+            entry["scale_wrap"] = bool(track.scale.wrap)
         out[track.id] = entry
     return out
 
@@ -409,10 +418,12 @@ def apply_track_overrides(
                 mode = str(raw["scale_mode"] or "linear")
                 if mode in ("linear", "log"):
                     track.scale.mode = mode  # type: ignore[assignment]
+            if "scale_wrap" in raw:
+                track.scale.wrap = bool(raw["scale_wrap"])
             # Keep scale valid
             if track.scale.max <= track.scale.min:
                 track.scale.max = track.scale.min + 1.0
-        elif any(k in raw for k in ("scale_min", "scale_max", "scale_mode")):
+        elif any(k in raw for k in ("scale_min", "scale_max", "scale_mode", "scale_wrap")):
             # Curve tracks without scale (unusual) — create one if edited
             try:
                 smin = float(raw.get("scale_min", 0.0))
@@ -424,5 +435,10 @@ def apply_track_overrides(
             mode = str(raw.get("scale_mode") or "linear")
             if mode not in ("linear", "log"):
                 mode = "linear"
-            track.scale = ScaleSpec(mode=mode, min=smin, max=smax)  # type: ignore[arg-type]
+            track.scale = ScaleSpec(
+                mode=mode,  # type: ignore[arg-type]
+                min=smin,
+                max=smax,
+                wrap=bool(raw.get("scale_wrap", False)),
+            )
     return presentation

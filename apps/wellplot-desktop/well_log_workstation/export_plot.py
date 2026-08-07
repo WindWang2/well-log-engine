@@ -123,6 +123,7 @@ def _paint_presentation(
                     track.scale.max if track.scale else 100.0,
                     track.scale.mode if track.scale else "linear",
                     QColor(layer.color),
+                    bool(getattr(track.scale, "wrap", False)) if track.scale else False,
                 )
         x += tw
 
@@ -160,6 +161,7 @@ def _paint_curve(
     vmax: float,
     mode: str,
     color: QColor,
+    wrap: bool = False,
 ) -> None:
     n = min(depth.size, values.size, null_mask.size)
     if n < 2 or tw < 4 or th < 4:
@@ -178,7 +180,11 @@ def _paint_curve(
             if not math.isfinite(v):
                 return float("nan")
             t = (v - vmin) / (vmax - vmin) if vmax > vmin else 0.5
-        return x0 + max(0.0, min(1.0, t)) * tw
+        if wrap:
+            t = t - math.floor(t)  # fold back instead of clipping
+        else:
+            t = max(0.0, min(1.0, t))
+        return x0 + t * tw
 
     def y_map(d: float) -> float:
         return y0 + ((d - d0) / (d1 - d0)) * th

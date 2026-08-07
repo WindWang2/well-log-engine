@@ -584,12 +584,17 @@ class SectionCanvas(QWidget):
             scale = curve_track.scale
             vmin = scale.min if scale else 0.0
             vmax = scale.max if scale else 100.0
+            wrap = bool(getattr(scale, "wrap", False)) if scale else False
 
             def x_map(v: float) -> float:
                 if not math.isfinite(v):
                     return float("nan")
                 t = (v - vmin) / (vmax - vmin) if vmax > vmin else 0.5
-                return x0 + 4 + max(0.0, min(1.0, t)) * (col_w - 12)
+                if wrap:
+                    t = t - math.floor(t)  # fold back instead of clipping
+                else:
+                    t = max(0.0, min(1.0, t))
+                return x0 + 4 + t * (col_w - 12)
 
             p.setPen(QPen(QColor(layer.color), 1.5))
             prev = None

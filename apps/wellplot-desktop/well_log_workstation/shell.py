@@ -931,6 +931,10 @@ class WellLogWorkstationWindow(QMainWindow):
         self.track_scale_mode.addItem("对数", "log")
         self.track_scale_mode.currentIndexChanged.connect(self._on_track_props_changed)
         form.addRow("比例类型", self.track_scale_mode)
+        self.track_scale_wrap = QCheckBox("超量程折叠（折回而非裁顶）")
+        self.track_scale_wrap.setObjectName("TrackScaleWrap")
+        self.track_scale_wrap.toggled.connect(self._on_track_props_changed)
+        form.addRow("", self.track_scale_wrap)
         layout.addWidget(props)
         self._track_props_guard = False
         self._set_track_props_enabled(False)
@@ -1787,6 +1791,7 @@ class WellLogWorkstationWindow(QMainWindow):
                 self.track_scale_min.setValue(0.0)
                 self.track_scale_max.setValue(100.0)
                 self.track_scale_mode.setCurrentIndex(0)
+                self.track_scale_wrap.setChecked(False)
                 self._set_track_props_enabled(False)
                 return
             self.track_visible.setChecked(bool(track.visible))
@@ -1794,6 +1799,7 @@ class WellLogWorkstationWindow(QMainWindow):
             self.track_scale_min.setEnabled(has_scale)
             self.track_scale_max.setEnabled(has_scale)
             self.track_scale_mode.setEnabled(has_scale)
+            self.track_scale_wrap.setEnabled(has_scale)
             self.track_visible.setEnabled(True)
             if track.scale is not None:
                 self.track_scale_min.setValue(float(track.scale.min))
@@ -1801,10 +1807,12 @@ class WellLogWorkstationWindow(QMainWindow):
                 mode = track.scale.mode
                 idx = self.track_scale_mode.findData(mode)
                 self.track_scale_mode.setCurrentIndex(idx if idx >= 0 else 0)
+                self.track_scale_wrap.setChecked(bool(track.scale.wrap))
             else:
                 self.track_scale_min.setValue(0.0)
                 self.track_scale_max.setValue(100.0)
                 self.track_scale_mode.setCurrentIndex(0)
+                self.track_scale_wrap.setChecked(False)
         finally:
             self._track_props_guard = False
 
@@ -1838,6 +1846,7 @@ class WellLogWorkstationWindow(QMainWindow):
             mode = self.track_scale_mode.currentData()
             if mode in ("linear", "log"):
                 track.scale.mode = mode  # type: ignore[assignment]
+            track.scale.wrap = self.track_scale_wrap.isChecked()
         # Refresh list labels (hidden marker) without losing selection
         self._refresh_track_list_labels_only()
         self.multi_track_canvas.set_presentation(self._presentation)

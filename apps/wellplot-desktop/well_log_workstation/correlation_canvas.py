@@ -428,6 +428,7 @@ class CorrelationCanvas(QWidget):
             vmin = scale.min if scale else 0.0
             vmax = scale.max if scale else 100.0
             mode = scale.mode if scale else "linear"
+            wrap = bool(getattr(scale, "wrap", False)) if scale else False
             if mode == "log":
                 vmin = max(vmin, 1e-6)
                 vmax = max(vmax, vmin * 10)
@@ -442,7 +443,11 @@ class CorrelationCanvas(QWidget):
                     if not math.isfinite(v):
                         return float("nan")
                     t = (v - vmin) / (vmax - vmin) if vmax > vmin else 0.5
-                return x0 + 4 + max(0.0, min(1.0, t)) * (col_w - 12)
+                if wrap:
+                    t = t - math.floor(t)  # fold back instead of clipping
+                else:
+                    t = max(0.0, min(1.0, t))
+                return x0 + 4 + t * (col_w - 12)
 
             def y_map(d_display: float) -> float:
                 return top + ((d_display - d0) / (d1 - d0)) * (

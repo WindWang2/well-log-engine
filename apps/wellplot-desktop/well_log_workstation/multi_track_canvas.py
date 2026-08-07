@@ -635,6 +635,7 @@ class MultiTrackCanvas(QWidget):
                         track.scale.max if track.scale else 100.0,
                         track.scale.mode if track.scale else "linear",
                         QColor(layer.color),
+                        bool(getattr(track.scale, "wrap", False)) if track.scale else False,
                     )
 
         # Track-header drag insertion indicator (FRS §2.x): a vertical line at
@@ -716,6 +717,7 @@ class MultiTrackCanvas(QWidget):
         vmax: float,
         mode: str,
         color: QColor,
+        wrap: bool = False,
     ) -> None:
         vals = np.asarray(values, dtype=np.float64)
         n = min(depth.size, vals.size, null_mask.size if null_mask is not None else vals.size)
@@ -735,7 +737,10 @@ class MultiTrackCanvas(QWidget):
                 if not math.isfinite(v):
                     return float("nan")
                 t = (v - vmin) / (vmax - vmin) if vmax > vmin else 0.5
-            t = max(0.0, min(1.0, t))
+            if wrap:
+                t = t - math.floor(t)  # fold back instead of clipping
+            else:
+                t = max(0.0, min(1.0, t))
             return x0 + t * tw
 
         def y_map(d: float) -> float:
