@@ -21,6 +21,10 @@ class LensBody2D:
 
     ``points`` is an (N, 2) array of ``[x_unit, depth]`` with N ≥ 3. The
     polygon is treated as closed for paint (last→first edge implied).
+
+    ``smooth`` is a display-only flag: when set, the canvas paints a Chaikin-
+    rounded polygon (see :func:`smooth_ring`) while the original vertices stay
+    editable / reversible — mirroring the pinchout "paint-time smooth" rule.
     """
 
     points: np.ndarray
@@ -28,6 +32,7 @@ class LensBody2D:
     fill_color: str = _DEFAULT_FILL
     stroke_color: str = _DEFAULT_STROKE
     pattern_id: str = ""
+    smooth: bool = False
 
     def __post_init__(self) -> None:
         arr = np.asarray(self.points, dtype=np.float64)
@@ -47,6 +52,37 @@ class LensBody2D:
         if self.n_vertices < 1:
             return self.points.copy()
         return np.vstack([self.points, self.points[0:1]])
+
+
+def smooth_ring(
+    points: np.ndarray | Sequence[tuple[float, float]],
+    *,
+    iterations: int = 2,
+) -> np.ndarray:
+    """Closed-ring Chaikin corner cutting (pure numpy, no Qt).
+
+    Treats ``points`` as a closed polygon (last→first edge implied) and
+    returns a denser, rounded ring: each edge contributes its 1/4 and 3/4
+    points. Each iteration doubles the vertex count, so after ``iterations``
+    rounds a polygon with N vertices has ``N * 2**iterations`` vertices.
+    Fewer than 3 points or non-finite input is returned unchanged (caller
+    already guards ``is_valid``).
+    """
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    n = pts.shape[0]
+    if n < 3 or iterations < 1 or not np.all(np.isfinite(pts)):
+        return pts.copy()
+    iters = max(1, int(iterations))
+    ring = pts
+    for _ in range(iters):
+        nxt = np.roll(ring, -1, axis=0)  # next vertex (closes the ring)
+        q = 0.25 * ring + 0.75 * nxt
+        r = 0.75 * ring + 0.25 * nxt
+        # Interleave [q0, r0, q1, r1, ...] preserving CCW/CW order.
+        ring = np.empty((ring.shape[0] * 2, 2), dtype=np.float64)
+        ring[0::2] = q
+        ring[1::2] = r
+    return ring
 
 
 def make_ellipse_lens(
@@ -74,6 +110,7 @@ def lens_to_json(lens: LensBody2D) -> dict[str, Any]:
         "fill_color": str(lens.fill_color or _DEFAULT_FILL),
         "stroke_color": str(lens.stroke_color or _DEFAULT_STROKE),
         "pattern_id": str(lens.pattern_id or ""),
+        "smooth": bool(lens.smooth),
         "points": [
             [float(x), float(y)] for x, y in np.asarray(lens.points, dtype=np.float64)
         ],
@@ -102,6 +139,7 @@ def lens_from_json(raw: Any) -> LensBody2D | None:
             fill_color=str(raw.get("fill_color") or _DEFAULT_FILL),
             stroke_color=str(raw.get("stroke_color") or _DEFAULT_STROKE),
             pattern_id=str(raw.get("pattern_id") or ""),
+            smooth=bool(raw.get("smooth", False)),
         )
     except ValueError:
         return None
@@ -144,6 +182,7 @@ def finalize_draft(
     *,
     label: str = "",
     fill_color: str = _DEFAULT_FILL,
+    smooth: bool = False,
 ) -> LensBody2D | None:
     """Close a freehand draft into a :class:`LensBody2D` if ≥3 vertices."""
     pts = np.asarray(list(draft), dtype=np.float64).reshape(-1, 2)
@@ -159,4 +198,5 @@ def finalize_draft(
         points=pts,
         label=label or f"透镜体{pts.shape[0]}点",
         fill_color=fill_color,
+        smooth=bool(smooth),
     )

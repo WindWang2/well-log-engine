@@ -32,6 +32,7 @@ from well_log_workstation.section_geometry import (
     contact_segment_2d,
     fault_polyline,
     finalize_draft,
+    smooth_ring,
     split_quad_composite,
 )
 from well_log_workstation.template_model import HostPresentation
@@ -76,6 +77,11 @@ class SectionCanvas(QWidget):
         self._draw_lens_mode = False
         self._lens_draft: list[tuple[float, float]] = []
         self._lens_cursor: tuple[float, float] | None = None
+        # Lens snap-to-formation-tops + paint-time smoothing toggles
+        # (FRS §3.x 磁吸 / 手绘平滑). Snap is interaction-only; ``smooth``
+        # applies Chaikin corner cutting to the live draft preview.
+        self._snap_tops: bool = False
+        self._lens_smooth: bool = False
 
     # -- data -----------------------------------------------------------
 
@@ -120,6 +126,22 @@ class SectionCanvas(QWidget):
             if self._draw_lens_mode
             else Qt.CursorShape.ArrowCursor
         )
+        self.update()
+
+    def snap_tops(self) -> bool:
+        return self._snap_tops
+
+    def set_snap_tops(self, enabled: bool) -> None:
+        """Toggle snapping freehand-lens vertices to nearby formation tops."""
+        self._snap_tops = bool(enabled)
+        self.update()
+
+    def lens_smooth(self) -> bool:
+        return self._lens_smooth
+
+    def set_lens_smooth(self, enabled: bool) -> None:
+        """Toggle Chaikin paint-time smoothing for the live lens draft."""
+        self._lens_smooth = bool(enabled)
         self.update()
 
     def set_well_x_offsets(self, offsets: list[float] | None) -> None:
@@ -215,8 +237,9 @@ class SectionCanvas(QWidget):
         if self._draw_lens_mode and event.button() == Qt.MouseButton.LeftButton:
             mapped = self._pixel_to_section(event.position().x(), event.position().y())
             if mapped is not None:
+                sx, sy = self._snap_point(mapped[0], mapped[1])
                 self._lens_draft = append_vertex(
-                    self._lens_draft, mapped[0], mapped[1]
+                    self._lens_draft, sx, sy
                 )
                 self.update()
             event.accept()
@@ -237,10 +260,13 @@ class SectionCanvas(QWidget):
         if self._draw_lens_mode and event.button() == Qt.MouseButton.LeftButton:
             mapped = self._pixel_to_section(event.position().x(), event.position().y())
             if mapped is not None:
+                sx, sy = self._snap_point(mapped[0], mapped[1])
                 self._lens_draft = append_vertex(
-                    self._lens_draft, mapped[0], mapped[1]
+                    self._lens_draft, sx, sy
                 )
-            lens = finalize_draft(self._lens_draft)
+            lens = finalize_draft(
+                self._lens_draft, smooth=self._lens_smooth
+            )
             if lens is not None:
                 self._lenses.append(lens)
                 self._lens_draft = []
@@ -254,7 +280,11 @@ class SectionCanvas(QWidget):
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if self._draw_lens_mode:
             mapped = self._pixel_to_section(event.position().x(), event.position().y())
-            self._lens_cursor = mapped
+            if mapped is not None:
+                sx, sy = self._snap_point(mapped[0], mapped[1])
+                self._lens_cursor = (sx, sy)
+            else:
+                self._lens_cursor = mapped
             self.update()
             event.accept()
             return
@@ -289,7 +319,9 @@ class SectionCanvas(QWidget):
             Qt.Key.Key_Return,
             Qt.Key.Key_Enter,
         ):
-            lens = finalize_draft(self._lens_draft)
+            lens = finalize_draft(
+                self._lens_draft, smooth=self._lens_smooth
+            )
             if lens is not None:
                 self._lenses.append(lens)
                 self._lens_draft = []
@@ -337,6 +369,44 @@ class SectionCanvas(QWidget):
         t = (py - top) / (bottom - top)
         depth = d0 + t * (d1 - d0)
         return float(best_u), float(depth)
+
+    def _snap_point(
+        self, x_unit: float, depth: float, *, y_tol_px: float = 10.0
+    ) -> tuple[float, float]:
+        """Snap a draft point to the nearest formation-top depth (x kept).
+
+        Mirrors the correlation ``hit_test_top`` pixel tolerance: a depth delta
+        is converted to pixels against the current depth window and compared to
+        ``y_tol_px``. Only tops of the two bounding well columns of ``x_unit``
+        are candidates so a lens vertex snaps to the well it lies between.
+        Returns the original ``(x_unit, depth)`` when no top is within range.
+        """
+        if not self._snap_tops or not self._tops_per_column:
+            return x_unit, depth
+        m = self._layout_metrics(self.width(), self.height())
+        if m is None:
+            return x_unit, depth
+        _, _, _, top, bottom, d0, d1 = m
+        if d1 <= d0 or bottom <= top:
+            return x_unit, depth
+        n = len(self._columns)
+        # Bounding well columns for the (fractional) well-index unit.
+        i = int(math.floor(max(0.0, min(x_unit, float(max(n - 1, 0))))))
+        cand_idx = {min(i, n - 1), min(i + 1, n - 1)}
+        best_depth = depth
+        best_px = y_tol_px
+        for idx in cand_idx:
+            if idx >= len(self._tops_per_column):
+                continue
+            for ft in self._tops_per_column[idx]:
+                dd = abs(float(ft.depth) - depth)
+                px = dd / (d1 - d0) * (bottom - top)
+                if px <= best_px:
+                    # strict < keeps the nearest; <= lets the first within
+                    # range stick, matching correlation "min dd" semantics
+                    best_px = px
+                    best_depth = float(ft.depth)
+        return x_unit, best_depth
 
     # -- paint ----------------------------------------------------------
 
@@ -445,13 +515,18 @@ class SectionCanvas(QWidget):
                 _paint_quad(piece)
 
         # Freehand lens bodies (FRS §3.x 透镜体手绘) — over quads, under wells.
+        def _lens_poly(points: np.ndarray, smooth: bool) -> QPolygonF:
+            pts = smooth_ring(points, iterations=2) if smooth else points
+            poly = QPolygonF()
+            for (qx, qy) in pts:
+                xi = min(max(float(qx), 0.0), float(max(n - 1, 0)))
+                poly.append(QPointF(x_unit(xi), y_map(float(qy))))
+            return poly
+
         for lens in self._lenses:
             if not lens.is_valid():
                 continue
-            poly = QPolygonF()
-            for (qx, qy) in lens.points:
-                xi = min(max(float(qx), 0.0), float(max(n - 1, 0)))
-                poly.append(QPointF(x_unit(xi), y_map(float(qy))))
+            poly = _lens_poly(lens.points, bool(lens.smooth))
             fill = QColor(lens.fill_color)
             fill.setAlpha(140)
             p.setBrush(QBrush(fill))
@@ -469,30 +544,23 @@ class SectionCanvas(QWidget):
 
         # Live freehand draft
         if self._draw_lens_mode and self._lens_draft:
-            draft_poly = QPolygonF()
-            for (qx, qy) in self._lens_draft:
-                draft_poly.append(
-                    QPointF(
-                        x_unit(min(max(qx, 0.0), float(max(n - 1, 0)))),
-                        y_map(qy),
-                    )
-                )
+            draft_pts = np.asarray(self._lens_draft, dtype=np.float64).reshape(-1, 2)
             if self._lens_cursor is not None:
-                cu, cd = self._lens_cursor
-                draft_poly.append(
-                    QPointF(
-                        x_unit(min(max(cu, 0.0), float(max(n - 1, 0)))),
-                        y_map(cd),
-                    )
-                )
+                draft_pts = np.vstack([draft_pts, np.asarray(self._lens_cursor)])
+            draft_poly = _lens_poly(draft_pts, bool(self._lens_smooth))
             pen = QPen(QColor("#5b21b6"), 1.5, Qt.PenStyle.DashLine)
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
             if draft_poly.count() >= 2:
+                # draft can be open (unclosed) — draw as polyline.
                 p.drawPolyline(draft_poly)
-            for i in range(draft_poly.count()):
-                pt = draft_poly.at(i)
-                p.drawEllipse(pt, 3.0, 3.0)
+            # Draw the raw (unsmoothed) captured vertices as grab handles so
+            # the user can still see / click the control points.
+            handle = QPen(QColor("#5b21b6"))
+            p.setPen(handle)
+            for (qx, qy) in self._lens_draft:
+                xi = min(max(float(qx), 0.0), float(max(n - 1, 0)))
+                p.drawEllipse(QPointF(x_unit(xi), y_map(qy)), 3.0, 3.0)
 
         # 1. Well columns + curves (mirror CorrelationCanvas)
         for i, pres in enumerate(self._columns):
@@ -627,6 +695,8 @@ class SectionCanvas(QWidget):
             f"充填 {len(self._tie_quads)} · "
             + (
                 "绘制中：左键加点 · 双击/Enter 闭合 · 右键/Esc 取消"
+                + (" · 吸附" if self._snap_tops else "")
+                + (" · 平滑" if self._lens_smooth else "")
                 if self._draw_lens_mode
                 else "滚轮缩放 / 拖动平移"
             ),

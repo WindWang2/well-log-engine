@@ -46,6 +46,7 @@ from well_log_workstation.section_geometry.lens_body import (
     lenses_from_json,
     lenses_to_json,
     make_ellipse_lens,
+    smooth_ring,
 )
 from well_log_workstation.section_geometry.trajectory_2d import (
     normalize_offsets,
@@ -93,6 +94,7 @@ __all__ = [
     "lenses_from_json",
     "lenses_to_json",
     "make_ellipse_lens",
+    "smooth_ring",
     "project_trajectory_2d",
     "project_closure_to_section",
     "normalize_offsets",

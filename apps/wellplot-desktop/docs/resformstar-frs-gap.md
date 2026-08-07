@@ -64,7 +64,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | **地层尖灭/透镜体/剥蚀超覆** | 🟡 | 楔形尖灭 P0-C ✅；剥蚀/超覆截断 P1 ✅；**透镜体手绘** ✅；流体过渡带另见流体界面行 | **P0/P1/透镜体✅** |
 | 断层错断/落差 | ✅ | `section_geometry/fault_section.py` 2D 位置+落差模型：`SectionFault2D` + `fault_polyline` + `apply_fault_throw_to_quad` + **`split_quad_by_fault`**；`PlotDocument.faults` 持久化；**`split_quad_composite` 对每条断层逐条全切**（非仅第一条） | **P1/P2/复合全切✅** |
 | 流体界面 OWC/GOC + 复合充填 | ✅ | `FluidContact2D` + `split_quad_by_contact`；多接触/多断层全切；**过渡带** `transition_m` → 界面上下混色条带 + 对话框「过渡带(m)」列 | **P1/多接触/过渡带✅** |
-| 磁吸/手绘平滑 | ❌ | 无 | → Desktop(交互) |
+| 磁吸/手绘平滑 | ✅ | 已交付：透镜体手绘**分层磁吸**（`SectionCanvas._snap_point`，10px 像素容差，命中井列分层深度即吸附，沿用 correlation `hit_test_top` 惯例）+ **手绘平滑**（`section_geometry/lens_body.smooth_ring` 闭合环 Chaikin 角点切平，paint-time、原始顶点保留可逆，对齐 pinchout 平滑惯例）；`LensBody2D.smooth` 字段（per-lens JSON，纯 `data.get` 无 schema bump）；画布全局开关 `吸附分层`/`平滑边缘` + lens 对话框 per-lens 平滑 checkbox；曲线极值磁吸留后续 | **P3(透镜体磁吸+平滑✅)** |
 | 全局撤销/重做 | 🟡 | SDK session 命令栈 (`session/session.hpp`); Desktop 对 datum/link 有撤销 (`tops_history.py`) | 扩展覆盖新编辑 → Desktop |
 
 ### 4.x 联动 & 5.x 出版导出

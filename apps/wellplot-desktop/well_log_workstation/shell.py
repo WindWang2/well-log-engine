@@ -808,6 +808,31 @@ class WellLogWorkstationWindow(QMainWindow):
         self.section_lens_edit_btn.clicked.connect(self._on_edit_section_lenses)
         lens_row.addWidget(self.section_lens_edit_btn)
         sl.addLayout(lens_row)
+        # Freehand lens snap / smooth toggles (FRS §3.x 磁吸 / 手绘平滑).
+        # Snap is interaction-only; smooth also seeds newly drawn lenses with
+        # smooth=True so they round on every paint (reversible per-lens).
+        lens_opt_row = QHBoxLayout()
+        self.section_lens_snap_check = QCheckBox("吸附分层")
+        self.section_lens_snap_check.setObjectName("SectionLensSnapTops")
+        self.section_lens_snap_check.setEnabled(False)
+        self.section_lens_snap_check.setToolTip(
+            "手绘透镜体时，光标靠近井列分层（10px 内）自动吸附到该分层深度。"
+        )
+        self.section_lens_snap_check.toggled.connect(
+            self._on_section_lens_snap_toggled
+        )
+        lens_opt_row.addWidget(self.section_lens_snap_check)
+        self.section_lens_smooth_check = QCheckBox("平滑边缘")
+        self.section_lens_smooth_check.setObjectName("SectionLensSmooth")
+        self.section_lens_smooth_check.setEnabled(False)
+        self.section_lens_smooth_check.setToolTip(
+            "手绘透镜体边缘 Chaikin 圆角平滑（绘制预览 + 新透镜体默认平滑）。"
+        )
+        self.section_lens_smooth_check.toggled.connect(
+            self._on_section_lens_smooth_toggled
+        )
+        lens_opt_row.addWidget(self.section_lens_smooth_check)
+        sl.addLayout(lens_opt_row)
         # Section well spacing (FRS §3.1 / P1-C): equal vs geographic (survey).
         spacing_row = QHBoxLayout()
         spacing_row.addWidget(QLabel("井距模式"))
@@ -2839,6 +2864,8 @@ class WellLogWorkstationWindow(QMainWindow):
         self.section_surface_btn.setEnabled(True)
         self.section_lens_draw_btn.setEnabled(True)
         self.section_lens_edit_btn.setEnabled(True)
+        self.section_lens_snap_check.setEnabled(True)
+        self.section_lens_smooth_check.setEnabled(True)
         # Sync the spacing combo from the plot doc (guarded against re-entry).
         self._section_spacing_guard = True
         try:
@@ -5238,10 +5265,26 @@ class WellLogWorkstationWindow(QMainWindow):
         """Toggle freehand lens capture on the section canvas."""
         self.section_canvas.set_draw_lens_mode(bool(checked))
         if checked:
-            self.statusBar().showMessage(
-                "透镜体绘制：左键加点 · 双击/Enter 闭合 · 右键/Esc 取消",
-                6000,
-            )
+            snap = "吸附" if self.section_lens_snap_check.isChecked() else ""
+            smooth = "平滑" if self.section_lens_smooth_check.isChecked() else ""
+            extras = " · ".join(s for s in (snap, smooth) if s)
+            msg = "透镜体绘制：左键加点 · 双击/Enter 闭合 · 右键/Esc 取消"
+            if extras:
+                msg = f"{msg} · {extras}"
+            self.statusBar().showMessage(msg, 6000)
+
+    def _on_section_lens_snap_toggled(self, checked: bool = False) -> None:
+        """Toggle snap-to-formation-tops for freehand lens vertices."""
+        self.section_canvas.set_snap_tops(bool(checked))
+
+    def _on_section_lens_smooth_toggled(self, checked: bool = False) -> None:
+        """Toggle Chaikin smoothing for the live lens draft preview.
+
+        Also seeds newly drawn lenses with ``smooth=True`` (the canvas passes
+        this into ``finalize_draft``); existing lenses keep their own per-lens
+        flag editable via the lens dialog.
+        """
+        self.section_canvas.set_lens_smooth(bool(checked))
 
     def _on_section_lens_completed(self, lens: object) -> None:
         """Persist a newly closed freehand lens onto the active section plot."""

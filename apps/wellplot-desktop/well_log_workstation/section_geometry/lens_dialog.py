@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -35,6 +36,8 @@ class SectionLensDialog(QDialog):
         self.setWindowTitle("编辑透镜体")
         self.setObjectName("SectionLensDialog")
         self._lenses: list[LensBody2D] = list(current or [])
+        # Guard so programmatic checkbox sync in _on_select doesn't recurse.
+        self._syncing = False
         root = QHBoxLayout(self)
 
         left = QVBoxLayout()
@@ -60,6 +63,10 @@ class SectionLensDialog(QDialog):
                 "也可用剖面上「绘制透镜体」：左键加点，双击闭合。"
             )
         )
+        self.smooth_check = QCheckBox("平滑边缘（Chaikin 圆角，保留原始顶点）")
+        self.smooth_check.setObjectName("SectionLensSmooth")
+        self.smooth_check.toggled.connect(self._on_smooth_toggled)
+        right.addWidget(self.smooth_check)
         self.table = QTableWidget(0, 2)
         self.table.setObjectName("SectionLensVertexTable")
         self.table.setHorizontalHeaderLabels(["x（井列）", "深度"])
@@ -85,10 +92,6 @@ class SectionLensDialog(QDialog):
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        # Buttons under both columns
-        wrap = QVBoxLayout()
-        # Re-parent: rebuild as outer
-        # Simpler: add buttons to right bottom
         right.addWidget(buttons)
 
         self._reload_list()
@@ -105,6 +108,10 @@ class SectionLensDialog(QDialog):
     def _on_select(self, row: int) -> None:
         self.table.setRowCount(0)
         if row < 0 or row >= len(self._lenses):
+            self._syncing = True
+            self.smooth_check.setChecked(False)
+            self.smooth_check.setEnabled(False)
+            self._syncing = False
             return
         lens = self._lenses[row]
         for x, y in lens.points:
@@ -112,6 +119,26 @@ class SectionLensDialog(QDialog):
             self.table.insertRow(r)
             self.table.setItem(r, 0, QTableWidgetItem(f"{float(x):.4g}"))
             self.table.setItem(r, 1, QTableWidgetItem(f"{float(y):.4g}"))
+        self._syncing = True
+        self.smooth_check.setEnabled(True)
+        self.smooth_check.setChecked(bool(lens.smooth))
+        self._syncing = False
+
+    def _on_smooth_toggled(self, checked: bool) -> None:
+        if self._syncing:
+            return
+        row = self.list.currentRow()
+        if row < 0 or row >= len(self._lenses):
+            return
+        old = self._lenses[row]
+        self._lenses[row] = LensBody2D(
+            points=old.points,
+            label=old.label,
+            fill_color=old.fill_color,
+            stroke_color=old.stroke_color,
+            pattern_id=old.pattern_id,
+            smooth=bool(checked),
+        )
 
     def _add_ellipse(self) -> None:
         lens = make_ellipse_lens(0.5, 1050.0, 0.35, 25.0, label=f"透镜体{len(self._lenses)+1}")
@@ -156,6 +183,7 @@ class SectionLensDialog(QDialog):
             fill_color=old.fill_color,
             stroke_color=old.stroke_color,
             pattern_id=old.pattern_id,
+            smooth=old.smooth,
         )
         self._reload_list()
         self.list.setCurrentRow(row)
