@@ -19,6 +19,14 @@
                 %PYARG_0 = welllog::python::nice_axis_ticks(%1, %2, %3);
             </inject-code>
         </add-function>
+        <add-function
+            signature="format_axis_tick_label(double@value@,double@step@)"
+            return-type="PyObject*"
+        >
+            <inject-code class="target" position="beginning">
+                %PYARG_0 = welllog::python::format_axis_tick_label(%1, %2);
+            </inject-code>
+        </add-function>
         <object-type name="WellLogView" parent-management="yes">
             <extra-includes>
                 <include file-name="numpy_bridge.hpp" location="local"/>

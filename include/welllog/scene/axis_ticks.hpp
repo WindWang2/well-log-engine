@@ -11,8 +11,11 @@
 #define WELLLOG_SCENE_AXIS_TICKS_HPP
 
 #include <welllog/scene/export.hpp>
+#include <welllog/scene/scene.hpp>        // DepthTransform
+#include <welllog/scene/time_depth.hpp>   // TimeDepthRelationship
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace welllog {
@@ -26,6 +29,32 @@ struct AxisTicks {
 // Returns an empty value list for a degenerate/non-finite window.
 [[nodiscard]] WELLLOG_SCENE_API AxisTicks
 nice_axis_ticks(double d0, double d1, std::uint32_t max_ticks = 9) noexcept;
+
+// Secondary-domain ticks over a DISPLAY window (multi-axis, Epic B): the
+// window endpoints are inverse-mapped through the transform into the
+// reference domain, then the authoritative ladder runs over that range. The
+// returned values are in the REFERENCE domain; consumers position them via
+// the forward mapping. Identity transforms behave like nice_axis_ticks.
+[[nodiscard]] WELLLOG_SCENE_API AxisTicks ticks_for_reference_window(
+    const DepthTransform &transform, double display_top, double display_bottom,
+    std::uint32_t max_ticks = 9) noexcept;
+
+// TWT ticks over a DISPLAY window: reference range = transform⁻¹(window),
+// then the TWT relationship maps it into time. The relationship's
+// ``depth_domain`` must match the transform's reference domain — the caller
+// declares the chain explicitly (no implicit domain guessing). Values are in
+// the relationship's time unit; empty when TWT is unavailable.
+[[nodiscard]] WELLLOG_SCENE_API AxisTicks ticks_for_twt_window(
+    const DepthTransform &transform, const TimeDepthRelationship &twt,
+    double display_top, double display_bottom,
+    std::uint32_t max_ticks = 9) noexcept;
+
+// Tick label with precision trimmed to the step — mirror of the Desktop
+// ``depth_ruler.format_depth_label`` semantics (parity-tested): 1050/25 →
+// "1050", 1050.5/0.5 → "1050.5", 1050.25/0.25 → "1050.25". Float drift is
+// rounded away.
+[[nodiscard]] WELLLOG_SCENE_API std::string
+format_axis_tick_label(double value, double step) noexcept;
 
 }  // namespace welllog
 

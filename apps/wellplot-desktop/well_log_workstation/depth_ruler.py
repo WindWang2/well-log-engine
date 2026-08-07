@@ -30,34 +30,39 @@ from PySide6.QtGui import QColor, QPainter, QPen
 # Reserved left-margin width for the depth ruler (px).
 RULER_WIDTH = 52
 
-_engine_ticks: object | None = None
-_engine_ticks_checked = False
+_ENGINE_TICKS_CACHE: list = [None, False]  # [fn, checked]
+_ENGINE_LABEL_CACHE: list = [None, False]
 
 
-def _binding_ticks() -> object | None:
-    """The SDK's ``nice_axis_ticks`` when the Python binding is importable.
-
-    The binding exposes the function on the inner ``welllog`` namespace
-    (``welllog._QtWidgets.welllog.nice_axis_ticks``).
-    """
-    global _engine_ticks, _engine_ticks_checked
-    if _engine_ticks_checked:
-        return _engine_ticks
-    _engine_ticks_checked = True
+def _binding_fn(name: str, cache: list) -> object | None:
+    """Resolve an SDK module-level binding function by name (cached)."""
+    if cache[1]:
+        return cache[0]
+    cache[1] = True
     try:
         import welllog  # type: ignore
 
-        fn = getattr(welllog, "nice_axis_ticks", None)
+        fn = getattr(welllog, name, None)
         if not callable(fn):
             ext = getattr(welllog, "_QtWidgets", None)
             inner = getattr(ext, "welllog", None) if ext is not None else None
             if inner is not None:
-                fn = getattr(inner, "nice_axis_ticks", None)
+                fn = getattr(inner, name, None)
         if callable(fn):
-            _engine_ticks = fn
+            cache[0] = fn
     except Exception:
-        _engine_ticks = None
-    return _engine_ticks
+        cache[0] = None
+    return cache[0]
+
+
+def _binding_ticks() -> object | None:
+    """The SDK's ``nice_axis_ticks`` when the Python binding is importable."""
+    return _binding_fn("nice_axis_ticks", _ENGINE_TICKS_CACHE)
+
+
+def _binding_label() -> object | None:
+    """The SDK's ``format_axis_tick_label`` when the binding is importable."""
+    return _binding_fn("format_axis_tick_label", _ENGINE_LABEL_CACHE)
 
 
 def nice_depth_ticks(
@@ -108,7 +113,19 @@ def format_depth_label(value: float, step: float) -> str:
 
     1050 / step 25 → "1050"; 1050.5 / step 0.5 → "1050.5"; 1050.25 / step
     0.25 → "1050.25". Float drift is rounded away.
+
+    The authoritative implementation is the SDK's
+    ``scene::format_axis_tick_label`` (binding-first, local fallback) — the
+    parity test locks the two together.
     """
+    engine = _binding_label()
+    if engine is not None:
+        try:
+            label = engine(float(value), float(step))
+            if isinstance(label, str):
+                return label
+        except Exception:
+            pass
     decimals = 0
     while decimals < 8 and abs(round(step, decimals) - step) > 1e-9:
         decimals += 1

@@ -287,3 +287,35 @@ def test_sdk_and_desktop_ticks_parity(monkeypatch) -> None:
             assert step2 == pytest.approx(float(sdk_step), rel=1e-12)
             assert ticks2 == pytest.approx([float(v) for v in sdk_values], rel=1e-12)
             monkeypatch.undo()
+
+
+def test_sdk_and_desktop_label_parity(monkeypatch) -> None:
+    """Tick label precision must match the SDK authoritative formatter."""
+    from well_log_workstation.depth_ruler import _binding_label, format_depth_label
+
+    engine = _binding_label()
+    if engine is None:
+        pytest.skip("Python binding not available — parity cannot run here")
+
+    cases = [
+        (1050.0, 25.0, "1050"),
+        (1000.0, 250.0, "1000"),
+        (1050.5, 0.5, "1050.5"),
+        (1050.25, 0.25, "1050.25"),
+        (1050.0, 0.5, "1050"),
+        (1.1999999999999997, 0.25, "1.2"),
+        (2.0000000000000004, 0.5, "2"),
+        (0.0, 25.0, "0"),
+    ]
+    for value, step, expected in cases:
+        sdk_label = engine(float(value), float(step))
+        assert sdk_label == expected, f"SDK label mismatch for {value}/{step}"
+        # Binding path.
+        assert format_depth_label(value, step) == expected
+        # Fallback path.
+        monkeypatch.setattr(
+            "well_log_workstation.depth_ruler._binding_label",
+            lambda: None,
+        )
+        assert format_depth_label(value, step) == expected
+        monkeypatch.undo()

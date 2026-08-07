@@ -38,6 +38,11 @@ submit_multi_well_section(WellLogView *view, PyObject *payload) noexcept;
 [[nodiscard]] PyObject *nice_axis_ticks(double d0, double d1,
                                         unsigned long max_ticks) noexcept;
 
+// Tick label with precision trimmed to the step (scene::format_axis_tick_label,
+// Epic B) — returns a str.
+[[nodiscard]] PyObject *format_axis_tick_label(double value,
+                                               double step) noexcept;
+
 // Render the prepared scene for ``document_id`` to SVG and return the
 // document bytes (T1 / #273). The engine builds the SVG in memory only —
 // it never touches the filesystem; the host writes the returned bytes.

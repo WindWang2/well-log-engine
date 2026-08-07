@@ -631,6 +631,18 @@ PyObject *nice_axis_ticks(double d0, double d1,
   }
 }
 
+PyObject *format_axis_tick_label(double value, double step) noexcept {
+  try {
+    const auto label = welllog::format_axis_tick_label(value, step);
+    return PyUnicode_FromStringAndSize(label.data(),
+                                       static_cast<Py_ssize_t>(label.size()));
+  } catch (const std::bad_alloc &) {
+    return PyErr_NoMemory();
+  } catch (...) {
+    return PyErr_SetString(PyExc_RuntimeError, "tick label failed"), nullptr;
+  }
+}
+
 PyObject *submit_curve(WellLogView *view, PyObject *depth, PyObject *values,
                        const QString &document_id_text,
                        const QString &axis_id_text,
