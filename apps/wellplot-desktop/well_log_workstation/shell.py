@@ -288,6 +288,11 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_curve_edit.setObjectName("Action_CurveEdit")
         self._act_curve_edit.triggered.connect(self._on_curve_edit)
         self._act_curve_edit.setEnabled(False)
+        self._act_draw_curve = file_menu.addAction("手绘曲线")
+        self._act_draw_curve.setObjectName("Action_DrawCurve")
+        self._act_draw_curve.setCheckable(True)
+        self._act_draw_curve.triggered.connect(self._on_toggle_draw_curve)
+        self._act_draw_curve.setEnabled(False)
         self._act_litho = file_menu.addAction("岩性道编辑…")
         self._act_litho.setObjectName("Action_EditLithology")
         self._act_litho.triggered.connect(self._on_edit_lithology)
@@ -582,6 +587,11 @@ class WellLogWorkstationWindow(QMainWindow):
         # top depths as undoable tops edits.
         self.multi_track_canvas.depth_shift_committed.connect(
             self._on_canvas_depth_shift_committed
+        )
+        # Freehand curve drawing (FRS §2.x 手绘曲线): merge the stroke into
+        # the well's curve_edits.json and reapply.
+        self.multi_track_canvas.curve_drawn_committed.connect(
+            self._on_curve_drawn_committed
         )
         # Track-header drag reorder (FRS §2.x): persist the new order.
         self.multi_track_canvas.track_order_changed.connect(
@@ -1222,12 +1232,16 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_pick_tops.setEnabled(can_pick)
         self._act_add_top.setEnabled(can_pick)
         self._act_depth_shift.setEnabled(can_pick)
+        self._act_draw_curve.setEnabled(can_pick)
         if not can_pick and self._act_pick_tops.isChecked():
             self._act_pick_tops.setChecked(False)
             self.multi_track_canvas.set_pick_mode(False)
         if not can_pick and self._act_depth_shift.isChecked():
             self._act_depth_shift.setChecked(False)
             self.multi_track_canvas.set_shift_mode(False)
+        if not can_pick and self._act_draw_curve.isChecked():
+            self._act_draw_curve.setChecked(False)
+            self.multi_track_canvas.set_draw_curve_mode(False)
 
         self._act_engine_preview.setEnabled(
             self._presentation is not None and self._presentation.curve_track_count > 0
@@ -1356,6 +1370,9 @@ class WellLogWorkstationWindow(QMainWindow):
         # Interactive depth-shift drag also requires host canvas hit-testing.
         if self.multi_track_canvas.shift_mode():
             want_engine = False
+        # Freehand curve drawing likewise requires host canvas hit-testing.
+        if self.multi_track_canvas.draw_curve_mode():
+            want_engine = False
 
         if not want_engine:
             self._primary_surface = "host"
@@ -1476,6 +1493,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_survey.setEnabled(ws is not None)
         self._act_formula.setEnabled(ws is not None)
         self._act_curve_edit.setEnabled(ws is not None)
+        self._act_draw_curve.setEnabled(ws is not None)
         self._act_litho.setEnabled(ws is not None)
         # Phase-2 PR-C: new plot-type menu items (fence_3d needs 3D).
         self._act_new_plane_map.setEnabled(ws is not None)
@@ -5019,7 +5037,7 @@ class WellLogWorkstationWindow(QMainWindow):
                 diags.append(f"{mnemonic}: 井中无此曲线")
                 continue
             values, null_mask = apply_curve_edits(
-                curve.values, curve.null_mask,
+                doc.depth, curve.values, curve.null_mask,
                 [e for e in edits if e.mnemonic == mnemonic],
             )
             finite = values[np.isfinite(values)]
@@ -6542,6 +6560,12 @@ class WellLogWorkstationWindow(QMainWindow):
                 self, "拾取层位", "请先应用图版到选中井，再开启拾取。"
             )
             return
+        # Mutually exclusive with the other single-well gestures.
+        if enabled:
+            self._act_draw_curve.setChecked(False)
+            self.multi_track_canvas.set_draw_curve_mode(False)
+            self._act_depth_shift.setChecked(False)
+            self.multi_track_canvas.set_shift_mode(False)
         self.multi_track_canvas.set_pick_mode(enabled)
         # Pick needs host canvas; switch stack to host while picking
         self._sync_primary_single_well_surface()
@@ -6564,6 +6588,12 @@ class WellLogWorkstationWindow(QMainWindow):
                 self, "深度校正", "请先应用图版到选中井，再开启深度校正。"
             )
             return
+        # Mutually exclusive with the other single-well gestures.
+        if enabled:
+            self._act_draw_curve.setChecked(False)
+            self.multi_track_canvas.set_draw_curve_mode(False)
+            self._act_pick_tops.setChecked(False)
+            self.multi_track_canvas.set_pick_mode(False)
         self.multi_track_canvas.set_shift_mode(enabled)
         # Shift needs host canvas hit-testing; force host like pick mode.
         self._sync_primary_single_well_surface()
@@ -6590,6 +6620,78 @@ class WellLogWorkstationWindow(QMainWindow):
         self.statusBar().showMessage(
             f"已调整层位 {top.name} → {top.depth:.2f}（可撤销）", 5000
         )
+
+    def _on_toggle_draw_curve(self, checked: bool = False) -> None:
+        """Toggle freehand curve drawing mode on the single-well canvas."""
+        enabled = self._act_draw_curve.isChecked()
+        if enabled and (
+            self._presentation is None or self._selected_well_id is None
+        ):
+            self._act_draw_curve.setChecked(False)
+            QMessageBox.information(
+                self, "手绘曲线", "请先应用图版到选中井，再开启手绘曲线。"
+            )
+            return
+        # Mutually exclusive with tops pick / depth shift (gesture clash).
+        if enabled:
+            self._act_pick_tops.setChecked(False)
+            self.multi_track_canvas.set_pick_mode(False)
+            self._act_depth_shift.setChecked(False)
+            self.multi_track_canvas.set_shift_mode(False)
+        self.multi_track_canvas.set_draw_curve_mode(enabled)
+        # Freehand needs host canvas hit-testing; force host like pick mode.
+        self._sync_primary_single_well_surface()
+        if enabled:
+            self.document_tabs.setCurrentIndex(0)
+            self.single_well_stack.setCurrentIndex(0)
+            self.statusBar().showMessage(
+                "手绘曲线：按住左键在曲线道上绘制 · 释放保存 · Esc 取消",
+                8000,
+            )
+
+    def _on_curve_drawn_committed(self, mnemonic: str, points: object) -> None:
+        """Merge a drawn stroke into the well's freehand edit and reapply."""
+        if self._selected_well_id is None or self._workspace is None:
+            return
+        from well_log_workstation.curve_edit import (
+            CurveEdit,
+            append_freehand_points,
+            load_curve_edits_for_well,
+            save_curve_edits_for_well,
+        )
+
+        pts = [(float(d), float(v)) for d, v in (points or [])]
+        if len(pts) < 2:
+            return
+        edits, _diags = load_curve_edits_for_well(
+            self._workspace, self._selected_well_id
+        )
+        existing = next(
+            (e for e in edits if e.method == "freehand" and e.mnemonic == mnemonic),
+            None,
+        )
+        merged = append_freehand_points(existing, mnemonic, pts)
+        # Keep the other edits; replace any prior freehand for this curve.
+        kept = [
+            e
+            for e in edits
+            if not (e.method == "freehand" and e.mnemonic == mnemonic)
+        ]
+        kept.append(merged)
+        try:
+            save_curve_edits_for_well(self._workspace, self._selected_well_id, kept)
+        except (WorkspaceError, OSError) as exc:
+            QMessageBox.warning(self, "保存手绘曲线失败", str(exc))
+            return
+        _ok_n, diags = self._apply_curve_edits()
+        note = f"已手绘曲线 {mnemonic}（{len(pts)} 点）"
+        if diags:
+            note += f" · {len(diags)} 条应用失败"
+        self.statusBar().showMessage(note, 4000)
+        if diags:
+            QMessageBox.warning(
+                self, "手绘曲线提示", "\n".join(diags[:5])
+            )
 
     def _on_canvas_top_pick(self, depth: float) -> None:
         if self._selected_well_id is None or self._workspace is None:

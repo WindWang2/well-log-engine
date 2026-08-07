@@ -47,7 +47,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 射孔/井下工程道 | ❌ | SDK marker 语义含 casing_shoe (`core/document.hpp:433-439`) | → SDK(符号) + Desktop(道) |
 | 岩心照片道 + 物性点叠加 | 🟡 | SDK `ImageLayerSpec`/`ImagePyramid` (`scene/image_pyramid.hpp:67`) | Desktop host 画布无 image role → Desktop |
 | 交互深度校正 (Depth Shift) | ✅ | 已交付：单井画布「深度校正」模式（工具栏 toggle）——按住层位线拖拽实时预览（黄色高亮 + `名称 → 深度` 标注），释放后**编辑该 top 真实深度**（`wells/<id>/tops.json`，走 `set_top_depth` + `_tops_history` 撤销，无 schema bump）；`MultiTrackCanvas.hit_test_top` 10px 像素容差（沿用 correlation 惯例）；shift mode 强制 host 画布；非模式拖拽仍为平移 | **P3(交互校正✅)** |
-| 曲线编辑 (Despike/手绘/基线平移) | 🟡 | 已交付：**Despike**（`curve_edit.despike`：邻域中值 + MAD 阈值去毛刺，|v−med| > threshold×MAD 替换为中值，null 保持）+ **基线平移**（`apply_baseline` 常量偏移）；**非破坏派生**模式（原始曲线只读冻结不碰，编辑存 `wells/<id>/curve_edits.json`，运行时重算附加绿色 `edited-*` track —— 镜像 formulas 机制，与 `derived-*` 共存，无 schema bump）；「曲线编辑（去毛刺/基线平移）…」菜单 + `CurveEditDialog` 表格编辑（曲线/方法/窗口+阈值/偏移，方法切换参数联动）；**手绘曲线留后续** | **P3(despike+baseline✅)/后续**: 手绘曲线 |
+| 曲线编辑 (Despike/手绘/基线平移) | ✅ | 已交付：**Despike**（`curve_edit.despike`：邻域中值 + MAD 阈值去毛刺，|v−med| > threshold×MAD 替换为中值，null 保持）+ **基线平移**（`apply_baseline` 常量偏移）+ **手绘曲线**（`apply_freehand` 按深度插值，`multi_track_canvas` 手绘模式：按住左键在曲线道 body 上绘制 → 红色预览 → 释放提交，Esc 取消，与拾取/深度校正互斥）；**非破坏派生**模式（原始曲线只读冻结不碰，编辑存 `wells/<id>/curve_edits.json`，运行时重算附加绿色 `edited-*` track —— 镜像 formulas 机制，与 `derived-*` 共存，无 schema bump）；「曲线编辑（去毛刺/基线平移）…」+「手绘曲线」菜单 + `CurveEditDialog` 表格编辑（曲线/方法/窗口+阈值/偏移，方法切换参数联动） | **P3(despike+baseline+手绘✅)** |
 | 公式计算器 (VSH 等) | ✅ | `formula.py` 手写递归下降解析器（+−×÷^、括号、一元负号、log10/ln/exp/sqrt/abs/round/min/max）+ 逐元素数组求值（null 传播、标量广播、大小写不敏感）；公式存 `wells/<id>/formulas.json`；派生曲线运行时附加单井画布（`derived-*` tracks）；`FormulaDialog` 编辑器 | 已闭环：解析器/求值/集成单测 |
 
 ### 3.x 连井剖面

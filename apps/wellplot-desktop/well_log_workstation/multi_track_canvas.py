@@ -10,11 +10,11 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from PySide6.QtCore import QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
-from well_log_workstation.template_model import HostPresentation
+from well_log_workstation.template_model import HostPresentation, ScaleSpec
 from well_log_workstation.tops_model import FormationTop
 
 
@@ -144,6 +144,10 @@ class MultiTrackCanvas(QWidget):
     # Emitted after an interactive depth-shift drag (FRS §2.x 交互深度校正):
     # (top_id, new_depth). The shell commits it as a tops edit (undoable).
     depth_shift_committed = Signal(str, float)
+    # Emitted after a freehand curve stroke (FRS §2.x 手绘曲线):
+    # (mnemonic, points) where points is a list of (depth, value) pairs.
+    # The shell merges them into the well's curve_edits.json and reapplies.
+    curve_drawn_committed = Signal(str, object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -179,6 +183,15 @@ class MultiTrackCanvas(QWidget):
         self._shift_top: FormationTop | None = None
         self._shift_drag_depth: float | None = None
         self._shift_start_py: int = 0
+        # Freehand curve drawing (FRS §2.x 手绘曲线): press on a curve track
+        # body starts a stroke; move collects (depth, value) points; release
+        # emits curve_drawn_committed. Esc cancels.
+        self._draw_curve_mode = False
+        self._draw_curve_mnemonic: str | None = None
+        self._draw_curve_scale: ScaleSpec | None = None
+        self._draw_curve_body: QRect | None = None
+        self._draw_curve_points: list[tuple[float, float]] = []
+        self._draw_curve_cursor: tuple[float, float] | None = None
         # Semantic selection marker (Reference Depth, not screen Y)
         self._selection_depth: float | None = None
         self.setStyleSheet("background: #ffffff;")
@@ -206,6 +219,24 @@ class MultiTrackCanvas(QWidget):
         if not enabled:
             self._shift_top = None
             self._shift_drag_depth = None
+        if enabled:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.unsetCursor()
+        self.update()
+
+    def draw_curve_mode(self) -> bool:
+        return self._draw_curve_mode
+
+    def set_draw_curve_mode(self, enabled: bool) -> None:
+        """Toggle freehand curve drawing (drag over a curve track to redraw)."""
+        self._draw_curve_mode = bool(enabled)
+        if not enabled:
+            self._draw_curve_mnemonic = None
+            self._draw_curve_scale = None
+            self._draw_curve_body = None
+            self._draw_curve_points = []
+            self._draw_curve_cursor = None
         if enabled:
             self.setCursor(Qt.CursorShape.CrossCursor)
         else:
@@ -242,6 +273,54 @@ class MultiTrackCanvas(QWidget):
                 best_dd = dd
                 best = ft
         return best
+
+    def _draw_curve_start(
+        self, px: float, py: float
+    ) -> tuple[float, float] | None:
+        """Hit-test a curve track body; remember it and return the first point.
+
+        Returns ``(depth, value)`` for the pressed pixel or None when no
+        curve track with layers is under the cursor.
+        """
+        if self._presentation is None or not self._presentation.tracks:
+            return None
+        entries, _band = track_header_rects(
+            self._presentation, self.width(), self.height()
+        )
+        depth = self.depth_at_y(py)
+        if depth is None:
+            return None
+        for track, _header, body in entries:
+            if track.role != "curve" or not track.layers:
+                continue
+            if not body.contains(int(px), int(py)):
+                continue
+            layer = track.layers[0]
+            self._draw_curve_mnemonic = layer.mnemonic
+            self._draw_curve_scale = track.scale
+            self._draw_curve_body = body
+            v = self._pixel_to_value(px, py, track.scale, body)
+            if v is None:
+                return None
+            return float(depth), float(v)
+        return None
+
+    @staticmethod
+    def _pixel_to_value(
+        px: float, py: float, scale: ScaleSpec | None, body: QRect
+    ) -> float | None:
+        """Map a body pixel's x to a curve value using the track scale."""
+        vmin = scale.min if scale else 0.0
+        vmax = scale.max if scale else 100.0
+        mode = scale.mode if scale else "linear"
+        if mode == "log":
+            vmin = max(vmin, 1e-6)
+            vmax = max(vmax, vmin * 10)
+            log_min, log_max = math.log10(vmin), math.log10(vmax)
+            t = (px - body.x()) / max(1, body.width())
+            return 10 ** (log_min + t * (log_max - log_min))
+        t = (px - body.x()) / max(1, body.width())
+        return vmin + t * (vmax - vmin)
 
     def depth_at_y(self, y: float) -> float | None:
         """Map widget Y to depth in the current viewport, or None if outside band."""
@@ -392,6 +471,19 @@ class MultiTrackCanvas(QWidget):
                     self.update()
                     event.accept()
                     return
+            # Freehand curve drawing (FRS §2.x): press on a curve track body
+            # starts a stroke over that track's curve.
+            if self._draw_curve_mode:
+                pt = self._draw_curve_start(event.position().x(), event.position().y())
+                if pt is not None:
+                    self._draw_curve_points = [pt]
+                    self._draw_curve_cursor = pt
+                    self._did_drag = False
+                    self._press_y = int(event.position().y())
+                    self._press_x = int(event.position().x())
+                    self.update()
+                    event.accept()
+                    return
             self._press_y = int(event.position().y())
             self._press_x = int(event.position().x())
             self._did_drag = False
@@ -447,6 +539,28 @@ class MultiTrackCanvas(QWidget):
             d = self.depth_at_y(float(event.position().y()))
             if d is not None:
                 self._shift_drag_depth = float(d)
+                self._did_drag = True
+                self.update()
+            event.accept()
+            return
+        # Freehand curve stroke: append the cursor point, preview live.
+        if self._draw_curve_mode and self._draw_curve_mnemonic is not None:
+            d = self.depth_at_y(float(event.position().y()))
+            if d is not None:
+                v = self._pixel_to_value(
+                    float(event.position().x()),
+                    float(event.position().y()),
+                    self._draw_curve_scale,
+                    self._draw_curve_body or QRect(0, 0, self.width(), self.height()),
+                )
+                pt = (float(d), float(v) if v is not None else 0.0)
+                if (
+                    not self._draw_curve_points
+                    or abs(self._draw_curve_points[-1][0] - pt[0]) > 1e-6
+                    or abs(self._draw_curve_points[-1][1] - pt[1]) > 1e-6
+                ):
+                    self._draw_curve_points.append(pt)
+                self._draw_curve_cursor = pt
                 self._did_drag = True
                 self.update()
             event.accept()
@@ -545,6 +659,22 @@ class MultiTrackCanvas(QWidget):
             shift_held = bool(
                 event.modifiers() & Qt.KeyboardModifier.ShiftModifier
             )
+            # Freehand curve stroke release: commit the drawn points.
+            if self._draw_curve_mode and self._draw_curve_mnemonic is not None:
+                mnemonic = self._draw_curve_mnemonic
+                points = list(self._draw_curve_points)
+                self._draw_curve_mnemonic = None
+                self._draw_curve_scale = None
+                self._draw_curve_body = None
+                self._draw_curve_points = []
+                self._draw_curve_cursor = None
+                self._drag_y = None
+                self._press_y = None
+                if self._did_drag and len(points) >= 2:
+                    self.curve_drawn_committed.emit(mnemonic, points)
+                self.update()
+                event.accept()
+                return
             # Interactive depth-shift release: commit the dragged depth.
             if self._shift_mode and self._shift_top is not None:
                 top = self._shift_top
@@ -603,6 +733,25 @@ class MultiTrackCanvas(QWidget):
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if (
+            self._draw_curve_mode
+            and self._draw_curve_mnemonic is not None
+            and event.key() == Qt.Key.Key_Escape
+        ):
+            # Cancel the in-progress stroke.
+            self._draw_curve_mnemonic = None
+            self._draw_curve_scale = None
+            self._draw_curve_body = None
+            self._draw_curve_points = []
+            self._draw_curve_cursor = None
+            self._drag_y = None
+            self._press_y = None
+            self.update()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _header_lines(self, pres) -> list[str]:
         hdr = getattr(pres, "header", None)
@@ -799,6 +948,46 @@ class MultiTrackCanvas(QWidget):
                 f"选中 {self._selection_depth:.2f}",
             )
 
+        # Freehand curve stroke preview (FRS §2.x 手绘曲线): live red polyline
+        # over the target track body while drawing.
+        if (
+            self._draw_curve_mode
+            and self._draw_curve_mnemonic is not None
+            and self._draw_curve_points
+            and self._draw_curve_scale is not None
+            and self._draw_curve_body is not None
+        ):
+            body = self._draw_curve_body
+            scale = self._draw_curve_scale
+            vmin = scale.min if scale else 0.0
+            vmax = scale.max if scale else 100.0
+            mode = scale.mode if scale else "linear"
+            if mode == "log":
+                vmin = max(vmin, 1e-6)
+                vmax = max(vmax, vmin * 10)
+                log_min, log_max = math.log10(vmin), math.log10(vmax)
+            th = max(1, bottom - top)
+
+            def _preview_pt(d: float, v: float) -> QPointF:
+                yy = top + int(((d - d0) / (d1 - d0)) * th)
+                if mode == "log":
+                    t = (math.log10(max(v, 1e-12)) - log_min) / (log_max - log_min)
+                else:
+                    t = (v - vmin) / (vmax - vmin) if vmax > vmin else 0.5
+                t = max(0.0, min(1.0, t))
+                return QPointF(body.x() + t * body.width(), yy)
+
+            pen = QPen(QColor("#e74c3c"), 2.0)
+            p.setPen(pen)
+            pts = [QPointF(_preview_pt(d, v)) for d, v in self._draw_curve_points]
+            if self._draw_curve_cursor is not None:
+                pts.append(_preview_pt(*self._draw_curve_cursor))
+            for a, b in zip(pts, pts[1:]):
+                p.drawLine(a, b)
+            p.setBrush(QColor("#e74c3c"))
+            for pt in pts:
+                p.drawEllipse(pt, 2.5, 2.5)
+
         # Footer (#293) — template footer + interaction hint
         p.setPen(QColor("#666"))
         font = p.font()
@@ -814,7 +1003,9 @@ class MultiTrackCanvas(QWidget):
             )
         tops_note = f"层位 {len(self._tops)}" if self._tops else ""
         pick_note = (
-            "深度校正：拖拽层位线调整深度 · 释放即保存（可撤销）"
+            "手绘曲线：按住左键在曲线道上绘制 · 释放保存 · Esc 取消"
+            if self._draw_curve_mode
+            else "深度校正：拖拽层位线调整深度 · 释放即保存（可撤销）"
             if self._shift_mode
             else "拾取层位中"
             if self._pick_mode
