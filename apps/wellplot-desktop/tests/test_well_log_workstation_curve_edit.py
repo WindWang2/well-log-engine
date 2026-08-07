@@ -797,3 +797,122 @@ GR.GAPI
     assert any(
         t.id.startswith("edited-") for t in win._presentation.tracks
     )
+
+
+# -- curve-edit undo/redo (FRS §3.x 全局撤销/重做) --------------------
+
+
+def test_curve_edit_history_book_basic() -> None:
+    from well_log_workstation.curve_edit_history import CurveEditHistoryBook
+
+    book = CurveEditHistoryBook(max_depth=8)
+    e1 = CurveEdit(mnemonic="GR", method="despike", window=3, threshold=3.0)
+    e2 = CurveEdit(mnemonic="GR", method="baseline", shift=10.0)
+    assert book.can_undo("w1") is False
+
+    book.record_before_commit("w1", [])
+    assert book.can_undo("w1") is True
+    # undo([], current=[e1]) → previous = []
+    prev = book.undo("w1", [e1])
+    assert prev == []
+    assert book.can_redo("w1") is True
+    # redo([e1], current=[]) → nxt = [e1]
+    nxt = book.redo("w1", [])
+    assert nxt == [e1]
+    # a new commit clears redo
+    book.record_before_commit("w1", [e1])
+    assert book.can_redo("w1") is False
+
+
+def test_curve_edit_history_book_max_depth_and_clear() -> None:
+    from well_log_workstation.curve_edit_history import CurveEditHistoryBook
+
+    book = CurveEditHistoryBook(max_depth=2)
+    for i in range(4):
+        book.record_before_commit("w1", [CurveEdit(mnemonic="GR", method="baseline", shift=float(i))])
+    # Only the last 2 entries survive; undo twice then empty.
+    assert book.undo("w1", []) is not None
+    assert book.undo("w1", []) is not None
+    assert book.undo("w1", []) is None
+    book.record_before_commit("w2", [])
+    book.clear_well("w2")
+    assert book.can_undo("w2") is False
+    book.record_before_commit("w3", [])
+    book.clear_all()
+    assert book.can_undo("w3") is False
+
+
+def test_shell_undo_redo_curve_edits(qtbot, tmp_path: Path) -> None:
+    from well_log_workstation.shell import WellLogWorkstationWindow
+    from well_log_workstation.workspace import create_workspace
+
+    def _las(path: Path, well: str) -> Path:
+        path.write_text(
+            f"""~VERSION INFORMATION
+VERS. 2.0
+WRAP. NO
+~WELL INFORMATION
+STRT.M 1000.0
+STOP.M 1004.0
+STEP.M 1.0
+NULL. -999.25
+WELL. {well}
+~CURVE INFORMATION
+DEPT.M
+GR.GAPI
+~ASCII
+1000 20
+1001 50
+1002 95
+1003 30
+1004 25
+""",
+            encoding="utf-8",
+        )
+        return path
+
+    ws = create_workspace(tmp_path / "ws")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    wid = win.import_las_path(_las(tmp_path / "a.las", "A"))
+
+    from well_log_workstation.plot_document import create_single_well_plot
+
+    plot = create_single_well_plot(
+        ws, well_id=wid, well_name="A", template_id="std-gr-rt-den"
+    )
+    win.open_plot_document(plot.id)
+    win._selected_well_id = wid
+
+    # Commit a despike edit via the dialog-save path (record_before_commit).
+    win._on_curve_drawn_committed("GR", [(1001.0, 5.0), (1002.0, 6.0)])
+    edits1, _ = load_curve_edits_for_well(ws, wid)
+    assert len(edits1) == 1
+    assert win._act_undo_curve_edits.isEnabled() is True
+
+    # Undo: curve_edits.json back to [] and presentation has no edited track.
+    assert win.undo_curve_edits(wid) is True
+    edits0, _ = load_curve_edits_for_well(ws, wid)
+    assert edits0 == []
+    assert not any(t.id.startswith("edited-") for t in win._presentation.tracks)
+
+    # Redo: edit restored.
+    assert win.redo_curve_edits(wid) is True
+    edits2, _ = load_curve_edits_for_well(ws, wid)
+    assert len(edits2) == 1
+    assert any(t.id.startswith("edited-") for t in win._presentation.tracks)
+
+
+def test_shell_undo_shortcut_distinct_from_tops(qtbot, tmp_path: Path) -> None:
+    from well_log_workstation.shell import WellLogWorkstationWindow
+    from well_log_workstation.workspace import create_workspace
+
+    ws = create_workspace(tmp_path / "ws")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    # Ctrl+Alt+Z vs Ctrl+Z: distinct so both pairs can be enabled together.
+    assert win._act_undo_curve_edits.shortcut().toString() == "Ctrl+Alt+Z"
+    assert win._act_redo_curve_edits.shortcut().toString() == "Ctrl+Alt+Shift+Z"
+    assert win._act_undo_tops.shortcut().toString() == "Ctrl+Z"
+    assert win._act_redo_tops.shortcut().toString() == "Ctrl+Shift+Z"

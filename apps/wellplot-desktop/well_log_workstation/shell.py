@@ -203,6 +203,11 @@ class WellLogWorkstationWindow(QMainWindow):
         self._active_tops: list[FormationTop] = []
         self._tops_diagnostics: list[str] = []
         self._tops_history = TopsHistoryBook()
+        # Curve-edit undo/redo (FRS §3.x 全局撤销/重做): per-well history for
+        # curve_edits.json (despike / baseline / freehand).
+        from well_log_workstation.curve_edit_history import CurveEditHistoryBook
+
+        self._curve_edit_history = CurveEditHistoryBook()
         self._templates: list[PlotTemplate] = list_builtin_templates()
         # Display Set session cache. Keys: "plot:<id>" (preferred for single-well
         # plots) or "well:<id>" (preview without a plot). Model A: data on well,
@@ -293,6 +298,18 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_draw_curve.setCheckable(True)
         self._act_draw_curve.triggered.connect(self._on_toggle_draw_curve)
         self._act_draw_curve.setEnabled(False)
+        # Curve-edit undo/redo (FRS §3.x 全局撤销/重做). Distinct shortcuts
+        # (Ctrl+Alt+Z) so they never clash with the tops Ctrl+Z pair.
+        self._act_undo_curve_edits = file_menu.addAction("撤销曲线编辑")
+        self._act_undo_curve_edits.setObjectName("Action_UndoCurveEdits")
+        self._act_undo_curve_edits.setShortcut("Ctrl+Alt+Z")
+        self._act_undo_curve_edits.triggered.connect(self._on_undo_curve_edits)
+        self._act_undo_curve_edits.setEnabled(False)
+        self._act_redo_curve_edits = file_menu.addAction("重做曲线编辑")
+        self._act_redo_curve_edits.setObjectName("Action_RedoCurveEdits")
+        self._act_redo_curve_edits.setShortcut("Ctrl+Alt+Shift+Z")
+        self._act_redo_curve_edits.triggered.connect(self._on_redo_curve_edits)
+        self._act_redo_curve_edits.setEnabled(False)
         self._act_litho = file_menu.addAction("岩性道编辑…")
         self._act_litho.setObjectName("Action_EditLithology")
         self._act_litho.triggered.connect(self._on_edit_lithology)
@@ -1269,6 +1286,14 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_redo_tops.setEnabled(
             can_tops and self._tops_history.can_redo(self._selected_well_id)
         )
+        self._act_undo_curve_edits.setEnabled(
+            can_tops
+            and self._curve_edit_history.can_undo(self._selected_well_id)
+        )
+        self._act_redo_curve_edits.setEnabled(
+            can_tops
+            and self._curve_edit_history.can_redo(self._selected_well_id)
+        )
         can_pick = (
             can_tops
             and self._presentation is not None
@@ -1512,6 +1537,7 @@ class WellLogWorkstationWindow(QMainWindow):
             self._active_tops = []
             self._tops_diagnostics = []
             self._tops_history.clear_all()
+            self._curve_edit_history.clear_all()
             self.multi_track_canvas.set_presentation(None)
             self._refresh_track_list()
             self.multi_track_canvas.set_tops(None)
@@ -5100,6 +5126,7 @@ class WellLogWorkstationWindow(QMainWindow):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         edits = dlg.value()
+        self._curve_edit_history.record_before_commit(well_id, current)
         try:
             save_curve_edits_for_well(self._workspace, well_id, edits)
         except (WorkspaceError, OSError) as exc:
@@ -5119,11 +5146,70 @@ class WellLogWorkstationWindow(QMainWindow):
         if diags:
             note += f" · {len(diags)} 条应用失败"
         self.statusBar().showMessage(note, 4000)
+        self._sync_apply_enabled()
         if diags:
             QMessageBox.warning(
                 self, "曲线编辑提示",
                 "\n".join(diags[:5]) + ("\n…" if len(diags) > 5 else ""),
             )
+
+    def undo_curve_edits(self, well_id: str | None = None) -> bool:
+        """Undo the last curve-edit commit for the well (restore + reapply)."""
+        wid = well_id or self._selected_well_id
+        if self._workspace is None or not wid:
+            return False
+        from well_log_workstation.curve_edit import (
+            load_curve_edits_for_well,
+            save_curve_edits_for_well,
+        )
+
+        current, _diags = load_curve_edits_for_well(self._workspace, wid)
+        previous = self._curve_edit_history.undo(wid, current)
+        if previous is None:
+            return False
+        try:
+            save_curve_edits_for_well(self._workspace, wid, previous)
+        except (WorkspaceError, OSError):
+            return False
+        self._selected_well_id = wid
+        self._apply_curve_edits(show_edited=self._show_curve_edits)
+        self._sync_apply_enabled()
+        return True
+
+    def redo_curve_edits(self, well_id: str | None = None) -> bool:
+        """Redo the last undone curve-edit commit for the well."""
+        wid = well_id or self._selected_well_id
+        if self._workspace is None or not wid:
+            return False
+        from well_log_workstation.curve_edit import (
+            load_curve_edits_for_well,
+            save_curve_edits_for_well,
+        )
+
+        current, _diags = load_curve_edits_for_well(self._workspace, wid)
+        nxt = self._curve_edit_history.redo(wid, current)
+        if nxt is None:
+            return False
+        try:
+            save_curve_edits_for_well(self._workspace, wid, nxt)
+        except (WorkspaceError, OSError):
+            return False
+        self._selected_well_id = wid
+        self._apply_curve_edits(show_edited=self._show_curve_edits)
+        self._sync_apply_enabled()
+        return True
+
+    def _on_undo_curve_edits(self) -> None:
+        if not self.undo_curve_edits():
+            self.statusBar().showMessage("无可撤销的曲线编辑", 3000)
+            return
+        self.statusBar().showMessage("已撤销曲线编辑", 3000)
+
+    def _on_redo_curve_edits(self) -> None:
+        if not self.redo_curve_edits():
+            self.statusBar().showMessage("无可重做的曲线编辑", 3000)
+            return
+        self.statusBar().showMessage("已重做曲线编辑", 3000)
 
     def _apply_curve_edits(
         self, *, show_edited: bool = True
@@ -6836,6 +6922,9 @@ class WellLogWorkstationWindow(QMainWindow):
             if not (e.method == "freehand" and e.mnemonic == mnemonic)
         ]
         kept.append(merged)
+        self._curve_edit_history.record_before_commit(
+            self._selected_well_id, edits
+        )
         try:
             save_curve_edits_for_well(self._workspace, self._selected_well_id, kept)
         except (WorkspaceError, OSError) as exc:
@@ -6854,6 +6943,7 @@ class WellLogWorkstationWindow(QMainWindow):
         if diags:
             note += f" · {len(diags)} 条应用失败"
         self.statusBar().showMessage(note, 4000)
+        self._sync_apply_enabled()
         if diags:
             QMessageBox.warning(
                 self, "手绘曲线提示", "\n".join(diags[:5])
