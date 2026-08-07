@@ -141,6 +141,9 @@ class MultiTrackCanvas(QWidget):
     # track id and its new width_fraction. The shell persists it via the
     # existing track_overrides path.
     track_width_changed = Signal(str, float)
+    # Emitted after an interactive depth-shift drag (FRS §2.x 交互深度校正):
+    # (top_id, new_depth). The shell commits it as a tops edit (undoable).
+    depth_shift_committed = Signal(str, float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -169,6 +172,13 @@ class MultiTrackCanvas(QWidget):
         self._press_y: int | None = None
         self._press_x: int | None = None
         self._did_drag = False
+        # Interactive depth-shift drag (FRS §2.x 交互深度校正): when shift
+        # mode is on, press near a top grabs it and vertical drags preview a
+        # new depth; release emits depth_shift_committed.
+        self._shift_mode = False
+        self._shift_top: FormationTop | None = None
+        self._shift_drag_depth: float | None = None
+        self._shift_start_py: int = 0
         # Semantic selection marker (Reference Depth, not screen Y)
         self._selection_depth: float | None = None
         self.setStyleSheet("background: #ffffff;")
@@ -186,6 +196,52 @@ class MultiTrackCanvas(QWidget):
 
     def pick_mode(self) -> bool:
         return self._pick_mode
+
+    def shift_mode(self) -> bool:
+        return self._shift_mode
+
+    def set_shift_mode(self, enabled: bool) -> None:
+        """Toggle interactive depth-shift mode (drag a top to edit its depth)."""
+        self._shift_mode = bool(enabled)
+        if not enabled:
+            self._shift_top = None
+            self._shift_drag_depth = None
+        if enabled:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.unsetCursor()
+        self.update()
+
+    def hit_test_top(
+        self, y: float, *, y_tol_px: float = 10.0
+    ) -> FormationTop | None:
+        """Return the top nearest to ``y`` (pixel tolerance), or None.
+
+        Mirrors the correlation canvas pick: a depth delta is converted to
+        pixels against the current window and compared to ``y_tol_px``; the
+        nearest top within range wins.
+        """
+        if self._d0 is None or self._d1 is None or not self._tops:
+            return None
+        top, bottom = self._plot_band()
+        if bottom <= top:
+            return None
+        depth_at = self.depth_at_y(y)
+        if depth_at is None:
+            return None
+        best: FormationTop | None = None
+        best_dd = float("inf")
+        for ft in self._tops:
+            dd = abs(float(ft.depth) - depth_at)
+            px = (
+                abs(dd) / (self._d1 - self._d0) * (bottom - top)
+                if self._d1 > self._d0
+                else 1e9
+            )
+            if px <= y_tol_px and dd < best_dd:
+                best_dd = dd
+                best = ft
+        return best
 
     def depth_at_y(self, y: float) -> float | None:
         """Map widget Y to depth in the current viewport, or None if outside band."""
@@ -323,6 +379,19 @@ class MultiTrackCanvas(QWidget):
                     self.setCursor(Qt.CursorShape.ClosedHandCursor)
                     event.accept()
                     return
+            # Interactive depth-shift (FRS §2.x): grab a top near the press.
+            if self._shift_mode:
+                hit = self.hit_test_top(float(event.position().y()))
+                if hit is not None:
+                    self._shift_top = hit
+                    self._shift_drag_depth = float(hit.depth)
+                    self._shift_start_py = int(event.position().y())
+                    self._press_y = int(event.position().y())
+                    self._press_x = int(event.position().x())
+                    self._did_drag = False
+                    self.update()
+                    event.accept()
+                    return
             self._press_y = int(event.position().y())
             self._press_x = int(event.position().x())
             self._did_drag = False
@@ -370,6 +439,15 @@ class MultiTrackCanvas(QWidget):
                     break
             if target != self._drag_track_target:
                 self._drag_track_target = target
+                self.update()
+            event.accept()
+            return
+        # Interactive depth-shift drag: follow the cursor depth, no pan.
+        if self._shift_mode and self._shift_top is not None:
+            d = self.depth_at_y(float(event.position().y()))
+            if d is not None:
+                self._shift_drag_depth = float(d)
+                self._did_drag = True
                 self.update()
             event.accept()
             return
@@ -467,6 +545,25 @@ class MultiTrackCanvas(QWidget):
             shift_held = bool(
                 event.modifiers() & Qt.KeyboardModifier.ShiftModifier
             )
+            # Interactive depth-shift release: commit the dragged depth.
+            if self._shift_mode and self._shift_top is not None:
+                top = self._shift_top
+                new_depth = self._shift_drag_depth
+                self._shift_top = None
+                self._shift_drag_depth = None
+                self._drag_y = None
+                self._press_y = None
+                if (
+                    self._did_drag
+                    and new_depth is not None
+                    and abs(new_depth - float(top.depth)) > 1e-9
+                ):
+                    self.depth_shift_committed.emit(
+                        top.id or top.name, float(new_depth)
+                    )
+                self.update()
+                event.accept()
+                return
             if not self._did_drag and (self._pick_mode or shift_held):
                 depth = self.depth_at_y(y)
                 if depth is not None:
@@ -656,14 +753,34 @@ class MultiTrackCanvas(QWidget):
         if self._tops:
             th = max(1, bottom - top)
             for ft in self._tops:
-                if not math.isfinite(ft.depth) or ft.depth < d0 or ft.depth > d1:
+                # Interactive depth-shift drag preview (FRS §2.x): the grabbed
+                # top follows the cursor with a highlighted dashed line.
+                is_dragging = (
+                    self._shift_mode
+                    and self._shift_top is not None
+                    and (ft.id or ft.name) == (self._shift_top.id or self._shift_top.name)
+                )
+                draw_depth = (
+                    float(self._shift_drag_depth)
+                    if is_dragging and self._shift_drag_depth is not None
+                    else float(ft.depth)
+                )
+                if not math.isfinite(draw_depth) or draw_depth < d0 or draw_depth > d1:
                     continue
-                yy = top + int(((ft.depth - d0) / (d1 - d0)) * th)
-                pen = QPen(QColor(ft.color), 1.2, Qt.PenStyle.DashLine)
+                yy = top + int(((draw_depth - d0) / (d1 - d0)) * th)
+                if is_dragging:
+                    pen = QPen(QColor("#f1c40f"), 2.5, Qt.PenStyle.DashLine)
+                else:
+                    pen = QPen(QColor(ft.color), 1.2, Qt.PenStyle.DashLine)
                 p.setPen(pen)
                 p.drawLine(track_left, yy, track_right, yy)
-                p.setPen(QColor(ft.color))
-                p.drawText(track_left + 4, yy - 2, ft.name[:16])
+                p.setPen(QColor("#f1c40f") if is_dragging else QColor(ft.color))
+                label = (
+                    f"{ft.name[:12]} → {draw_depth:.2f}"
+                    if is_dragging
+                    else ft.name[:16]
+                )
+                p.drawText(track_left + 4, yy - 2, label)
 
         # Semantic selection marker (Reference Depth — T5)
         if (
@@ -696,7 +813,13 @@ class MultiTrackCanvas(QWidget):
                 depth_unit=pres.depth_unit or "m",
             )
         tops_note = f"层位 {len(self._tops)}" if self._tops else ""
-        pick_note = "拾取层位中" if self._pick_mode else "滚轮缩放/拖动平移/双击复位"
+        pick_note = (
+            "深度校正：拖拽层位线调整深度 · 释放即保存（可撤销）"
+            if self._shift_mode
+            else "拾取层位中"
+            if self._pick_mode
+            else "滚轮缩放/拖动平移/双击复位"
+        )
         tail = " · ".join(x for x in (footer, tops_note, pick_note) if x)
         p.drawText(8, h - 4, tail[:160] if tail else f"深度 {d0:.1f}–{d1:.1f}")
         p.end()

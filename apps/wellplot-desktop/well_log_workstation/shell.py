@@ -418,6 +418,11 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_pick_tops.setCheckable(True)
         self._act_pick_tops.triggered.connect(self._on_toggle_pick_tops)
         self._act_pick_tops.setEnabled(False)
+        self._act_depth_shift = tops_menu.addAction("深度校正（拖拽层位）")
+        self._act_depth_shift.setObjectName("Action_DepthShift")
+        self._act_depth_shift.setCheckable(True)
+        self._act_depth_shift.triggered.connect(self._on_toggle_depth_shift)
+        self._act_depth_shift.setEnabled(False)
         self._act_add_top = tops_menu.addAction("按深度添加层位…")
         self._act_add_top.setObjectName("Action_AddTopByDepth")
         self._act_add_top.triggered.connect(self._on_add_top_by_depth)
@@ -568,6 +573,11 @@ class WellLogWorkstationWindow(QMainWindow):
         self.multi_track_canvas.top_pick_requested.connect(self._on_canvas_top_pick)
         self.multi_track_canvas.sample_selected.connect(
             self._on_canvas_sample_selected
+        )
+        # Interactive depth-shift (FRS §2.x 交互深度校正): commit dragged
+        # top depths as undoable tops edits.
+        self.multi_track_canvas.depth_shift_committed.connect(
+            self._on_canvas_depth_shift_committed
         )
         # Track-header drag reorder (FRS §2.x): persist the new order.
         self.multi_track_canvas.track_order_changed.connect(
@@ -1207,9 +1217,13 @@ class WellLogWorkstationWindow(QMainWindow):
         )
         self._act_pick_tops.setEnabled(can_pick)
         self._act_add_top.setEnabled(can_pick)
+        self._act_depth_shift.setEnabled(can_pick)
         if not can_pick and self._act_pick_tops.isChecked():
             self._act_pick_tops.setChecked(False)
             self.multi_track_canvas.set_pick_mode(False)
+        if not can_pick and self._act_depth_shift.isChecked():
+            self._act_depth_shift.setChecked(False)
+            self.multi_track_canvas.set_shift_mode(False)
 
         self._act_engine_preview.setEnabled(
             self._presentation is not None and self._presentation.curve_track_count > 0
@@ -1334,6 +1348,9 @@ class WellLogWorkstationWindow(QMainWindow):
         want_engine = self._prefer_engine_canvas and engine_available()
         # Tops pick mode requires host canvas hit-testing
         if self.multi_track_canvas.pick_mode():
+            want_engine = False
+        # Interactive depth-shift drag also requires host canvas hit-testing.
+        if self.multi_track_canvas.shift_mode():
             want_engine = False
 
         if not want_engine:
@@ -6404,6 +6421,44 @@ class WellLogWorkstationWindow(QMainWindow):
                 "拾取层位：主机画布单击；Shift+单击也可 · 关闭菜单项退出",
                 8000,
             )
+
+    def _on_toggle_depth_shift(self, checked: bool = False) -> None:
+        """Toggle interactive depth-shift mode on the single-well canvas."""
+        enabled = self._act_depth_shift.isChecked()
+        if enabled and (
+            self._presentation is None or self._selected_well_id is None
+        ):
+            self._act_depth_shift.setChecked(False)
+            QMessageBox.information(
+                self, "深度校正", "请先应用图版到选中井，再开启深度校正。"
+            )
+            return
+        self.multi_track_canvas.set_shift_mode(enabled)
+        # Shift needs host canvas hit-testing; force host like pick mode.
+        self._sync_primary_single_well_surface()
+        if enabled:
+            self.document_tabs.setCurrentIndex(0)
+            self.single_well_stack.setCurrentIndex(0)
+            self.statusBar().showMessage(
+                "深度校正：拖拽层位线调整深度 · 释放即保存（可撤销）",
+                8000,
+            )
+
+    def _on_canvas_depth_shift_committed(self, top_id: str, new_depth: float) -> None:
+        """Commit a dragged top depth as an undoable tops edit."""
+        if self._selected_well_id is None or self._workspace is None:
+            return
+        try:
+            top = self.set_top_depth(self._selected_well_id, top_id, new_depth)
+        except (TopsError, WorkspaceError) as exc:
+            QMessageBox.warning(self, "深度校正失败", str(exc))
+            return
+        except OSError as exc:
+            QMessageBox.warning(self, "深度校正失败", str(exc))
+            return
+        self.statusBar().showMessage(
+            f"已调整层位 {top.name} → {top.depth:.2f}（可撤销）", 5000
+        )
 
     def _on_canvas_top_pick(self, depth: float) -> None:
         if self._selected_well_id is None or self._workspace is None:

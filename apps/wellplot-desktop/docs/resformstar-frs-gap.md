@@ -46,7 +46,7 @@ Legend: ✅ 已有 · 🟡 部分 · ❌ 缺失
 | 试油/解释成果道 | ❌ | 无 | → Desktop(数据+渲染) |
 | 射孔/井下工程道 | ❌ | SDK marker 语义含 casing_shoe (`core/document.hpp:433-439`) | → SDK(符号) + Desktop(道) |
 | 岩心照片道 + 物性点叠加 | 🟡 | SDK `ImageLayerSpec`/`ImagePyramid` (`scene/image_pyramid.hpp:67`) | Desktop host 画布无 image role → Desktop |
-| 交互深度校正 (Depth Shift) | ❌ | 无交互编辑；SDK session 有 patch 编辑 (`session.hpp:272-308`) | → SDK(编辑命令) + Desktop(手势) |
+| 交互深度校正 (Depth Shift) | ✅ | 已交付：单井画布「深度校正」模式（工具栏 toggle）——按住层位线拖拽实时预览（黄色高亮 + `名称 → 深度` 标注），释放后**编辑该 top 真实深度**（`wells/<id>/tops.json`，走 `set_top_depth` + `_tops_history` 撤销，无 schema bump）；`MultiTrackCanvas.hit_test_top` 10px 像素容差（沿用 correlation 惯例）；shift mode 强制 host 画布；非模式拖拽仍为平移 | **P3(交互校正✅)** |
 | 曲线编辑 (Despike/手绘/基线平移) | ❌ | 同上 | → SDK(编辑) + Desktop(UI) |
 | 公式计算器 (VSH 等) | ✅ | `formula.py` 手写递归下降解析器（+−×÷^、括号、一元负号、log10/ln/exp/sqrt/abs/round/min/max）+ 逐元素数组求值（null 传播、标量广播、大小写不敏感）；公式存 `wells/<id>/formulas.json`；派生曲线运行时附加单井画布（`derived-*` tracks）；`FormulaDialog` 编辑器 | 已闭环：解析器/求值/集成单测 |
 
