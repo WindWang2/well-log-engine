@@ -77,8 +77,6 @@ void degenerate_and_non_finite() {
   require(nan.values.empty(), "non-finite windows must yield no ticks");
 }
 
-}  // namespace
-
 void reference_window_ticks_inverse_map() {
   // Display = reference + 1000 (a datum shift): ticks over the display
   // window 2000–2200 must come out in the REFERENCE domain (1000–1200).
@@ -107,12 +105,13 @@ void twt_window_ticks_in_time_domain() {
       .time_unit = TimeUnit::milliseconds,
       .source = "checkshot",
   };
-  // Identity display transform: window 0–2000 m ↔ 0–1500 ms.
+  // Identity display transform: window 0–2000 m ↔ 0–1500 ms. raw = 1500/9
+  // ≈ 167 → ladder picks 200 ms (the smallest step keeping ≤ 9 ticks).
   const auto ticks = ticks_for_twt_window(DepthTransform{}, twt, 0.0, 2000.0);
-  require_near(ticks.step, 250.0, 1e-9, "TWT ticks use the nice ladder in ms");
+  require_near(ticks.step, 200.0, 1e-9, "TWT ticks use the nice ladder in ms");
   require(ticks.values.front() >= 0.0, "TWT ticks start inside the window");
-  require_near(ticks.values.back(), 1500.0, 1e-9,
-               "TWT ticks end at the window end in time");
+  require_near(ticks.values.back(), 1400.0, 1e-9,
+               "TWT ticks end inside the window in time");
 }
 
 void twt_unavailable_yields_empty() {

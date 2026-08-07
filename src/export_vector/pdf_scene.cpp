@@ -26,6 +26,7 @@
 #include <welllog/core/entity_id.hpp>
 #include <welllog/export/export_layout.hpp>
 #include <welllog/export/export_report.hpp>
+#include <welllog/scene/axis_ticks.hpp>
 #include <welllog/io/manifest.hpp>
 
 #include <algorithm>
@@ -731,6 +732,34 @@ void emit_page_bands(PdfPathStream &stream, const PreparedScene &scene,
       emit_text_string(stream, text_engine, label, right_x - width,
                        content_top + band_font_size, band_font_size,
                        label_color, searchable_text);
+    }
+  }
+  // Depth ruler (Epic B, B4): authoritative ticks in the left margin strip —
+  // same scene::nice_axis_ticks / format_axis_tick_label semantics as the SVG
+  // backend (pagination.cpp::append_depth_ruler), so both outputs agree.
+  if (page.show_depth_ruler) {
+    const auto depth_top = scene_y_to_depth(scene, window_top_mm);
+    const auto depth_bottom = scene_y_to_depth(scene, window_bottom_mm);
+    const auto ticks = welllog::nice_axis_ticks(depth_top, depth_bottom);
+    if (!ticks.values.empty()) {
+      const double left_edge = page.margins.left.value;
+      const double span = depth_bottom - depth_top;
+      const double y_span = window_bottom_mm - window_top_mm;
+      constexpr double ruler_font = 2.4;
+      for (const double value : ticks.values) {
+        const double t = (value - depth_top) / span;
+        const double y_mm = window_top_mm + t * y_span;
+        stream.save_state();
+        stream.set_stroke_color(0x33, 0x33, 0x33);
+        stream.set_line_width(0.4);
+        stream.move_to(left_edge - 1.0, y_mm);
+        stream.line_to(left_edge - 3.5, y_mm);
+        stream.stroke();
+        stream.restore_state();
+        emit_text_string(stream, text_engine,
+                         welllog::format_axis_tick_label(value, ticks.step), 1.0,
+                         y_mm + 0.9, ruler_font, label_color, searchable_text);
+      }
     }
   }
   if (page.show_depth_range) {

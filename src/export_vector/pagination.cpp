@@ -1,6 +1,7 @@
 #include <welllog/export/pagination.hpp>
 
 #include <welllog/export/export_layout.hpp>
+#include <welllog/scene/axis_ticks.hpp>
 #include <welllog/export/export_report.hpp>
 
 #include <algorithm>
@@ -130,6 +131,44 @@ void append_text_element(std::string &output, std::string_view role,
   output += "</text>";
 }
 
+// Depth ruler (Epic B, B4): authoritative nice-step ticks over the page's
+// depth window, drawn in the LEFT MARGIN strip (no layout impact). Tick marks
+// at the printable left edge, labels left-anchored from the page edge. The
+// tick VALUES are the SDK scene::nice_axis_ticks output and the labels the
+// SDK format_axis_tick_label — the PDF backend emits the same geometry.
+void append_depth_ruler(std::string &output, const ExportPageSpec &page,
+                        const PreparedScene &scene, double window_top_mm,
+                        double window_bottom_mm) noexcept {
+  const auto depth_top = scene_y_to_depth(scene, window_top_mm);
+  const auto depth_bottom = scene_y_to_depth(scene, window_bottom_mm);
+  const auto ticks = nice_axis_ticks(depth_top, depth_bottom);
+  if (ticks.values.empty()) {
+    return;
+  }
+  const double left_edge = page.margins.left.value;
+  const double span = depth_bottom - depth_top;
+  const double y_span = window_bottom_mm - window_top_mm;
+  constexpr double font_mm = 2.4;
+  for (const double value : ticks.values) {
+    const double t = (value - depth_top) / span;
+    const double y_mm = window_top_mm + t * y_span;
+    // Tick mark: 2.5 mm into the margin from the printable left edge.
+    output += "<line data-export-role=\"ruler\" x1=\"";
+    append_number(output, left_edge - 1.0);
+    output += "\" y1=\"";
+    append_number(output, y_mm);
+    output += "\" x2=\"";
+    append_number(output, left_edge - 3.5);
+    output += "\" y2=\"";
+    append_number(output, y_mm);
+    output += "\" stroke=\"#333333\" stroke-width=\"0.4\"/>";
+    // Label, left-anchored from the page edge (2.4 mm font fits 4-digit
+    // depths in a 10 mm margin; deeper values may crowd the tick).
+    append_text_element(output, "ruler", 1.0, y_mm + 0.9,
+                        format_axis_tick_label(value, ticks.step), font_mm);
+  }
+}
+
 // Crop/trim marks (剪切线, FRS §5) at the four printable-area corners: two
 // short registration lines per corner, drawn outward into the margins. The
 // geometry is shared with the PDF backend (pdf_scene.cpp) so both outputs
@@ -257,6 +296,11 @@ void append_fixed_page(std::string &output, const PreparedScene &scene,
       append_text_element(output, "header", page_label_x, content_top + 3.0,
                           page_label);
     }
+  }
+
+  // Depth ruler (Epic B, B4): authoritative ticks in the left margin strip.
+  if (page.show_depth_ruler) {
+    append_depth_ruler(output, page, scene, window_top_mm, window_bottom_mm);
   }
 
   // Per-page depth range (footer band). data-page-depth-top/-bottom carry the
@@ -451,6 +495,13 @@ PaginatedSvgExporter::write(const PreparedScene &scene,
         const auto footer_y = page_height_mm - page.margins.bottom.value + 3.0;
         append_depth_range_footer(output, page.margins.left.value, footer_y,
                                   depth_top, depth_bottom);
+      }
+
+      // Depth ruler (Epic B, B4) on the continuous page: same authoritative
+      // ticks over the full scene depth window.
+      if (page.show_depth_ruler) {
+        append_depth_ruler(output, page, scene, 0.0,
+                           scene.physical_height().value);
       }
 
       // Body translated to (margin-left, margin-top) and scaled to fit the

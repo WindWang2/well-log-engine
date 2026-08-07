@@ -15,8 +15,6 @@ enum class ErrorCode : std::uint16_t {
   invalid_buffer,
   arithmetic_overflow,
   invalid_sampling_axis,
-  // A TimeDepthRelationship is present but not a valid monotonic map.
-  invalid_time_depth,
   length_mismatch,
   duplicate_entity_id,
   missing_sampling_axis,
@@ -41,6 +39,9 @@ enum class ErrorCode : std::uint16_t {
   // guessing by name/position, so it is rejected. Appended so existing stable
   // error-code values remain unchanged.
   patch_conflict,
+  // A TimeDepthRelationship is present but not a valid monotonic map.
+  // Appended so existing error-code values remain unchanged.
+  invalid_time_depth,
 };
 
 enum class Severity : std::uint8_t {
@@ -67,8 +68,6 @@ enum class MessageKey : std::uint16_t {
   sampling_axis_missing,
   // A SamplingAxis's nominal_interval is present but not finite/positive.
   sampling_axis_interval_invalid,
-  // A TimeDepthRelationship's points are not a valid monotonic depth↔TWT map.
-  time_depth_relationship_invalid,
   curve_length_mismatch,
   presentation_invalid,
   presentation_document_missing,
@@ -105,6 +104,9 @@ enum class MessageKey : std::uint16_t {
   patch_base_revision_conflict,
   // An UndoCommand or RedoCommand has no entry to apply (#203, ADR 0025).
   history_empty,
+  // A TimeDepthRelationship's points are not a valid monotonic depth↔TWT map.
+  // Appended so existing message-key values remain unchanged.
+  time_depth_relationship_invalid,
 };
 
 struct ErrorArgument {

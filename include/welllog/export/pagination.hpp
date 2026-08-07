@@ -65,6 +65,11 @@ struct ExportPageSpec {
   bool repeat_legend{true};
   bool show_page_numbers{true};
   bool show_depth_range{true};
+  // Depth ruler (Epic B, B4): authoritative nice-step ticks (scene::nice_axis_ticks)
+  // + labels drawn in the left margin strip, showing the page's depth window.
+  // Emitted by the SVG and PDF backends with the SAME tick semantics; off by
+  // default (backward compatible) — enable for single-well exports.
+  bool show_depth_ruler{false};
   // Crop/trim marks (剪切线, FRS §5): short registration marks at the four
   // corners of the printable area, drawn inside the margins. Emitted by the
   // SVG and PDF backends; off by default.

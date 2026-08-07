@@ -529,6 +529,42 @@ void prepare_for_export_returns_scene_and_preserves_interactive() {
           "prepare_for_export must reject an unknown document");
 }
 
+void depth_ruler_emits_authoritative_ticks() {
+  // Epic B (B4): the SVG backend draws the depth ruler from the SDK's
+  // authoritative nice-step ticks — a continuous page over 1000–1800 m must
+  // carry 9 ticks (step 100 m) with formatted labels in the left margin.
+  const auto scene = prepare_tall_scene();
+  auto snapshot =
+      make_snapshot(PaginationMode::continuous, Millimetres{297.0});
+  snapshot.page.show_depth_ruler = true;
+  const auto result = PaginatedSvgExporter::write(*scene, snapshot);
+  require(result.has_value(), "ruler export must succeed");
+  const auto text = std::string{result.value().text()};
+  const auto ticks = count_occurrences(text, "data-export-role=\"ruler\"");
+  require(ticks >= 18,
+          "ruler must emit a tick line AND a label per tick (>=18 elements)");
+  // Authoritative ladder over 1000–1800 m: step 100 → labels 1000..1800.
+  require(text.find(">1000<") != std::string::npos &&
+              text.find(">1800<") != std::string::npos,
+          "ruler labels must carry the window's tick values");
+  require(text.find("data-export-role=\"ruler\" x=\"1\"") !=
+              std::string::npos,
+          "ruler labels must sit in the left margin strip");
+}
+
+void depth_ruler_off_by_default() {
+  // Backward compatibility: existing exports are unchanged unless the option
+  // is explicitly enabled.
+  const auto scene = prepare_tall_scene();
+  auto snapshot =
+      make_snapshot(PaginationMode::continuous, Millimetres{297.0});
+  const auto result = PaginatedSvgExporter::write(*scene, snapshot);
+  require(result.has_value(), "default export must succeed");
+  const auto text = std::string{result.value().text()};
+  require(text.find("data-export-role=\"ruler\"") == std::string::npos,
+          "ruler must be off by default");
+}
+
 } // namespace
 
 int main() {
@@ -540,6 +576,8 @@ int main() {
   single_scene_exporter_is_unchanged();
   invalid_scene_or_snapshot_is_rejected();
   prepare_for_export_returns_scene_and_preserves_interactive();
+  depth_ruler_emits_authoritative_ticks();
+  depth_ruler_off_by_default();
   std::cout << "PASS: paginated SVG behavior\n";
   return EXIT_SUCCESS;
 }

@@ -964,6 +964,37 @@ void output_is_byte_deterministic() {
           "no ModDate may appear");
 }
 
+void depth_ruler_emits_and_changes_output() {
+  // Epic B (B4): the PDF backend draws the depth ruler with the same
+  // authoritative tick semantics as the SVG backend. Off by default
+  // (byte-deterministic existing output); enabling it must change the
+  // emitted bytes (ruler geometry) without crashing.
+  const auto document = base_document();
+  auto builder = base_presentation();
+  const auto scene = prepare_scene(document, builder);
+  StubResolver resolver;
+  auto engine = make_engine();
+
+  auto default_snapshot = make_snapshot(PaginationMode::continuous);
+  const auto off = PdfSceneExporter::write(
+      *scene, default_snapshot,
+      [&resolver](const ImageTileRequest &req) { return resolver(req); },
+      engine.get());
+  require(off.has_value(), "default PDF must build");
+
+  auto ruler_snapshot = make_snapshot(PaginationMode::continuous);
+  ruler_snapshot.page.show_depth_ruler = true;
+  const auto on = PdfSceneExporter::write(
+      *scene, ruler_snapshot,
+      [&resolver](const ImageTileRequest &req) { return resolver(req); },
+      engine.get());
+  require(on.has_value(), "PDF with depth ruler must build");
+  require(on.value().bytes() != off.value().bytes(),
+          "ruler-on output must differ from the default output");
+  require(on.value().bytes().size() > off.value().bytes().size(),
+          "the depth ruler must add geometry to the PDF");
+}
+
 } // namespace
 
 int main() {
@@ -977,6 +1008,7 @@ int main() {
   custom_layer_primitives_are_emitted();
   rgba_image_embeds_as_device_rgb_alpha_dropped();
   output_is_byte_deterministic();
+  depth_ruler_emits_and_changes_output();
   std::cout << "welllog.pdf-scene-full: all cases passed\n";
   return EXIT_SUCCESS;
 }
