@@ -35,6 +35,9 @@ class CorrelationCanvas(QWidget):
     depth_range_changed = Signal(float, float)
     # Manual link pick: well_document_id, top name, depth, top id (#231)
     top_clicked = Signal(str, str, float, str)
+    # Link drag (FRS §2.x 分层线拖拽吸附): link_id, new_left_depth,
+    # new_right_depth — emitted after a horizon-line drag is released.
+    link_dragged = Signal(str, float, float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -54,6 +57,12 @@ class CorrelationCanvas(QWidget):
         self._press_y: int | None = None
         self._did_drag = False
         self._highlight: tuple[str, str] | None = None  # well_id, top name
+        # Link drag (FRS §2.x 分层线拖拽吸附): id being dragged + the depth
+        # offset applied while dragging (both anchors move together).
+        self._drag_link_id: str | None = None
+        self._drag_link_offset: float = 0.0
+        self._drag_link_left_orig: float = 0.0
+        self._drag_link_right_orig: float = 0.0
         # Pixel gap between well columns (#295 / T7); default matches legacy paint.
         self._column_gap: int = 6
         # Per-well display-depth shift (MD + shift = display) for datum flatten (#296).
@@ -97,6 +106,20 @@ class CorrelationCanvas(QWidget):
 
     def _shift_for(self, well_id: str) -> float:
         return float(self._depth_shifts.get(well_id, 0.0))
+
+    def depth_at_y(self, y: float) -> float | None:
+        """Map widget Y to depth in the current viewport (VE aware)."""
+        if self._d0 is None or self._d1 is None:
+            return None
+        top_band, bottom = 36, self.height() - 24
+        if bottom <= top_band:
+            return None
+        if y < top_band or y > bottom:
+            return None
+        ve = self._vertical_exaggeration
+        t = (y - top_band) / (bottom - top_band)
+        t = max(0.0, min(1.0, t))
+        return self._d0 + t * (self._d1 - self._d0) / ve if ve > 0 else self._d0
 
     def _x_well(self, i: int, col_w: int, gap: int) -> float:
         """X-centre (px) of well column ``i``.
@@ -303,6 +326,93 @@ class CorrelationCanvas(QWidget):
             return None
         return well_id, best
 
+    def hit_test_link(self, x: float, y: float, *, tol_px: float = 8.0) -> str | None:
+        """Return the link id whose segment is within ``tol_px`` of (x, y).
+
+        Mirrors the anchor geometry used in paint: left anchor at the right
+        edge of the left column, right anchor at the left edge of the right
+        column, y from the link depths + per-well shift (VE applied). The
+        nearest link within tolerance wins; None otherwise.
+        """
+        if self._d0 is None or self._d1 is None or not self._links or not self._columns:
+            return None
+        n = len(self._columns)
+        w, h = self.width(), self.height()
+        gap = self._column_gap
+        col_w = max(40, (w - 16 - gap * (n - 1)) // n) if n else 40
+        top_band, bottom = 36, h - 24
+        if bottom <= top_band:
+            return None
+        d0, d1 = self._d0, self._d1
+        ve = self._vertical_exaggeration
+        well_index = {p.well_document_id: i for i, p in enumerate(self._columns)}
+        best_id: str | None = None
+        best_dist = float(tol_px)
+        for link in self._links:
+            li = well_index.get(link.left_well_id)
+            ri = well_index.get(link.right_well_id)
+            if li is None or ri is None:
+                continue
+            ld = float(link.left_depth) + self._shift_for(link.left_well_id)
+            rd = float(link.right_depth) + self._shift_for(link.right_well_id)
+            lx = self._x_well(li, col_w, gap) + col_w / 2 - 4
+            rx = self._x_well(ri, col_w, gap) - col_w / 2 + 2
+            ly = top_band + ((ld - d0) / (d1 - d0)) * (bottom - top_band) * ve
+            ry = top_band + ((rd - d0) / (d1 - d0)) * (bottom - top_band) * ve
+            # Point-to-segment distance.
+            dx, dy = rx - lx, ry - ly
+            seg2 = dx * dx + dy * dy
+            if seg2 <= 1e-12:
+                dist = math.hypot(x - lx, y - ly)
+            else:
+                t = max(0.0, min(1.0, ((x - lx) * dx + (y - ly) * dy) / seg2))
+                px, py = lx + t * dx, ly + t * dy
+                dist = math.hypot(x - px, y - py)
+            if dist <= best_dist:
+                best_dist = dist
+                best_id = link.id
+        return best_id
+
+    def _snap_drag_depth(self, well_id: str, depth: float) -> float:
+        """Snap a dragged link depth to the nearest curve extremum.
+
+        Uses the well's primary curve (first curve track, layers[0]),
+        converted to raw MD (display − shift); snaps within a pixel
+        tolerance (10 px like hit_test_top) so the user feels the magnet.
+        """
+        if self._d0 is None or self._d1 is None:
+            return depth
+        pres = next((p for p in self._columns if p.well_document_id == well_id), None)
+        if pres is None:
+            return depth
+        curve_track = next(
+            (t for t in pres.tracks if t.role == "curve" and t.layers), None
+        )
+        if curve_track is None:
+            return depth
+        layer = curve_track.layers[0]
+        dep = np.asarray(pres.depth, dtype=np.float64)
+        vals = np.asarray(layer.values, dtype=np.float64)
+        nulls = np.asarray(layer.null_mask, dtype=bool)
+        if dep.size < 3 or vals.size < 3:
+            return depth
+        shift = self._shift_for(well_id)
+        raw = float(depth) - shift
+        # Pixel tolerance → depth tolerance.
+        w, h = self.width(), self.height()
+        top_band, bottom = 36, h - 24
+        span = self._d1 - self._d0
+        ve = self._vertical_exaggeration
+        tol = (
+            10.0 / max(1.0, (bottom - top_band) * ve) * span
+            if span > 0
+            else 0.0
+        )
+        from well_log_workstation.curve_extrema import snap_depth_to_extrema
+
+        snapped = snap_depth_to_extrema(dep, vals, nulls, raw, tol=tol)
+        return float(snapped) + shift
+
     def _fit_depth(self) -> None:
         mins: list[float] = []
         maxs: list[float] = []
@@ -332,6 +442,26 @@ class CorrelationCanvas(QWidget):
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
+            # Link drag (FRS §2.x 分层线拖拽吸附): in pick mode, pressing on
+            # a link segment starts a drag instead of a top pick.
+            if self._link_pick_mode:
+                link_id = self.hit_test_link(
+                    float(event.position().x()), float(event.position().y())
+                )
+                if link_id is not None:
+                    link = next(
+                        (lk for lk in self._links if lk.id == link_id), None
+                    )
+                    if link is not None:
+                        self._drag_link_id = link.id
+                        self._drag_link_offset = 0.0
+                        self._drag_link_left_orig = float(link.left_depth)
+                        self._drag_link_right_orig = float(link.right_depth)
+                        self._press_y = int(event.position().y())
+                        self._did_drag = False
+                        self.update()
+                        event.accept()
+                        return
             self._press_y = int(event.position().y())
             self._did_drag = False
             self._drag_y = self._press_y
@@ -339,6 +469,19 @@ class CorrelationCanvas(QWidget):
             event.accept()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        # Link drag: follow the cursor depth (with extrema snap), no pan.
+        if self._drag_link_id is not None:
+            link = next(
+                (lk for lk in self._links if lk.id == self._drag_link_id), None
+            )
+            d = self.depth_at_y(float(event.position().y()))
+            if link is not None and d is not None:
+                snapped = self._snap_drag_depth(link.left_well_id, d)
+                self._drag_link_offset = float(snapped) - self._drag_link_left_orig
+                self._did_drag = True
+                self.update()
+            event.accept()
+            return
         if (
             self._drag_y is None
             or self._drag_d0 is None
@@ -359,25 +502,58 @@ class CorrelationCanvas(QWidget):
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton and not self._did_drag:
-            if self._link_pick_mode or (
-                event.modifiers() & Qt.KeyboardModifier.ShiftModifier
-            ):
-                hit = self.hit_test_top(
-                    float(event.position().x()), float(event.position().y())
-                )
-                if hit is not None:
-                    well_id, top = hit
-                    self.top_clicked.emit(
-                        well_id, top.name, float(top.depth), top.id or ""
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Link drag release: commit the new depths.
+            if self._drag_link_id is not None:
+                link_id = self._drag_link_id
+                offset = self._drag_link_offset
+                left = self._drag_link_left_orig
+                right = self._drag_link_right_orig
+                self._drag_link_id = None
+                self._drag_link_offset = 0.0
+                if self._did_drag and abs(offset) > 1e-9:
+                    self.link_dragged.emit(
+                        link_id, float(left) + offset, float(right) + offset
                     )
-                    event.accept()
-                    self._drag_y = None
-                    self._did_drag = False
-                    return
+                self.update()
+                event.accept()
+                self._drag_y = None
+                self._did_drag = False
+                return
+            if not self._did_drag:
+                if self._link_pick_mode or (
+                    event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+                ):
+                    hit = self.hit_test_top(
+                        float(event.position().x()), float(event.position().y())
+                    )
+                    if hit is not None:
+                        well_id, top = hit
+                        self.top_clicked.emit(
+                            well_id, top.name, float(top.depth), top.id or ""
+                        )
+                        event.accept()
+                        self._drag_y = None
+                        self._did_drag = False
+                        return
         self._drag_y = None
         self._did_drag = False
         event.accept()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if (
+            self._drag_link_id is not None
+            and event.key() == Qt.Key.Key_Escape
+        ):
+            # Cancel the in-progress link drag.
+            self._drag_link_id = None
+            self._drag_link_offset = 0.0
+            self._drag_y = None
+            self._did_drag = False
+            self.update()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
@@ -551,8 +727,14 @@ class CorrelationCanvas(QWidget):
                 ri = well_index.get(link.right_well_id)
                 if li is None or ri is None:
                     continue
+                is_dragging = (
+                    self._drag_link_id is not None and self._drag_link_id == link.id
+                )
                 ld = float(link.left_depth) + self._shift_for(link.left_well_id)
                 rd = float(link.right_depth) + self._shift_for(link.right_well_id)
+                if is_dragging:
+                    ld += self._drag_link_offset
+                    rd += self._drag_link_offset
                 if ld < d0 or ld > d1:
                     continue
                 if rd < d0 or rd > d1:
@@ -567,7 +749,11 @@ class CorrelationCanvas(QWidget):
                 y_right = top + ((rd - d0) / (d1 - d0)) * (bottom - top) * (
                     self._vertical_exaggeration
                 )
-                pen = QPen(QColor(link.color), 1.4, Qt.PenStyle.SolidLine)
+                pen = QPen(
+                    QColor("#f1c40f" if is_dragging else link.color),
+                    2.5 if is_dragging else 1.4,
+                    Qt.PenStyle.SolidLine,
+                )
                 p.setPen(pen)
                 p.drawLine(int(x_left), int(y_left), int(x_right), int(y_right))
                 mid_x = int(0.5 * (x_left + x_right))

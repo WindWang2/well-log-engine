@@ -742,6 +742,10 @@ class WellLogWorkstationWindow(QMainWindow):
         self.correlation_stack.setObjectName("CorrelationStack")
         self.correlation_canvas = CorrelationCanvas()
         self.correlation_canvas.top_clicked.connect(self._on_correlation_top_clicked)
+        # Link drag (FRS §2.x 分层线拖拽吸附): commit new depths after drag.
+        self.correlation_canvas.link_dragged.connect(
+            self._on_correlation_link_dragged
+        )
         self.correlation_stack.addWidget(self.correlation_canvas)  # 0 host
 
         self._corr_engine_page = QWidget()
@@ -6743,7 +6747,7 @@ class WellLogWorkstationWindow(QMainWindow):
             self.correlation_stack.setCurrentIndex(0)
             self.document_tabs.setCurrentIndex(1)
             self.statusBar().showMessage(
-                "点选连线：依次点击两口井的层位虚线 · 再次点菜单退出",
+                "点选连线：依次点击两口井的层位虚线 · 按住连线拖拽可调深度（吸附曲线极值）",
                 8000,
             )
 
@@ -6780,6 +6784,46 @@ class WellLogWorkstationWindow(QMainWindow):
             )
         except WorkspaceError as exc:
             QMessageBox.warning(self, "连线失败", str(exc))
+
+    def _on_correlation_link_dragged(
+        self, link_id: str, left_depth: float, right_depth: float
+    ) -> None:
+        """Commit new depths after a horizon-link drag (FRS §2.x 分层线拖拽)."""
+        if self._workspace is None or not self._active_plot_id:
+            return
+        link = next(
+            (lk for lk in self._correlation_links if lk.id == link_id), None
+        )
+        if link is None:
+            return
+        from well_log_workstation.correlation_links import HorizonLink as HL
+
+        updated = [
+            HL(
+                id=lk.id,
+                left_well_id=lk.left_well_id,
+                right_well_id=lk.right_well_id,
+                name=lk.name,
+                left_depth=(
+                    float(left_depth)
+                    if lk.id == link_id
+                    else float(lk.left_depth)
+                ),
+                right_depth=(
+                    float(right_depth)
+                    if lk.id == link_id
+                    else float(lk.right_depth)
+                ),
+                left_marker_id=lk.left_marker_id,
+                right_marker_id=lk.right_marker_id,
+                color=lk.color,
+            )
+            for lk in self._correlation_links
+        ]
+        self._set_correlation_links(updated, persist=True)
+        self.statusBar().showMessage(
+            f"已调整连线 {link.name}（可撤销）", 4000
+        )
 
     def _on_toggle_prefer_engine(self) -> None:
         self._prefer_engine_canvas = self._act_prefer_engine.isChecked()
