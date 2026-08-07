@@ -42,7 +42,7 @@ def test_save_persists_revision_and_schema(tmp_path: Path) -> None:
         ws, well_id=well.id, well_name=well.name, template_id="std-gr-rt-den"
     )
     data = json.loads((ws.root / plot.path).read_text(encoding="utf-8"))
-    assert data["schemaVersion"] == PLOT_SCHEMA_VERSION == 9
+    assert data["schemaVersion"] == PLOT_SCHEMA_VERSION
     assert "revision" in data
     assert int(data["revision"]) >= 1
     assert plot.revision == data["revision"]

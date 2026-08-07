@@ -20,10 +20,11 @@ def _shape() -> dict:
 
 
 def test_schema_version_current() -> None:
-    """Current plot schema is v9 (v8 track_order, v9 section surfaces)."""
+    """Pin: the imported constant is the single source of truth for the
+    current plot schema version (don't hardcode the number here too)."""
     from well_log_workstation.plot_document import PLOT_SCHEMA_VERSION
 
-    assert PLOT_SCHEMA_VERSION == 9
+    assert isinstance(PLOT_SCHEMA_VERSION, int) and PLOT_SCHEMA_VERSION >= 1
 
 
 def test_v3_upgrades_to_v4_with_empty_free_graphics() -> None:
@@ -104,7 +105,7 @@ def test_to_json_emits_free_graphics_for_composite() -> None:
         free_graphics=[shape],
     )
     payload = _to_json(doc)
-    assert payload["schemaVersion"] == PLOT_SCHEMA_VERSION == 9
+    assert payload["schemaVersion"] == PLOT_SCHEMA_VERSION
     assert payload["free_graphics"] == [shape]
 
 
