@@ -1020,6 +1020,23 @@ if(WELLLOG_BUILD_TESTS)
         COMMAND welllog_document_annotation_tests
     )
 
+    add_executable(welllog_multi_rate_curve_tests
+        tests/integration/multi_rate_curve_test.cpp
+    )
+    target_compile_features(
+        welllog_multi_rate_curve_tests
+        PRIVATE cxx_std_20
+    )
+    welllog_enable_warnings(welllog_multi_rate_curve_tests)
+    target_link_libraries(
+        welllog_multi_rate_curve_tests
+        PRIVATE WellLog::Session WellLog::Table WellLog::Scene WellLog::IO
+    )
+    add_test(
+        NAME welllog.multi-rate-curves
+        COMMAND welllog_multi_rate_curve_tests
+    )
+
     add_executable(welllog_layer_preparation_tests
         tests/integration/layer_preparation_test.cpp
     )

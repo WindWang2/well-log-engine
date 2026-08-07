@@ -389,6 +389,17 @@ void require_exact_fields(const JsonObject &value,
   throw ParseFailure{"expected JSON boolean"};
 }
 
+// Optional v2 axis field: absent = irregular/unknown sampling. The schema
+// validation above already guarantees a number when the key is present.
+[[nodiscard]] std::optional<double> parse_optional_interval(
+    const JsonObject &axis) {
+  const auto found = axis.find("nominalInterval");
+  if (found == axis.end()) {
+    return std::nullopt;
+  }
+  return number(found->second);
+}
+
 [[nodiscard]] EntityId entity_id(const JsonValue &value) {
   const auto parsed = EntityId::parse(string(value));
   if (!parsed || parsed->is_nil()) {
@@ -830,8 +841,24 @@ void validate_manifest_schema(const JsonObject &root) {
   }
   for (const auto &axis_value : axes) {
     const auto &axis = object(axis_value);
-    require_exact_fields(axis,
-                         {"id", "domain", "unit", "direction", "coordinates"});
+    // Mandatory keys + optional nominalInterval (multi-rate metadata, v2
+    // addition). Mirrors the document-level optional-key tolerance: v1/v2
+    // manifests without the key parse as irregular/unknown sampling.
+    for (const auto &mandatory :
+         {"id", "domain", "unit", "direction", "coordinates"}) {
+      (void)field(axis, mandatory); // throws on miss
+    }
+    for (const auto &[key, value] : axis) {
+      if (key != "id" && key != "domain" && key != "unit" &&
+          key != "direction" && key != "coordinates" &&
+          key != "nominalInterval") {
+        throw ParseFailure{"unknown axis field: " + key};
+      }
+      if (key == "nominalInterval" &&
+          !std::holds_alternative<JsonNumber>(value.value)) {
+        throw ParseFailure{"nominalInterval must be a number"};
+      }
+    }
     validate_buffer_schema(field(axis, "coordinates"));
   }
   for (const auto &curve_value : curves) {
@@ -985,6 +1012,10 @@ Result<ManifestText> ManifestCodec::write(const WellLogDocument &document) {
       append_escaped(output, axis.unit);
       output += ",\"direction\":";
       append_escaped(output, direction_name(axis.direction));
+      if (axis.nominal_interval.has_value()) {
+        output += ",\"nominalInterval\":";
+        output += std::to_string(*axis.nominal_interval);
+      }
       output += ",\"coordinates\":";
       write_buffer(output, axis.coordinates.as_single());
       output.push_back('}');
@@ -1150,6 +1181,7 @@ ManifestCodec::read(std::string_view manifest,
           .domain = parse_domain(string(field(axis, "domain"))),
           .unit = string(field(axis, "unit")),
           .direction = parse_direction(string(field(axis, "direction"))),
+          .nominal_interval = parse_optional_interval(axis),
       });
     }
 

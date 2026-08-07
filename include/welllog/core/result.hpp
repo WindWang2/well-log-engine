@@ -63,6 +63,8 @@ enum class MessageKey : std::uint16_t {
   entity_identity_duplicated,
   sampling_axis_direction_invalid,
   sampling_axis_missing,
+  // A SamplingAxis's nominal_interval is present but not finite/positive.
+  sampling_axis_interval_invalid,
   curve_length_mismatch,
   presentation_invalid,
   presentation_document_missing,

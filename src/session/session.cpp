@@ -271,6 +271,16 @@ validate_document(const WellLogDocument &document) {
           .arguments = {},
       };
     }
+    if (axis.nominal_interval.has_value() &&
+        (!std::isfinite(*axis.nominal_interval) ||
+         *axis.nominal_interval <= 0.0)) {
+      return Error{
+          .code = ErrorCode::invalid_sampling_axis,
+          .entity_id = axis.id,
+          .message = MessageKey::sampling_axis_interval_invalid,
+          .arguments = {},
+      };
+    }
     axes.emplace(axis.id, &axis);
   }
 

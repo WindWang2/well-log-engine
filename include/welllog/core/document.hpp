@@ -306,6 +306,13 @@ struct SamplingAxis {
   DepthDomain domain{DepthDomain::measured_depth};
   std::string unit;
   AxisDirection direction{AxisDirection::increasing};
+  // Nominal sampling step (in the axis unit) of a regular axis, when the
+  // coordinates follow a constant interval (e.g. 0.125 m). A description
+  // only — the coordinates array stays the source of truth, and the value is
+  // left unset for irregular sampling or unknown intervals. Consumed by
+  // UI/table labels ("0.125 m") and explicit resampling targets. Must be
+  // finite and > 0 when present.
+  std::optional<double> nominal_interval{};
 };
 
 // Per-sample quality state for a QC Mask (#159, ADR 0025). Masks never rewrite
