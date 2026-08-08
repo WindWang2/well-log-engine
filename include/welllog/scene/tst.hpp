@@ -29,6 +29,14 @@
 // Zero TST is a VALID result (the well runs parallel to bedding); reversed
 // or non-finite inputs are errors. Unit-vector inputs are validated — a
 // missing/insufficient orientation is an input error, never a default.
+//
+// Surface-based extension (Epic D high-order): ``tst_along_surface_path``
+// generalises the piecewise model from declared MD intervals with constant
+// normals to bedding surfaces sampled on regular (x, y) grids. Surface
+// intersection is computed geometrically (the crossing MD is solved exactly
+// along each leg), and the local bedding normal is interpolated from the
+// surface — varying orientation is no longer a silent fallback but the
+// documented model; see tst_along_surface_path below.
 
 #ifndef WELLLOG_SCENE_TST_HPP
 #define WELLLOG_SCENE_TST_HPP
@@ -92,6 +100,28 @@ struct PathPoint3D {
   double z{};
 };
 
+// A bedding surface sampled on a regular (x, y) grid (Epic D high-order
+// extension): z = f(x, y) is the surface TVD (metres; Z = down / increasing
+// depth) at the grid nodes. x is northing, y is easting; nodes are spaced
+// x_step_m / y_step_m apart starting at (x_origin_m, y_origin_m). The surface
+// is piecewise bilinear between nodes; ``z_tvd`` holds y_nodes × x_nodes
+// values in row-major order (y outer, x inner).
+//
+// Contract: ≥ 2 nodes in each dimension, finite positive steps, finite
+// origin and finite heights — a violation is an input error. The surface is
+// defined only inside its rectangular footprint (boundaries inclusive):
+// every path point must lie inside every surface's footprint — an excursion
+// is an input error, never a silent out-of-range default.
+struct SurfaceGrid {
+  double x_origin_m{};
+  double y_origin_m{};
+  double x_step_m{};
+  double y_step_m{};
+  std::size_t x_nodes{};
+  std::size_t y_nodes{};
+  const double* z_tvd{};
+};
+
 // TST from a measured interval L along a deviated well through planar
 // bedding: ``TST = L · |w·n|``. L must be finite and ≥ 0; both vectors must
 // be finite unit vectors (norm within 1e-6).
@@ -128,6 +158,36 @@ tst_through_layers(double start_md, double measured_length_m,
 [[nodiscard]] WELLLOG_SCENE_API Result<TrueStratigraphicThickness>
 tst_along_path(const PathPoint3D* path, std::size_t path_count,
                const BeddingLayer* layers, std::size_t layer_count) noexcept;
+
+// TST along a polyline well path through a stack of bedding surfaces (Epic D
+// high-order extension). Each surface is a z = f(x, y) grid (see
+// SurfaceGrid); consecutive surfaces bound a unit — unit i lies between
+// surfaces[i] (top) and surfaces[i + 1] (bottom). The path's crossings with
+// each surface are computed geometrically: along every leg the signed
+// distance d(t) = z(t) − f(x(t), y(t)) is a quadratic within one grid cell,
+// whose roots are solved exactly (a double root is a tangency — the path
+// touches the surface without changing side — and is not a crossing). The
+// TST of unit i is
+//   ``TST = Σ_segments length · |ŵ_segment · n̂|``
+// over the path sub-segments inside the unit, where ŵ is the leg's unit
+// direction and n̂ is the normalized average of the two surfaces'
+// interpolated unit normals at the sub-segment midpoint — the documented
+// local-parallel approximation (curved bedding is never silently replaced by
+// a planar guess; the approximation is explicit).
+//
+// The stack contract mirrors the piecewise-planar one: surfaces must be
+// strictly ordered along the path — surface[i + 1] strictly below
+// surface[i] at every path point and at every crossing (an overlap/crossing
+// is an input error); every path point must lie inside every surface's
+// footprint; a leg lying in a surface (coincident) is an input error.
+// Sub-paths outside every unit contribute nothing (undeclared bedding is the
+// caller's responsibility). A stack with fewer than 2 surfaces is a legal
+// zero result (like an empty layer book). Zero TST is a VALID result (the
+// path runs parallel to bedding); reversed or non-finite inputs are errors.
+[[nodiscard]] WELLLOG_SCENE_API Result<TrueStratigraphicThickness>
+tst_along_surface_path(const PathPoint3D* path, std::size_t path_count,
+                       const SurfaceGrid* surfaces,
+                       std::size_t surface_count) noexcept;
 
 }  // namespace welllog
 

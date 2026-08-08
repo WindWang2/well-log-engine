@@ -4,12 +4,14 @@ Covers:
 * parity — the Python mirror asserts the SAME analytic fixture values as
   tests/integration/tst_layers_test.cpp (the SDK is the single source of
   truth; the mirror is locked to it by shared fixtures);
+* surface parity — tst_along_surface_path asserts the SAME values as
+  tests/integration/tst_surfaces_test.cpp;
 * validation mirror (ValueError on every C++ input-error case);
 * normal_from_dip_azimuth convention (φ=0 degenerates to the C++ convention);
 * binding-first dispatch (fake welllog module wins when present, mirror
   otherwise);
 * path_from_trajectory (survey → PathPoint3D, monotonic filtering);
-* bedding.json sidecar round-trip + tolerant read;
+* bedding.json sidecar round-trip + tolerant read (v1 planar + v2 surface);
 * end-to-end: survey stations + bedding sidecar → TST.
 """
 
@@ -35,13 +37,17 @@ from well_log_workstation.tst import (
     BedNormal3D,
     BeddingLayerSpec,
     PathPoint3D,
+    SurfaceGrid,
+    SurfaceGridSpec,
     WellDirection3D,
     _BINDING_CACHE,
+    layer_surfaces,
     load_bedding_for_well,
     normal_from_dip_azimuth,
     path_from_trajectory,
     save_bedding_for_well,
     tst_along_path,
+    tst_along_surface_path,
     tst_through_layers,
 )
 
@@ -391,3 +397,340 @@ def test_bedding_sidecar_tolerant_read(tmp_path: Path) -> None:
     specs, diags = load_bedding_for_well(ws, "w1")
     assert len(specs) == 1 and specs[0].top_md == 0.0
     assert len(diags) == 2
+
+
+# ---------------------------------------------------------------------------
+# Surface parity — SAME analytic values as tests/integration/tst_surfaces_test.cpp
+# ---------------------------------------------------------------------------
+
+
+def _grid_const(g, height: float) -> SurfaceGrid:
+    x0, y0, xs, ys, xn, yn = g
+    return SurfaceGrid(
+        x_origin_m=x0, y_origin_m=y0, x_step_m=xs, y_step_m=ys,
+        x_nodes=xn, y_nodes=yn, z_tvd=[height] * (xn * yn),
+    )
+
+
+def _grid_from(g, f) -> SurfaceGrid:
+    x0, y0, xs, ys, xn, yn = g
+    z = [
+        f(x0 + i * xs, y0 + j * ys)
+        for j in range(yn)
+        for i in range(xn)
+    ]
+    return SurfaceGrid(
+        x_origin_m=x0, y_origin_m=y0, x_step_m=xs, y_step_m=ys,
+        x_nodes=xn, y_nodes=yn, z_tvd=z,
+    )
+
+
+# x, y ∈ [0, 400] with x step 100 — the plane-fixture grid.
+PLANE_GRID = (0.0, 0.0, 100.0, 100.0, 5, 2)
+
+
+def _sine_mesh(g) -> SurfaceGrid:
+    """Fold sampled on a coarse sine: z = 100, 110, 100, 90, 100 (y-const)."""
+    heights = [100.0, 110.0, 100.0, 90.0, 100.0]
+    return SurfaceGrid(
+        x_origin_m=g[0], y_origin_m=g[1], x_step_m=g[2], y_step_m=g[3],
+        x_nodes=g[4], y_nodes=g[5], z_tvd=heights * g[5],
+    )
+
+
+def test_surface_parity_horizontal_planes() -> None:
+    g = (0.0, 0.0, 100.0, 100.0, 3, 3)
+    surfaces = [_grid_const(g, 100.0), _grid_const(g, 300.0)]
+    path = [
+        PathPoint3D(md=0.0, x=10.0, y=10.0, z=0.0),
+        PathPoint3D(md=1000.0, x=10.0, y=10.0, z=1000.0),
+    ]
+    tst = tst_along_surface_path(path, surfaces)
+    assert tst.value == pytest.approx(200.0, abs=1e-9)
+    assert tst.measured_interval_m == pytest.approx(1000.0, abs=1e-9)
+    assert tst.normal_dot == pytest.approx(0.2, abs=1e-9)
+    assert tst.kind == "true_stratigraphic_thickness"
+
+
+def test_surface_parity_dipping_plane_non_node() -> None:
+    f = lambda x, _y: 0.25 * x + 100.0
+    fb = lambda x, _y: 0.25 * x + 300.0
+    surfaces = [_grid_from(PLANE_GRID, f), _grid_from(PLANE_GRID, fb)]
+    # Well at x = 175 (between grid nodes), y = 50.
+    path = [
+        PathPoint3D(md=0.0, x=175.0, y=50.0, z=0.0),
+        PathPoint3D(md=1000.0, x=175.0, y=50.0, z=1000.0),
+    ]
+    tst = tst_along_surface_path(path, surfaces)
+    cos_dip = 1.0 / math.sqrt(1.0625)
+    assert tst.value == pytest.approx(200.0 * cos_dip, abs=1e-9)
+    assert tst.normal_dot == pytest.approx(200.0 * cos_dip / 1000.0, abs=1e-9)
+
+
+def test_surface_parity_folded_stack_at_node() -> None:
+    top = _sine_mesh(PLANE_GRID)
+    bottom = _sine_mesh(PLANE_GRID)
+    bottom = SurfaceGrid(
+        x_origin_m=bottom.x_origin_m, y_origin_m=bottom.y_origin_m,
+        x_step_m=bottom.x_step_m, y_step_m=bottom.y_step_m,
+        x_nodes=bottom.x_nodes, y_nodes=bottom.y_nodes,
+        z_tvd=[v + 200.0 for v in bottom.z_tvd],
+    )
+    path = [
+        PathPoint3D(md=0.0, x=200.0, y=50.0, z=0.0),
+        PathPoint3D(md=1000.0, x=200.0, y=50.0, z=1000.0),
+    ]
+    tst = tst_along_surface_path(path, [top, bottom])
+    assert tst.value == pytest.approx(200.0 / math.sqrt(1.01), abs=1e-9)
+
+
+def test_surface_parity_stack_with_bays() -> None:
+    """3 parallel dipping planes; the path starts inside unit 0, exits and
+    re-enters it upward through the bottom surface (bay), runs a
+    strike-parallel leg (zero contribution), and ends inside unit 0."""
+    g = (-400.0, 0.0, 100.0, 100.0, 9, 2)
+    surfaces = [
+        _grid_from(g, lambda x, _y: 0.25 * x + 100.0),
+        _grid_from(g, lambda x, _y: 0.25 * x + 300.0),
+        _grid_from(g, lambda x, _y: 0.25 * x + 500.0),
+    ]
+    path = [
+        PathPoint3D(md=0.0, x=-400.0, y=0.0, z=100.0),
+        PathPoint3D(md=400.0, x=-400.0, y=0.0, z=500.0),
+        PathPoint3D(md=800.0, x=-400.0, y=0.0, z=100.0),
+        PathPoint3D(md=1200.0, x=400.0, y=0.0, z=300.0),
+    ]
+    tst = tst_along_surface_path(path, surfaces)
+    cos_dip = 1.0 / math.sqrt(1.0625)
+    expected = 600.0 * cos_dip
+    assert tst.value == pytest.approx(expected, abs=1e-9)
+    assert tst.measured_interval_m == pytest.approx(1200.0, abs=1e-9)
+    assert tst.normal_dot == pytest.approx(expected / 1200.0, abs=1e-9)
+
+
+def test_surface_parity_tangency_at_crest() -> None:
+    """A horizontal path at the crest level grazes the fold (d = 0 at the
+    crest, d > 0 elsewhere): not a crossing, whole leg contributes with the
+    midpoint normal."""
+    top = _sine_mesh(PLANE_GRID)
+    bottom = _grid_const(PLANE_GRID, 120.0)
+    path = [
+        PathPoint3D(md=0.0, x=0.0, y=50.0, z=110.0),
+        PathPoint3D(md=200.0, x=200.0, y=50.0, z=110.0),
+    ]
+    tst = tst_along_surface_path(path, [top, bottom])
+    nx = 0.1 / math.sqrt(1.01)
+    nz = 1.0 / math.sqrt(1.01) + 1.0
+    expected = 200.0 * nx / math.sqrt(nx * nx + nz * nz)
+    assert tst.value == pytest.approx(expected, abs=1e-9)
+
+
+def test_surface_parity_strike_parallel_zero_tst() -> None:
+    f = lambda x, _y: 0.25 * x + 100.0
+    fb = lambda x, _y: 0.25 * x + 300.0
+    g = (0.0, 0.0, 100.0, 100.0, 5, 6)  # y ∈ [0, 500]
+    surfaces = [_grid_from(g, f), _grid_from(g, fb)]
+    path = [
+        PathPoint3D(md=0.0, x=50.0, y=0.0, z=162.5),
+        PathPoint3D(md=500.0, x=50.0, y=500.0, z=162.5),
+    ]
+    tst = tst_along_surface_path(path, surfaces)
+    assert tst.value == pytest.approx(0.0, abs=1e-9)
+    assert tst.normal_dot == pytest.approx(0.0, abs=1e-9)
+
+
+def test_surface_parity_empty_and_single_stack_legal_zero() -> None:
+    g = (0.0, 0.0, 100.0, 100.0, 3, 3)
+    path = [
+        PathPoint3D(md=0.0, x=10.0, y=10.0, z=0.0),
+        PathPoint3D(md=500.0, x=10.0, y=10.0, z=500.0),
+    ]
+    empty = tst_along_surface_path(path, [])
+    assert empty.value == 0.0 and empty.measured_interval_m == 500.0
+    single = tst_along_surface_path(path, [_grid_const(g, 100.0)])
+    assert single.value == 0.0
+
+
+def test_surface_crossing_at_path_node() -> None:
+    g = (0.0, 0.0, 100.0, 100.0, 3, 3)
+    surfaces = [_grid_const(g, 200.0), _grid_const(g, 400.0)]
+    # p1 lies exactly on the top surface: duplicate candidates from the two
+    # adjacent legs merge into one genuine crossing.
+    path = [
+        PathPoint3D(md=0.0, x=50.0, y=50.0, z=0.0),
+        PathPoint3D(md=200.0, x=50.0, y=50.0, z=200.0),
+        PathPoint3D(md=1000.0, x=50.0, y=50.0, z=1000.0),
+    ]
+    tst = tst_along_surface_path(path, surfaces)
+    assert tst.value == pytest.approx(200.0, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Surface validation mirror (every C++ input-error case raises ValueError)
+# ---------------------------------------------------------------------------
+
+
+def test_surface_validation_errors_raise() -> None:
+    g = (0.0, 0.0, 100.0, 100.0, 3, 3)
+    ok = [
+        PathPoint3D(md=0.0, x=10.0, y=10.0, z=0.0),
+        PathPoint3D(md=100.0, x=10.0, y=10.0, z=100.0),
+    ]
+    good = _grid_const(g, 100.0)
+    good_bottom = _grid_const(g, 300.0)
+    # Grid-contract errors.
+    with pytest.raises(ValueError):
+        tst_along_surface_path(ok, [SurfaceGrid(**{**good.__dict__, "x_nodes": 1}), good_bottom])
+    with pytest.raises(ValueError):
+        tst_along_surface_path(ok, [SurfaceGrid(**{**good.__dict__, "y_nodes": 1}), good_bottom])
+    with pytest.raises(ValueError):
+        tst_along_surface_path(ok, [SurfaceGrid(**{**good.__dict__, "x_step_m": 0.0}), good_bottom])
+    with pytest.raises(ValueError):
+        tst_along_surface_path(ok, [SurfaceGrid(**{**good.__dict__, "y_step_m": -50.0}), good_bottom])
+    with pytest.raises(ValueError):
+        tst_along_surface_path(ok, [SurfaceGrid(**{**good.__dict__, "x_origin_m": math.nan}), good_bottom])
+    bad_z = SurfaceGrid(**{**good.__dict__, "z_tvd": [math.nan, *good.z_tvd[1:]]})
+    with pytest.raises(ValueError):
+        tst_along_surface_path(ok, [bad_z, good_bottom])
+    with pytest.raises(ValueError):
+        tst_along_surface_path(ok, [SurfaceGrid(**{**good.__dict__, "z_tvd": []}), good_bottom])
+    # Footprint excursion.
+    out_x = [
+        PathPoint3D(md=0.0, x=10.0, y=10.0, z=0.0),
+        PathPoint3D(md=100.0, x=250.0, y=10.0, z=100.0),
+    ]
+    with pytest.raises(ValueError):
+        tst_along_surface_path(out_x, [good, good_bottom])
+    # Inverted surfaces (bottom above top at a path point).
+    with pytest.raises(ValueError):
+        tst_along_surface_path(ok, [good_bottom, good])
+    # Touching surfaces.
+    with pytest.raises(ValueError):
+        tst_along_surface_path(ok, [good, _grid_const(g, 100.0)])
+    # Coincident path segment (leg lies in the top surface).
+    coincident = [
+        PathPoint3D(md=0.0, x=0.0, y=0.0, z=100.0),
+        PathPoint3D(md=500.0, x=500.0, y=0.0, z=100.0),
+    ]
+    with pytest.raises(ValueError):
+        tst_along_surface_path(coincident, [good, good_bottom])
+    # Path validation mirrors the polyline contract.
+    with pytest.raises(ValueError):
+        tst_along_surface_path(ok[:1], [good, good_bottom])
+    with pytest.raises(ValueError):
+        tst_along_surface_path(
+            [PathPoint3D(0.0, 10.0, 10.0, 0.0), PathPoint3D(0.0, 10.0, 10.0, 50.0)],
+            [good, good_bottom],
+        )
+    with pytest.raises(ValueError):
+        tst_along_surface_path(
+            [PathPoint3D(0.0, 10.0, 10.0, 0.0), PathPoint3D(100.0, 10.0, 10.0, 0.0)],
+            [good, good_bottom],
+        )
+
+
+def test_surface_validation_surfaces_crossing_between_path_points() -> None:
+    """Surfaces ordered at the path points but crossing between them: the
+    crossing-side check must reject (never a silent merge)."""
+    g = (0.0, 0.0, 100.0, 100.0, 11, 2)  # x ∈ [0, 1000]
+    top = _grid_from(g, lambda x, _y: 0.1 * x + 100.0)
+    bottom = _grid_from(
+        g, lambda x, _y: 0.001 * (x - 300.0) ** 2 + 0.1 * x + 95.0
+    )
+    path = [
+        PathPoint3D(md=0.0, x=0.0, y=0.0, z=0.0),
+        PathPoint3D(md=500.0, x=1000.0, y=0.0, z=500.0),
+        PathPoint3D(md=1000.0, x=0.0, y=0.0, z=1000.0),
+    ]
+    with pytest.raises(ValueError):
+        tst_along_surface_path(path, [top, bottom])
+
+
+def test_surface_binding_first_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    _BINDING_CACHE.clear()
+
+    class _FakeWellLog(SimpleNamespace):
+        def tst_along_surface_path(self, path, surfaces):
+            return SimpleNamespace(value=456.0, measured_interval_m=10.0, normal_dot=4.56)
+
+    monkeypatch.setitem(sys.modules, "welllog", _FakeWellLog())
+    g = (0.0, 0.0, 100.0, 100.0, 3, 3)
+    path = [
+        PathPoint3D(md=0.0, x=10.0, y=10.0, z=0.0),
+        PathPoint3D(md=100.0, x=10.0, y=10.0, z=100.0),
+    ]
+    try:
+        result = tst_along_surface_path(path, [_grid_const(g, 100.0)])
+        assert result.value == 456.0  # binding wins when present
+    finally:
+        monkeypatch.delitem(sys.modules, "welllog", raising=False)
+        _BINDING_CACHE.clear()
+
+
+def test_surface_fallback_without_binding() -> None:
+    _BINDING_CACHE.clear()
+    g = (0.0, 0.0, 100.0, 100.0, 3, 3)
+    path = [
+        PathPoint3D(md=0.0, x=10.0, y=10.0, z=0.0),
+        PathPoint3D(md=1000.0, x=10.0, y=10.0, z=1000.0),
+    ]
+    result = tst_along_surface_path(path, [_grid_const(g, 100.0), _grid_const(g, 300.0)])
+    assert result.value == pytest.approx(200.0, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Bedding sidecar v2 — surface grids
+# ---------------------------------------------------------------------------
+
+
+def _surface_spec(g, height: float) -> SurfaceGridSpec:
+    x0, y0, xs, ys, xn, yn = g
+    return SurfaceGridSpec(
+        x_origin_m=x0, y_origin_m=y0, x_step_m=xs, y_step_m=ys,
+        x_nodes=xn, y_nodes=yn, z_tvd=tuple([height] * (xn * yn)),
+    )
+
+
+def test_bedding_sidecar_surface_roundtrip(tmp_path: Path) -> None:
+    from well_log_workstation.workspace import add_well, create_workspace
+
+    ws = create_workspace(tmp_path / "ws")
+    add_well(ws, name="W1", path="wells/w1.las", well_id="w1")
+    g = (0.0, 0.0, 100.0, 100.0, 3, 3)
+    specs = [
+        BeddingLayerSpec(
+            top_md=0.0, bottom_md=200.0, dip_deg=0.0,
+            top_surface=_surface_spec(g, 100.0),
+            bottom_surface=_surface_spec(g, 300.0),
+        ),
+        BeddingLayerSpec(top_md=200.0, bottom_md=400.0, dip_deg=5.0),
+    ]
+    save_bedding_for_well(ws, "w1", specs)
+    loaded, diags = load_bedding_for_well(ws, "w1")
+    assert not diags
+    assert loaded == specs
+    # The surface pair converts to computation-ready grids.
+    pair = layer_surfaces(loaded[0])
+    assert pair is not None
+    top_g, bottom_g = pair
+    assert top_g.z_tvd == [100.0] * 9 and bottom_g.z_tvd == [300.0] * 9
+    # The planar spec has no surfaces.
+    assert layer_surfaces(loaded[1]) is None
+
+
+def test_layer_surfaces_inconsistent_spec() -> None:
+    g = (0.0, 0.0, 100.0, 100.0, 3, 3)
+    one_sided = BeddingLayerSpec(
+        top_md=0.0, bottom_md=200.0, dip_deg=0.0,
+        top_surface=_surface_spec(g, 100.0),  # no bottom_surface
+    )
+    with pytest.raises(ValueError):
+        layer_surfaces(one_sided)
+
+
+def test_bedding_sidecar_v1_files_still_load() -> None:
+    """v1 planar files (no surface keys) load as planar specs."""
+    g = (0.0, 0.0, 100.0, 100.0, 3, 3)
+    spec = BeddingLayerSpec(top_md=0.0, bottom_md=200.0, dip_deg=10.0)
+    assert spec.top_surface is None and spec.bottom_surface is None
+    assert layer_surfaces(spec) is None

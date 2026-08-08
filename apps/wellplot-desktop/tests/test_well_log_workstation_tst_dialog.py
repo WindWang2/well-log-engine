@@ -26,11 +26,16 @@ from well_log_workstation.stratigraphy import (
     StratigraphicUnit,
 )
 from well_log_workstation.survey import SurveyStation, compute_trajectory
-from well_log_workstation.tst import BeddingLayerSpec, load_bedding_for_well
+from well_log_workstation.tst import (
+    BeddingLayerSpec,
+    SurfaceGridSpec,
+    load_bedding_for_well,
+)
 from well_log_workstation.tst_dialog import (
     C_AZIMUTH,
     C_BOTTOM,
     C_DIP,
+    C_SHAPE,
     C_TOP,
     C_TST,
     C_TVD,
@@ -52,6 +57,17 @@ def _vertical_trajectory():
         [
             SurveyStation(md=0.0, inc_deg=0.0, az_deg=0.0),
             SurveyStation(md=100.0, inc_deg=0.0, az_deg=0.0),
+        ]
+    )
+
+
+def _deep_vertical_trajectory():
+    """400 m vertical well — deep enough to cross the surface unit
+    [z=100, z=300] of the surface fixtures."""
+    return compute_trajectory(
+        [
+            SurveyStation(md=0.0, inc_deg=0.0, az_deg=0.0),
+            SurveyStation(md=400.0, inc_deg=0.0, az_deg=0.0),
         ]
     )
 
@@ -206,3 +222,85 @@ def test_shell_tst_handler_persists_bedding(
     assert len(specs) == 1
     assert specs[0].top_md == 1002.0
     assert specs[0].dip_deg == 20.0
+
+
+# ---------------------------------------------------------------------------
+# Surface bedding rows (Epic D high-order extension, bedding.json v2)
+# ---------------------------------------------------------------------------
+
+
+def _surface_spec(height: float) -> SurfaceGridSpec:
+    return SurfaceGridSpec(
+        x_origin_m=0.0, y_origin_m=0.0, x_step_m=100.0, y_step_m=100.0,
+        x_nodes=3, y_nodes=3, z_tvd=(height,) * 9,
+    )
+
+
+def _surface_specs() -> list[BeddingLayerSpec]:
+    """One surface-typed layer (horizontal grids 100/300) + one planar."""
+    return [
+        BeddingLayerSpec(
+            top_md=0.0, bottom_md=200.0, dip_deg=0.0,
+            top_surface=_surface_spec(100.0), bottom_surface=_surface_spec(300.0),
+        ),
+        BeddingLayerSpec(top_md=200.0, bottom_md=300.0, dip_deg=0.0),
+    ]
+
+
+def test_surface_row_shape_and_tst(qtbot) -> None:
+    dlg = TstDialog("A", _surface_specs(), trajectory=_deep_vertical_trajectory())
+    qtbot.addWidget(dlg)
+    assert dlg.table.rowCount() == 2
+    # 形态 column: 曲面 for the surface-typed row, 平面 for the planar one.
+    assert _cell(dlg, 0, C_SHAPE) == "曲面"
+    assert _cell(dlg, 1, C_SHAPE) == "平面"
+    # Surface row: vertical well through horizontal grids 100/300 → TST 200.
+    assert float(_cell(dlg, 0, C_TST)) == pytest.approx(200.0, abs=1e-9)
+    # Planar row keeps the classic path model (0.5·40... here 100·1).
+    assert float(_cell(dlg, 1, C_TST)) == pytest.approx(100.0, abs=1e-9)
+
+
+def test_surface_row_value_roundtrip(qtbot) -> None:
+    dlg = TstDialog("A", _surface_specs(), trajectory=_vertical_trajectory())
+    qtbot.addWidget(dlg)
+    values = dlg.value()
+    assert len(values) == 2
+    assert values[0].top_surface is not None
+    assert values[0].bottom_surface is not None
+    assert values[0].top_surface.z_tvd == (100.0,) * 9
+    assert values[1].top_surface is None and values[1].bottom_surface is None
+
+
+def test_single_surface_row_stays_unavailable(qtbot) -> None:
+    """A layer with exactly one surface is inconsistent: 形态 shows 曲面 but
+    TST stays 「—」 (explicit unavailability — never a silent planar
+    fallback), and value() preserves the declared surface."""
+    one_sided = [
+        BeddingLayerSpec(
+            top_md=0.0, bottom_md=200.0, dip_deg=0.0,
+            top_surface=_surface_spec(100.0),  # no bottom_surface
+        )
+    ]
+    dlg = TstDialog("A", one_sided, trajectory=_vertical_trajectory())
+    qtbot.addWidget(dlg)
+    assert _cell(dlg, 0, C_SHAPE) == "曲面"
+    assert _cell(dlg, 0, C_TST) == NA
+    values = dlg.value()
+    assert values[0].top_surface is not None
+    assert values[0].bottom_surface is None
+
+
+def test_surface_row_tst_recomputes_on_depth_edit(qtbot) -> None:
+    dlg = TstDialog("A", _surface_specs(), trajectory=_deep_vertical_trajectory())
+    qtbot.addWidget(dlg)
+    # Editing the declared interval keeps the surface TST (the extent comes
+    # from the surfaces, not the declared MD metadata).
+    dlg.table.item(0, C_BOTTOM).setText("150")
+    assert float(_cell(dlg, 0, C_TST)) == pytest.approx(200.0, abs=1e-9)
+
+
+def test_surface_row_without_survey_unavailable(qtbot) -> None:
+    dlg = TstDialog("A", _surface_specs(), trajectory=None)
+    qtbot.addWidget(dlg)
+    assert _cell(dlg, 0, C_SHAPE) == "曲面"
+    assert _cell(dlg, 0, C_TST) == NA  # no path → explicitly unavailable

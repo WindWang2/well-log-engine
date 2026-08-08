@@ -9,6 +9,12 @@ stratigraphic unit reference). The computed columns update live:
   mirror, ``well_log_workstation.tst``) — per-layer contribution of the
   polyline well path.
 
+Surface bedding (Epic D high-order, bedding.json v2): a layer bounded by
+top/bottom surface grids computes its TST with ``tst_along_surface_path``
+over the single unit the two surfaces bound; the 形态 column marks such
+rows 曲面 (planar rows stay 平面). Surface rows' dip/azimuth and top/bottom
+MD remain declared metadata.
+
 Without a survey the TVD/TST columns show 「—」 (explicit unavailability —
 never a fake zero, matching the SDK's "empty = unavailable" discipline).
 Dip/azimuth inputs follow the ``normal_from_dip_azimuth`` convention
@@ -41,19 +47,23 @@ from well_log_workstation.tst import (
     BeddingLayer,
     BeddingLayerSpec,
     PathPoint3D,
+    SurfaceGridSpec,
     normal_from_dip_azimuth,
     path_from_trajectory,
     tst_along_path,
+    tst_along_surface_path,
 )
 from well_log_workstation.unit_combo import make_unit_combo
 
 (C_TOP, C_BOTTOM, C_DIP, C_AZIMUTH, C_UNIT,
- C_APPARENT, C_TVD, C_TST) = range(8)
+ C_APPARENT, C_TVD, C_TST, C_SHAPE) = range(9)
 
 HEADERS = ["顶深MD", "底深MD", "倾角°", "方位°", "层位单元",
-           "表观厚度", "TVD厚度", "TST"]
+           "表观厚度", "TVD厚度", "TST", "形态"]
 
 NA = "—"  # explicit unavailability marker
+SHAPE_PLANAR = "平面"
+SHAPE_SURFACE = "曲面"
 
 
 class TstDialog(QDialog):
@@ -87,12 +97,20 @@ class TstDialog(QDialog):
         )
         self._dictionary = dictionary
         self._updating = False
+        # Per-row declared surfaces (top, bottom) — either may be None; a
+        # planar row has both None, an inconsistent surface row exactly one.
+        # Kept in sync by _add_row/_add_empty_row/_swap_rows/
+        # _delete_selected_rows.
+        self._row_surfaces: list[
+            tuple[SurfaceGridSpec | None, SurfaceGridSpec | None]
+        ] = []
 
         layout = QVBoxLayout(self)
         if self._path:
             note = (
                 "每行一个产状层：顶/底 MD、倾角（0=水平，90=垂直）、倾角方位（0=北，指向最大下倾方向）。\n"
-                "表观厚度 = MD 区间；TVD 厚度与 TST 按测斜轨迹计算（TST 为 SDK 分段平面模型逐层贡献）。"
+                "表观厚度 = MD 区间；TVD 厚度与 TST 按测斜轨迹计算（TST 为 SDK 分段平面模型逐层贡献；"
+                "曲面层按顶/底曲面网格求交计算，见「形态」列）。"
             )
         else:
             note = (
@@ -110,7 +128,7 @@ class TstDialog(QDialog):
         header.setSectionResizeMode(C_DIP, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(C_AZIMUTH, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(C_UNIT, QHeaderView.ResizeMode.Stretch)
-        for col in (C_APPARENT, C_TVD, C_TST):
+        for col in (C_APPARENT, C_TVD, C_TST, C_SHAPE):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
         self.table.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self.table)
@@ -167,6 +185,10 @@ class TstDialog(QDialog):
             item = QTableWidgetItem(NA)
             item.setFlags(Qt.ItemFlag.ItemIsEnabled)  # read-only computed cell
             self.table.setItem(r, col, item)
+        shape = QTableWidgetItem(SHAPE_PLANAR)
+        shape.setFlags(Qt.ItemFlag.ItemIsEnabled)  # read-only
+        self.table.setItem(r, C_SHAPE, shape)
+        self._row_surfaces.append((None, None))
 
     def _add_row(self, spec: BeddingLayerSpec) -> None:
         r = self.table.rowCount()
@@ -181,11 +203,21 @@ class TstDialog(QDialog):
         for col in (C_APPARENT, C_TVD, C_TST):
             self.table.setItem(r, col, QTableWidgetItem(NA))
             self.table.item(r, col).setFlags(Qt.ItemFlag.ItemIsEnabled)
+        # Any declared surface marks the row 曲面; a row with exactly one
+        # surface is inconsistent — its TST stays 「—」 (explicit
+        # unavailability, never a silent planar fallback).
+        is_surface = spec.top_surface is not None or spec.bottom_surface is not None
+        shape = QTableWidgetItem(SHAPE_SURFACE if is_surface else SHAPE_PLANAR)
+        shape.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        self.table.setItem(r, C_SHAPE, shape)
+        self._row_surfaces.append((spec.top_surface, spec.bottom_surface))
 
     def _delete_selected_rows(self) -> None:
         rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
         for r in rows:
             self.table.removeRow(r)
+            if 0 <= r < len(self._row_surfaces):
+                del self._row_surfaces[r]
         self._recompute_all()
 
     def _move_selected(self, delta: int) -> None:
@@ -213,6 +245,11 @@ class TstDialog(QDialog):
             self.table.setCellWidget(b, C_UNIT, widget_a)
         if widget_b is not None:
             self.table.setCellWidget(a, C_UNIT, widget_b)
+        if 0 <= a < len(self._row_surfaces) and 0 <= b < len(self._row_surfaces):
+            self._row_surfaces[a], self._row_surfaces[b] = (
+                self._row_surfaces[b],
+                self._row_surfaces[a],
+            )
 
     # ------------------------------------------------------------------
     # Live computation
@@ -275,14 +312,30 @@ class TstDialog(QDialog):
         tst_value: float | None = None
         if self._path:
             try:
-                dip = self._optional_float(r, C_DIP) or 0.0
-                az = self._optional_float(r, C_AZIMUTH) or 0.0
-                layer = BeddingLayer(
-                    top_md=t,
-                    bottom_md=b,
-                    normal=normal_from_dip_azimuth(dip, az),
+                top_spec, bottom_spec = (
+                    self._row_surfaces[r]
+                    if 0 <= r < len(self._row_surfaces)
+                    else (None, None)
                 )
-                tst_value = tst_along_path(self._path, [layer]).value
+                if top_spec is not None and bottom_spec is not None:
+                    # Surface-typed row: TST of the single unit bounded by
+                    # the top/bottom grids (crossings computed
+                    # geometrically). Invalid grids raise ValueError → 「—」.
+                    tst_value = tst_along_surface_path(
+                        self._path,
+                        [top_spec.to_grid(), bottom_spec.to_grid()],
+                    ).value
+                elif top_spec is not None or bottom_spec is not None:
+                    tst_value = None  # inconsistent surface spec
+                else:
+                    dip = self._optional_float(r, C_DIP) or 0.0
+                    az = self._optional_float(r, C_AZIMUTH) or 0.0
+                    layer = BeddingLayer(
+                        top_md=t,
+                        bottom_md=b,
+                        normal=normal_from_dip_azimuth(dip, az),
+                    )
+                    tst_value = tst_along_path(self._path, [layer]).value
             except ValueError:
                 tst_value = None
         self._set_computed(
@@ -341,7 +394,8 @@ class TstDialog(QDialog):
         self.accept()
 
     def value(self) -> list[BeddingLayerSpec]:
-        """Validated specs (empty rows dropped, sorted by top)."""
+        """Validated specs (empty rows dropped, sorted by top). Surface rows
+        keep their top/bottom surface grids."""
         specs: list[BeddingLayerSpec] = []
         for r in range(self.table.rowCount()):
             top = self._cell_text(r, C_TOP)
@@ -355,6 +409,11 @@ class TstDialog(QDialog):
                 continue
             if not (b > t):
                 continue
+            row_surfaces = (
+                self._row_surfaces[r]
+                if 0 <= r < len(self._row_surfaces)
+                else (None, None)
+            )
             specs.append(
                 BeddingLayerSpec(
                     top_md=t,
@@ -362,6 +421,8 @@ class TstDialog(QDialog):
                     dip_deg=self._optional_float(r, C_DIP) or 0.0,
                     dip_azimuth_deg=self._optional_float(r, C_AZIMUTH) or 0.0,
                     unit_id=str(self._combo_data(r, C_UNIT) or ""),
+                    top_surface=row_surfaces[0],
+                    bottom_surface=row_surfaces[1],
                 )
             )
         specs.sort(key=lambda s: (s.top_md, s.bottom_md))
