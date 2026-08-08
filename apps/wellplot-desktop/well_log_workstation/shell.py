@@ -311,6 +311,11 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_perforation.setObjectName("Action_EditPerforation")
         self._act_perforation.triggered.connect(self._on_edit_perforation)
         self._act_perforation.setEnabled(False)
+        # Epic D: True stratigraphic thickness computation (per-well).
+        self._act_tst = file_menu.addAction("真地层厚度 TST…")
+        self._act_tst.setObjectName("Action_TstCompute")
+        self._act_tst.triggered.connect(self._on_tst_calc)
+        self._act_tst.setEnabled(False)
         # Multi-rate (Epic A): explicit resampling → derived curve version
         # with its own sampling axis.
         self._act_curve_resample = file_menu.addAction("曲线重采样…")
@@ -1641,6 +1646,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_core.setEnabled(ws is not None)
         self._act_well_test.setEnabled(ws is not None)
         self._act_perforation.setEnabled(ws is not None)
+        self._act_tst.setEnabled(ws is not None)
         self._act_curve_resample.setEnabled(ws is not None)
         self._act_formula.setEnabled(ws is not None)
         self._act_curve_edit.setEnabled(ws is not None)
@@ -5562,6 +5568,57 @@ class WellLogWorkstationWindow(QMainWindow):
     def _on_edit_perforation(self) -> None:
         """Edit the selected well's perforation intervals (Epic C / C4)."""
         self._edit_engineering_domain("perforation")
+
+    def _on_tst_calc(self) -> None:
+        """True stratigraphic thickness for the selected well (Epic D)."""
+        if self._workspace is None or not self._workspace.wells:
+            QMessageBox.information(self, "真地层厚度 TST", "请先打开含井的工区。")
+            return
+        from well_log_workstation.stratigraphy import load_stratigraphy
+        from well_log_workstation.survey import compute_trajectory
+        from well_log_workstation.tops_model import load_survey_for_well
+        from well_log_workstation.tst import (
+            load_bedding_for_well,
+            save_bedding_for_well,
+        )
+        from well_log_workstation.tst_dialog import TstDialog
+
+        well_ids = self._pick_wells_for_correlation()
+        if not well_ids:
+            return
+        well_id = well_ids[0]
+        entry = next((w for w in self._workspace.wells if w.id == well_id), None)
+        if entry is None:
+            return
+        stations, _diags = load_survey_for_well(self._workspace, well_id)
+        try:
+            trajectory = (
+                compute_trajectory(stations, kb_m=float(entry.kb_m))
+                if stations
+                else None
+            )
+        except Exception:
+            trajectory = None
+        specs, _diags = load_bedding_for_well(self._workspace, well_id)
+        dictionary, _diags = load_stratigraphy(self._workspace)
+        dlg = TstDialog(
+            entry.name,
+            specs,
+            trajectory=trajectory,
+            dictionary=dictionary,
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_specs = dlg.value()
+        try:
+            save_bedding_for_well(self._workspace, well_id, new_specs)
+        except (WorkspaceError, OSError) as exc:
+            QMessageBox.warning(self, "保存产状数据失败", str(exc))
+            return
+        self.statusBar().showMessage(
+            f"已保存 {entry.name} 产状（{len(new_specs)} 层）", 4000
+        )
 
     def _on_edit_survey(self) -> None:
         """Edit the deviation survey for a well (FRS §1.1 / P1-C)."""
