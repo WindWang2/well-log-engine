@@ -293,6 +293,11 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_well_header.setObjectName("Action_EditWellHeader")
         self._act_well_header.triggered.connect(self._on_edit_well_header)
         self._act_well_header.setEnabled(False)
+        # Epic C (C1): workspace-level stratigraphic dictionary editor.
+        self._act_stratigraphy = file_menu.addAction("层序字典编辑…")
+        self._act_stratigraphy.setObjectName("Action_EditStratigraphy")
+        self._act_stratigraphy.triggered.connect(self._on_open_stratigraphy_dialog)
+        self._act_stratigraphy.setEnabled(False)
         # Multi-rate (Epic A): explicit resampling → derived curve version
         # with its own sampling axis.
         self._act_curve_resample = file_menu.addAction("曲线重采样…")
@@ -1619,6 +1624,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_alias_dict.setEnabled(ws is not None)
         self._act_survey.setEnabled(ws is not None)
         self._act_well_header.setEnabled(ws is not None)
+        self._act_stratigraphy.setEnabled(ws is not None)
         self._act_curve_resample.setEnabled(ws is not None)
         self._act_formula.setEnabled(ws is not None)
         self._act_curve_edit.setEnabled(ws is not None)
@@ -5378,6 +5384,64 @@ class WellLogWorkstationWindow(QMainWindow):
         self.statusBar().showMessage(
             f"已更新测井别名字典（{len(new_map)} 条规范名）", 4000
         )
+
+    def _on_open_stratigraphy_dialog(self) -> None:
+        """Edit the workspace stratigraphic dictionary (Epic C / C1)."""
+        if self._workspace is None:
+            return
+        from well_log_workstation.stratigraphy import (
+            load_stratigraphy,
+            save_stratigraphy,
+        )
+        from well_log_workstation.stratigraphy_dialog import StratigraphyDialog
+
+        dictionary, _diags = load_stratigraphy(self._workspace)
+        dlg = StratigraphyDialog(
+            dictionary,
+            self,
+            referenced_units=self._collect_stratigraphy_references(),
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_dictionary = dlg.value()
+        try:
+            save_stratigraphy(self._workspace, new_dictionary)
+        except OSError as exc:
+            QMessageBox.warning(self, "保存层序字典失败", str(exc))
+            return
+        self.statusBar().showMessage(
+            f"已保存层序字典（{len(new_dictionary.units)} 个单元）", 4000
+        )
+
+    def _collect_stratigraphy_references(self) -> set[str]:
+        """Unit ids referenced by per-well sidecars (tops/core/test/perforation)."""
+        if self._workspace is None:
+            return set()
+        from well_log_workstation.core_model import load_core_for_well
+        from well_log_workstation.perforation_model import (
+            load_perforation_for_well,
+        )
+        from well_log_workstation.tops_model import load_tops_for_well
+        from well_log_workstation.well_test_model import load_well_test_for_well
+
+        referenced: set[str] = set()
+        for well in self._workspace.wells:
+            tops, _diags = load_tops_for_well(self._workspace, well.id)
+            referenced.update(t.unit_id for t in tops if t.unit_id)
+            core, _diags = load_core_for_well(self._workspace, well.id)
+            for run in core.runs:
+                referenced.update(
+                    s.lithology_unit_id for s in run.samples if s.lithology_unit_id
+                )
+            perf, _diags = load_perforation_for_well(self._workspace, well.id)
+            referenced.update(
+                i.formation_unit_id for i in perf.intervals if i.formation_unit_id
+            )
+            tests, _diags = load_well_test_for_well(self._workspace, well.id)
+            referenced.update(
+                i.formation_unit_id for i in tests.intervals if i.formation_unit_id
+            )
+        return referenced
 
     def _on_edit_survey(self) -> None:
         """Edit the deviation survey for a well (FRS §1.1 / P1-C)."""

@@ -120,6 +120,47 @@ class StratigraphicDictionary:
         return problems
 
 
+def make_demo_stratigraphy() -> StratigraphicDictionary:
+    """Demo eight-level hierarchy: one 界→…→砂层 chain plus a sibling 组.
+
+    Used by the dictionary editor's 「生成演示字典」 and by tests; ids are
+    fresh uuids so multiple invocations never collide.
+    """
+    e = StratigraphicUnit(id=str(uuid.uuid4()), name="新生界", level="界")
+    s = StratigraphicUnit(
+        id=str(uuid.uuid4()), name="古近系", level="系", parent_id=e.id
+    )
+    u = StratigraphicUnit(
+        id=str(uuid.uuid4()), name="始新统", level="统", parent_id=s.id
+    )
+    f1 = StratigraphicUnit(
+        id=str(uuid.uuid4()), name="沙四段", level="组", parent_id=u.id
+    )
+    m = StratigraphicUnit(
+        id=str(uuid.uuid4()), name="沙四上亚段", level="段", parent_id=f1.id
+    )
+    b = StratigraphicUnit(
+        id=str(uuid.uuid4()), name="1 小层", level="小层", parent_id=m.id
+    )
+    g = StratigraphicUnit(
+        id=str(uuid.uuid4()), name="砂层组 A", level="砂层组", parent_id=b.id
+    )
+    z = StratigraphicUnit(
+        id=str(uuid.uuid4()), name="砂层 1", level="砂层", parent_id=g.id
+    )
+    f2 = StratigraphicUnit(
+        id=str(uuid.uuid4()),
+        name="沙三段",
+        level="组",
+        parent_id=u.id,
+        order=1,
+        code="E2s3",
+        color="#3b6fb5",
+        age="始新世",
+    )
+    return StratigraphicDictionary(units=[e, s, u, f1, m, b, g, z, f2])
+
+
 # ---------------------------------------------------------------------------
 # Persistence (workspace-level sidecar, tolerant read)
 # ---------------------------------------------------------------------------
