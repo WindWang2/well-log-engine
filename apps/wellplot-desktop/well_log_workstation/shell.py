@@ -2547,6 +2547,49 @@ class WellLogWorkstationWindow(QMainWindow):
             plot_id=effective_plot_id,
         )
 
+    def _bind_secondary_depth_axis(self, well_id: str) -> None:
+        """TVDSS secondary axis from the deviation survey + KB (Epic B).
+
+        Control points are ``(tvdss, md)`` pairs — reference decreases as MD
+        increases, which the SDK secondary-window tick math accepts. Without
+        a survey or KB the axis stays unbound (explicit unavailability).
+        """
+        from well_log_workstation.survey import compute_trajectory
+        from well_log_workstation.tops_model import load_survey_for_well
+
+        canvas = self.multi_track_canvas
+        if self._workspace is None:
+            canvas.set_secondary_depth_axis(None)
+            return
+        entry = next((w for w in self._workspace.wells if w.id == well_id), None)
+        if entry is None or entry.kb_m is None:
+            canvas.set_secondary_depth_axis(None)
+            return
+        try:
+            stations, _diags = load_survey_for_well(self._workspace, well_id)
+        except WorkspaceError:
+            canvas.set_secondary_depth_axis(None)
+            return
+        if not stations:
+            canvas.set_secondary_depth_axis(None)
+            return
+        try:
+            traj = compute_trajectory(stations, kb_m=float(entry.kb_m))
+        except Exception:
+            canvas.set_secondary_depth_axis(None)
+            return
+        if traj.md.size < 2:
+            canvas.set_secondary_depth_axis(None)
+            return
+        points = [
+            (float(tvdss), float(md))
+            for md, tvdss in zip(traj.md, traj.tvdss)
+            if np.isfinite(tvdss) and np.isfinite(md)
+        ]
+        canvas.set_secondary_depth_axis(
+            points if len(points) >= 2 else None, "TVDSS (m)"
+        )
+
     def apply_template_to_well(
         self, well_id: str, template_id: str, *, plot_id: str | None = None
     ) -> HostPresentation:
@@ -2574,6 +2617,11 @@ class WellLogWorkstationWindow(QMainWindow):
         )
         if resamples:
             apply_resamples_to_document(doc, resamples)
+        # Secondary depth axis (Epic B 多轴): TVDSS (reference) vs MD
+        # (display) from the deviation survey + KB, when both exist. The
+        # canvas draws the second ruler with SDK-authoritative ticks; no
+        # survey/KB → single axis (explicit unavailability, never a fake).
+        self._bind_secondary_depth_axis(well_id)
         # Attach per-well lithology segments (FRS §2.x) so template binding
         # and canvas rendering always see the latest data.
         from well_log_workstation.lithology_model import load_lithology_for_well

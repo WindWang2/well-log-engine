@@ -222,6 +222,11 @@ class MultiTrackCanvas(QWidget):
         # Set by the shell when the active well changes; None -> gray tint.
         self._core_photo_resolver = None
         self._tops: list[FormationTop] = []
+        # Secondary depth axis (Epic B 多轴): (reference_value, display_depth)
+        # pairs of an either-direction monotonic mapping (e.g. TVDSS vs MD).
+        # None = no secondary ruler. Drawn in the right margin strip.
+        self._secondary_axis: list[tuple[float, float]] | None = None
+        self._secondary_caption: str = "TVDSS (m)"
         self._d0: float | None = None
         self._d1: float | None = None
         self._data_d0: float | None = None
@@ -352,7 +357,7 @@ class MultiTrackCanvas(QWidget):
         if self._presentation is None or not self._presentation.tracks:
             return None
         entries, _band = track_header_rects(
-            self._presentation, self.width(), self.height()
+            self._presentation, self._plot_width(), self.height()
         )
         depth = self.depth_at_y(py)
         if depth is None:
@@ -420,6 +425,37 @@ class MultiTrackCanvas(QWidget):
 
     def tops(self) -> list[FormationTop]:
         return list(self._tops)
+
+    def set_secondary_depth_axis(
+        self,
+        points: list[tuple[float, float]] | None,
+        caption: str = "TVDSS (m)",
+    ) -> None:
+        """Bind an optional secondary depth axis (reference, display) pairs.
+
+        When set, a second ruler is drawn in the right margin using the SDK
+        authoritative tick semantics; the plot area shrinks by one ruler
+        width. ``None`` removes it (single-axis layout, historic behaviour).
+        """
+        self._secondary_axis = (
+            [(float(r), float(d)) for r, d in points] if points else None
+        )
+        self._secondary_caption = caption or "TVDSS (m)"
+        self.update()
+
+    def secondary_depth_axis(self) -> list[tuple[float, float]] | None:
+        return (
+            None
+            if self._secondary_axis is None
+            else list(self._secondary_axis)
+        )
+
+    def _plot_width(self) -> int:
+        """Usable plot width; the right margin strip hosts the secondary axis."""
+        from well_log_workstation.depth_ruler import RULER_WIDTH
+
+        w = self.width()
+        return max(120, w - RULER_WIDTH) if self._secondary_axis else w
 
     def presentation(self) -> HostPresentation | None:
         return self._presentation
@@ -522,7 +558,7 @@ class MultiTrackCanvas(QWidget):
             # header starts a width drag; the rest of the header reorders.
             if self._presentation is not None and self._presentation.tracks:
                 entries, _band = track_header_rects(
-                    self._presentation, self.width(), self.height()
+                    self._presentation, self._plot_width(), self.height()
                 )
                 pos = event.position()
                 px, py = int(pos.x()), int(pos.y())
@@ -918,7 +954,7 @@ class MultiTrackCanvas(QWidget):
             p.drawText(8, y_text, line[:120])
             y_text += 16 if i == 0 else 14
 
-        entries, (top, bottom) = track_header_rects(pres, w, h)
+        entries, (top, bottom) = track_header_rects(pres, self._plot_width(), h)
         if not entries:
             p.setPen(QColor("#888"))
             p.drawText(
@@ -1013,6 +1049,24 @@ class MultiTrackCanvas(QWidget):
                 x_line = entries[-1][1].x() + entries[-1][1].width()
             p.setPen(QPen(QColor("#e74c3c"), 2))
             p.drawLine(x_line, top - 26, x_line, bottom)
+
+        # Secondary depth axis (Epic B 多轴): right-margin ruler from the
+        # SDK-authoritative tick semantics; the plot area above already
+        # reserved the strip via _plot_width().
+        if self._secondary_axis:
+            from well_log_workstation.depth_ruler import (
+                RULER_WIDTH,
+                paint_secondary_depth_ruler,
+            )
+
+            paint_secondary_depth_ruler(
+                p,
+                QRectF(self._plot_width(), top, RULER_WIDTH, bottom - top),
+                self._secondary_axis,
+                d0,
+                d1,
+                self._secondary_caption,
+            )
 
         # Formation tops as depth markers across tracks
         if self._tops:

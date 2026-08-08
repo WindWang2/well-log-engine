@@ -319,3 +319,69 @@ def test_sdk_and_desktop_label_parity(monkeypatch) -> None:
         )
         assert format_depth_label(value, step) == expected
         monkeypatch.undo()
+
+
+# ---------------------------------------------------------------------------
+# Secondary depth axis (Epic B 多轴): SDK/Desktop parity + mapping
+# ---------------------------------------------------------------------------
+
+
+def test_secondary_axis_ticks_parity(monkeypatch) -> None:
+    """Secondary-axis ticks must reproduce the SDK authoritative output."""
+    from well_log_workstation.depth_ruler import (
+        _binding_fn,
+        secondary_axis_ticks,
+    )
+
+    engine = _binding_fn("ticks_for_secondary_axis", [None, False])
+    if engine is None:
+        pytest.skip("Python binding not available — parity cannot run here")
+    points = [(500.0 - 1000.0, 1000.0), (500.0 - 1500.0, 1500.0),
+              (500.0 - 2000.0, 2000.0)]
+    for window in ((1000.0, 2000.0), (1100.0, 1800.0), (1000.0, 1000.5)):
+        for max_ticks in (5, 9):
+            sdk_step, sdk_values = engine(
+                [[r, d] for r, d in points], window[0], window[1], max_ticks
+            )
+            ticks, step = secondary_axis_ticks(points, window[0], window[1],
+                                               max_ticks)
+            assert step == pytest.approx(float(sdk_step), rel=1e-12)
+            assert ticks == pytest.approx([float(v) for v in sdk_values],
+                                          rel=1e-12)
+            monkeypatch.setattr(
+                "well_log_workstation.depth_ruler._binding_fn",
+                lambda *args: None,
+            )
+            ticks2, step2 = secondary_axis_ticks(points, window[0], window[1],
+                                                 max_ticks)
+            assert step2 == pytest.approx(float(sdk_step), rel=1e-12)
+            assert ticks2 == pytest.approx([float(v) for v in sdk_values],
+                                           rel=1e-12)
+            monkeypatch.undo()
+
+
+def test_reference_to_display_round_trip() -> None:
+    from well_log_workstation.depth_ruler import (
+        reference_to_display_at,
+        secondary_axis_ticks,
+    )
+
+    # kb=500, vertical well: tvdss = 500 − md over md 1000..2000.
+    points = [(500.0 - 1000.0, 1000.0), (500.0 - 1500.0, 1500.0),
+              (500.0 - 2000.0, 2000.0)]
+    ticks, _ = secondary_axis_ticks(points, 1000.0, 2000.0)
+    assert ticks
+    for tick in ticks:
+        display = reference_to_display_at(points, tick)
+        # display = 500 − tick (inverse of tvdss = 500 − md).
+        assert display == pytest.approx(500.0 - tick, abs=1e-6)
+    # Clamping outside the range (descending pair: low reference → high MD).
+    assert reference_to_display_at(points, -9999.0) == pytest.approx(2000.0)
+    assert reference_to_display_at(points, 9999.0) == pytest.approx(1000.0)
+
+
+def test_secondary_axis_rejects_degenerate() -> None:
+    from well_log_workstation.depth_ruler import secondary_axis_ticks
+
+    assert secondary_axis_ticks([(0.0, 1.0)], 0.0, 10.0) == ([], 0.0)
+    assert secondary_axis_ticks([], 0.0, 10.0) == ([], 0.0)

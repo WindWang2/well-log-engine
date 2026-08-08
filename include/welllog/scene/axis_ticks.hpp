@@ -49,6 +49,19 @@ nice_axis_ticks(double d0, double d1, std::uint32_t max_ticks = 9) noexcept;
     double display_top, double display_bottom,
     std::uint32_t max_ticks = 9) noexcept;
 
+// Secondary-axis ticks over a DISPLAY window for an EITHER-direction
+// monotonic (reference, display) mapping (Epic B, multi-axis): unlike
+// DepthTransform (which requires both coordinates strictly increasing), this
+// accepts decreasing reference values — e.g. TVDSS (reference) vs MD
+// (display) — which is the common single-well secondary axis. The window
+// endpoints are mapped to reference values by linear interpolation over the
+// display-sorted points (clamped outside the range), then the authoritative
+// ladder runs over that range. Values are in the REFERENCE domain.
+[[nodiscard]] WELLLOG_SCENE_API AxisTicks ticks_for_secondary_window(
+    std::span<const std::pair<double, double>> reference_display_points,
+    double display_top, double display_bottom,
+    std::uint32_t max_ticks = 9) noexcept;
+
 // Tick label with precision trimmed to the step — mirror of the Desktop
 // ``depth_ruler.format_depth_label`` semantics (parity-tested): 1050/25 →
 // "1050", 1050.5/0.5 → "1050.5", 1050.25/0.25 → "1050.25". Float drift is

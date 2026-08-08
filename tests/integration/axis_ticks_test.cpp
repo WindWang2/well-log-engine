@@ -135,6 +135,55 @@ void label_precision_and_drift() {
           "float drift in whole values");
 }
 
+void secondary_window_descending_reference() {
+  // TVDSS (reference) vs MD (display): tvdss decreases as md increases —
+  // the common single-well secondary axis. Points: kb=500 m, TVD=MD for a
+  // vertical well → tvdss = 500 − md over md 1000..2000.
+  const std::vector<std::pair<double, double>> points = {
+      {500.0 - 1000.0, 1000.0}, {500.0 - 1500.0, 1500.0},
+      {500.0 - 2000.0, 2000.0},
+  };
+  const auto ticks = ticks_for_secondary_window(points, 1000.0, 2000.0);
+  // span 1000/9 ≈ 111 → ladder picks 200 (smallest step keeping ≤ 9 ticks).
+  require_near(ticks.step, 200.0, 1e-9,
+               "descending reference keeps the authoritative ladder");
+  require_near(ticks.values.front(), -1400.0, 1e-9,
+               "ticks are in the reference (TVDSS) domain, first multiple ≥ v0");
+  require_near(ticks.values.back(), -600.0, 1e-9,
+               "the last tick stays inside the mapped reference window");
+}
+
+void secondary_window_ascending_and_clamp() {
+  // TWT-like ascending mapping (time increases with depth).
+  const std::vector<std::pair<double, double>> points = {
+      {100.0, 1000.0}, {500.0, 1500.0}, {1000.0, 2000.0},
+  };
+  const auto ticks = ticks_for_secondary_window(points, 1250.0, 1750.0);
+  require(ticks.values.front() >= 300.0 && ticks.values.back() <= 750.0,
+          "window endpoints map into the reference domain");
+  // Outside the point range the mapping clamps to the endpoints.
+  const auto clamped = ticks_for_secondary_window(points, 500.0, 3000.0);
+  require_near(clamped.values.back(), 1000.0, 1e-9,
+               "clamping keeps ticks inside the mapped reference range");
+}
+
+void secondary_window_invalid_rejected() {
+  const std::vector<std::pair<double, double>> points = {
+      {0.0, 1000.0}, {1.0, 1500.0}, {2.0, 1500.0},  // duplicate display
+  };
+  require(ticks_for_secondary_window(points, 1000.0, 2000.0).values.empty(),
+          "duplicate display values must be rejected");
+  const std::vector<std::pair<double, double>> one_point = {{0.0, 1000.0}};
+  require(ticks_for_secondary_window(one_point, 1000.0, 2000.0).values.empty(),
+          "fewer than two points must be rejected");
+  const std::vector<std::pair<double, double>> non_finite = {
+      {0.0, 1000.0},
+      {std::numeric_limits<double>::quiet_NaN(), 1500.0},
+  };
+  require(ticks_for_secondary_window(non_finite, 1000.0, 2000.0).values.empty(),
+          "non-finite points must be rejected");
+}
+
 }  // namespace
 
 int main() {
@@ -147,6 +196,9 @@ int main() {
   twt_window_ticks_in_time_domain();
   twt_unavailable_yields_empty();
   label_precision_and_drift();
+  secondary_window_descending_reference();
+  secondary_window_ascending_and_clamp();
+  secondary_window_invalid_rejected();
   std::cout << "PASS: axis ticks\n";
   return EXIT_SUCCESS;
 }

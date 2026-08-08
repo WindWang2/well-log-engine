@@ -266,3 +266,66 @@ def test_survey_storage_missing_returns_empty(tmp_path: Path) -> None:
     loaded, diags = load_survey_for_well(ws, well.id)
     assert loaded == []
     assert diags == []
+
+
+def test_shell_binds_secondary_tvdss_axis(qtbot, tmp_path: Path) -> None:
+    """Epic B 多轴: a well with survey + KB gets a TVDSS secondary axis;
+    without either the axis stays unbound (explicit unavailability)."""
+    from dataclasses import replace
+
+    from well_log_workstation.shell import WellLogWorkstationWindow
+    from well_log_workstation.tops_model import save_survey_for_well
+    from well_log_workstation.workspace import create_workspace
+
+    ws = create_workspace(tmp_path / "ws-sec", name="SECAXIS")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+
+    def _las(path: Path) -> Path:
+        path.write_text(
+            """~VERSION INFORMATION
+VERS. 2.0
+WRAP. NO
+~WELL INFORMATION
+STRT.M 1000.0
+STOP.M 1003.0
+STEP.M 1.0
+NULL. -999.25
+WELL. A
+~CURVE INFORMATION
+DEPT.M
+GR.GAPI
+~ASCII
+1000 10
+1001 20
+1002 30
+1003 40
+""",
+            encoding="utf-8",
+        )
+        return path
+
+    well_id = win.import_las_path(_las(tmp_path / "a.las"))
+    canvas = win.multi_track_canvas
+    # No KB yet → unbound (explicit unavailability).
+    win.apply_template_to_well(well_id, "std-gr-rt-den")
+    assert canvas.secondary_depth_axis() is None
+
+    # Set KB on the catalog entry.
+    entry = next(w for w in ws.wells if w.id == well_id)
+    idx = ws.wells.index(entry)
+    ws.wells[idx] = replace(entry, kb_m=500.0)
+    # Vertical survey: tvdss = 500 − md.
+    save_survey_for_well(
+        ws,
+        well_id,
+        [SurveyStation(0, 0, 0), SurveyStation(2000, 0, 0)],
+    )
+    win.apply_template_to_well(well_id, "std-gr-rt-den")
+    points = canvas.secondary_depth_axis()
+    assert points is not None
+    assert len(points) >= 2
+    # First station: tvdss = 500 − 0 = 500.
+    assert points[0][0] == pytest.approx(500.0)
+    assert points[0][1] == pytest.approx(0.0)

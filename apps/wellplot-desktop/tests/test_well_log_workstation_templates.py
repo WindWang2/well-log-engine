@@ -233,3 +233,57 @@ def test_canvas_paints_per_curve_depth_layer(qtbot) -> None:
     img = QImage(canvas.size(), QImage.Format.Format_ARGB32)
     img.fill(0xFFFFFFFF)
     canvas.render(img)  # crash smoke with a per-layer axis
+
+
+def test_canvas_secondary_axis_ruler(qtbot) -> None:
+    """Epic B 多轴: a bound secondary axis shrinks the plot width and paints
+    a right-margin ruler; unbound keeps the historic full-width layout."""
+    from PySide6.QtGui import QImage
+
+    from well_log_workstation.depth_ruler import RULER_WIDTH
+    from well_log_workstation.multi_track_canvas import MultiTrackCanvas
+    from well_log_workstation.template_model import BoundCurveLayer, BoundTrack
+
+    depth = np.linspace(1000.0, 2000.0, 101)
+    pres = HostPresentation(
+        template_id="t", template_name="T", well_document_id="w1",
+        well_name="W1", depth=depth, depth_unit="m",
+        tracks=[
+            BoundTrack(id="c", role="curve", title="GR",
+                       width_fraction=0.5, scale=None,
+                       layers=[BoundCurveLayer(
+                           mnemonic="GR", color="#1a6fb5", unit="API",
+                           values=np.linspace(10.0, 90.0, 101),
+                           null_mask=np.zeros(101, dtype=bool))]),
+        ],
+    )
+    canvas = MultiTrackCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(600, 480)
+    canvas.set_presentation(pres)
+    assert canvas.secondary_depth_axis() is None
+    assert canvas._plot_width() == 600  # historic full width
+
+    # kb=500 vertical well: tvdss = 500 − md.
+    points = [(500.0 - 1000.0, 1000.0), (500.0 - 1500.0, 1500.0),
+              (500.0 - 2000.0, 2000.0)]
+    canvas.set_secondary_depth_axis(points, "TVDSS (m)")
+    assert canvas._plot_width() == 600 - RULER_WIDTH
+    assert canvas.secondary_depth_axis() is not None
+
+    img = QImage(canvas.size(), QImage.Format.Format_ARGB32)
+    img.fill(0xFFFFFFFF)
+    canvas.render(img)  # crash smoke with the secondary ruler
+    # The right margin strip carries ruler content (ticks/labels).
+    from PySide6.QtGui import QColor
+
+    dark = False
+    for y in range(60, 420, 8):
+        for x in range(600 - RULER_WIDTH + 2, 600 - 2):
+            c = QColor(img.pixel(x, y))
+            if c.red() < 120 and c.green() < 120 and c.blue() < 120:
+                dark = True
+                break
+        if dark:
+            break
+    assert dark, "the secondary ruler must paint ticks in the right margin"

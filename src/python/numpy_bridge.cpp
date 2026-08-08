@@ -643,6 +643,71 @@ PyObject *format_axis_tick_label(double value, double step) noexcept {
   }
 }
 
+PyObject *ticks_for_secondary_axis(PyObject *points, double display_top,
+                                    double display_bottom,
+                                    unsigned long max_ticks) noexcept {
+  try {
+    if (points == nullptr || !PyList_Check(points)) {
+      return PyErr_SetString(PyExc_TypeError,
+                             "points must be a list of [reference, display]"),
+             nullptr;
+    }
+    std::vector<std::pair<double, double>> pairs;
+    pairs.reserve(static_cast<std::size_t>(PyList_Size(points)));
+    for (Py_ssize_t i = 0; i < PyList_Size(points); ++i) {
+      PyObject *item = PyList_GetItem(points, i);
+      if (item == nullptr || !(PyList_Check(item) || PyTuple_Check(item)) ||
+          PySequence_Size(item) != 2) {
+        return PyErr_SetString(PyExc_TypeError,
+                               "each point must be a [reference, display] pair"),
+               nullptr;
+      }
+      PyObject *ref_obj = PySequence_GetItem(item, 0);
+      PyObject *disp_obj = PySequence_GetItem(item, 1);
+      if (ref_obj == nullptr || disp_obj == nullptr) {
+        Py_XDECREF(ref_obj);
+        Py_XDECREF(disp_obj);
+        return nullptr;
+      }
+      const double ref = PyFloat_AsDouble(ref_obj);
+      const double disp = PyFloat_AsDouble(disp_obj);
+      Py_DECREF(ref_obj);
+      Py_DECREF(disp_obj);
+      if (PyErr_Occurred()) {
+        return nullptr;
+      }
+      pairs.emplace_back(ref, disp);
+    }
+    const auto ticks = welllog::ticks_for_secondary_window(
+        pairs, display_top, display_bottom, max_ticks);
+    PyObject *list = PyList_New(static_cast<Py_ssize_t>(ticks.values.size()));
+    if (list == nullptr) {
+      return nullptr;
+    }
+    for (std::size_t i = 0; i < ticks.values.size(); ++i) {
+      PyObject *item = PyFloat_FromDouble(ticks.values[i]);
+      if (item == nullptr) {
+        Py_DECREF(list);
+        return nullptr;
+      }
+      PyList_SetItem(list, static_cast<Py_ssize_t>(i), item);
+    }
+    PyObject *tuple = PyTuple_New(2);
+    if (tuple == nullptr) {
+      Py_DECREF(list);
+      return nullptr;
+    }
+    PyTuple_SetItem(tuple, 0, PyFloat_FromDouble(ticks.step));
+    PyTuple_SetItem(tuple, 1, list);
+    return tuple;
+  } catch (const std::bad_alloc &) {
+    return PyErr_NoMemory();
+  } catch (...) {
+    return PyErr_SetString(PyExc_RuntimeError, "secondary axis ticks failed"),
+           nullptr;
+  }
+}
+
 PyObject *submit_curve(WellLogView *view, PyObject *depth, PyObject *values,
                        const QString &document_id_text,
                        const QString &axis_id_text,

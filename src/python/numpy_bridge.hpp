@@ -43,6 +43,14 @@ submit_multi_well_section(WellLogView *view, PyObject *payload) noexcept;
 [[nodiscard]] PyObject *format_axis_tick_label(double value,
                                                double step) noexcept;
 
+// Secondary-axis ticks for an either-direction monotonic (reference, display)
+// point list (scene::ticks_for_secondary_window, Epic B) — returns
+// ``(step, [reference-domain values])``. ``points`` is a list of [ref, disp].
+[[nodiscard]] PyObject *
+ticks_for_secondary_axis(PyObject *points, double display_top,
+                         double display_bottom,
+                         unsigned long max_ticks) noexcept;
+
 // Render the prepared scene for ``document_id`` to SVG and return the
 // document bytes (T1 / #273). The engine builds the SVG in memory only —
 // it never touches the filesystem; the host writes the returned bytes.

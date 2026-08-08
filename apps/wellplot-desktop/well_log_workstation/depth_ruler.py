@@ -32,6 +32,7 @@ RULER_WIDTH = 52
 
 _ENGINE_TICKS_CACHE: list = [None, False]  # [fn, checked]
 _ENGINE_LABEL_CACHE: list = [None, False]
+_ENGINE_SECONDARY_CACHE: list = [None, False]
 
 
 def _binding_fn(name: str, cache: list) -> object | None:
@@ -63,6 +64,85 @@ def _binding_ticks() -> object | None:
 def _binding_label() -> object | None:
     """The SDK's ``format_axis_tick_label`` when the binding is importable."""
     return _binding_fn("format_axis_tick_label", _ENGINE_LABEL_CACHE)
+
+
+def secondary_axis_ticks(
+    points: list[tuple[float, float]],
+    display_top: float,
+    display_bottom: float,
+    max_ticks: int = 9,
+) -> tuple[list[float], float]:
+    """Secondary-axis ticks (e.g. TVDSS vs MD) over a display window (Epic B).
+
+    ``points`` are ``(reference_value, display_value)`` pairs, monotonic in
+    either direction. The window endpoints map into the reference domain,
+    then the authoritative nice ladder runs over that range. Returns
+    ``(reference-domain tick values, step)``.
+
+    The authoritative implementation is the SDK's
+    ``scene::ticks_for_secondary_window`` (binding-first, local fallback) —
+    parity-locked by tests.
+    """
+    engine = _binding_fn("ticks_for_secondary_axis", _ENGINE_SECONDARY_CACHE)
+    if engine is not None:
+        try:
+            step, values = engine(
+                [[float(r), float(d)] for r, d in points],
+                float(display_top),
+                float(display_bottom),
+                int(max_ticks),
+            )
+            return [float(v) for v in values], float(step)
+        except Exception:
+            pass  # fall through to the local implementation
+    if len(points) < 2 or display_bottom <= display_top or max_ticks < 1:
+        return [], 0.0
+    ordered = sorted(points, key=lambda p: p[1])  # by display
+    if not all(math.isfinite(r) and math.isfinite(d) for r, d in ordered):
+        return [], 0.0
+
+    def reference_at(display: float) -> float:
+        if display <= ordered[0][1]:
+            return ordered[0][0]
+        if display >= ordered[-1][1]:
+            return ordered[-1][0]
+        for i in range(1, len(ordered)):
+            if display <= ordered[i][1]:
+                t = (display - ordered[i - 1][1]) / (
+                    ordered[i][1] - ordered[i - 1][1]
+                )
+                return ordered[i - 1][0] + t * (ordered[i][0] - ordered[i - 1][0])
+        return ordered[-1][0]
+
+    v0 = reference_at(float(display_top))
+    v1 = reference_at(float(display_bottom))
+    if v0 > v1:
+        v0, v1 = v1, v0
+    return nice_depth_ticks(v0, v1, max_ticks)
+
+
+def reference_to_display_at(
+    points: list[tuple[float, float]], reference_value: float
+) -> float:
+    """Forward mapping reference → display by linear interpolation.
+
+    Inverse of the secondary-window mapping; used to position secondary-axis
+    ticks at their display depths. Clamps outside the point range.
+    """
+    if len(points) < 2:
+        return float(reference_value)
+    ordered = sorted(points, key=lambda p: p[0])  # by reference
+    if reference_value <= ordered[0][0]:
+        return ordered[0][1]
+    if reference_value >= ordered[-1][0]:
+        return ordered[-1][1]
+    for i in range(1, len(ordered)):
+        if reference_value <= ordered[i][0]:
+            t = (reference_value - ordered[i - 1][0]) / (
+                ordered[i][0] - ordered[i - 1][0]
+            )
+            return ordered[i - 1][1] + t * (ordered[i][1] - ordered[i - 1][1])
+    return ordered[-1][1]
 
 
 def nice_depth_ticks(
@@ -168,6 +248,50 @@ def paint_depth_ruler(
             p.drawText(
                 QRectF(rect.left() + 12, y - 6, rect.width() - 14, 12),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                format_depth_label(v, step),
+            )
+    p.setPen(QColor("#555"))
+    p.drawText(
+        QRectF(rect.left(), rect.bottom() - 15, rect.width(), 13),
+        Qt.AlignmentFlag.AlignCenter,
+        caption,
+    )
+    p.restore()
+
+
+def paint_secondary_depth_ruler(
+    p: QPainter,
+    rect: QRectF,
+    points: list[tuple[float, float]],
+    d0: float,
+    d1: float,
+    caption: str = "TVDSS (m)",
+) -> None:
+    """Paint a secondary depth axis (e.g. TVDSS vs MD) into the right strip.
+
+    Ticks are computed by :func:`secondary_axis_ticks` (SDK-authoritative)
+    and positioned via :func:`reference_to_display_at` so they land at the
+    display depths where the well's reference value passes each tick.
+    """
+    ticks, step = secondary_axis_ticks(points, d0, d1)
+    p.save()
+    p.fillRect(rect, QColor("#ffffff"))
+    if ticks and rect.height() > 0:
+        span = d1 - d0
+        p.setPen(QPen(QColor("#333"), 1))
+        right = int(rect.right())
+        for v in ticks:
+            display = reference_to_display_at(points, v)
+            if not math.isfinite(display):
+                continue
+            t = (display - d0) / span
+            y = rect.top() + t * rect.height()
+            if y < rect.top() or y > rect.bottom():
+                continue
+            p.drawLine(right - 1, int(y), right - 9, int(y))
+            p.drawText(
+                QRectF(rect.left() + 2, y - 6, rect.width() - 8, 12),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                 format_depth_label(v, step),
             )
     p.setPen(QColor("#555"))
