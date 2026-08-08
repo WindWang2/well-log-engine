@@ -141,6 +141,114 @@ Fixture make_curve_fixture() {
                  .snapshot = std::move(snapshot)};
 }
 
+Fixture make_symbol_fixture() {
+  const auto document_id = id("15700000-0000-4000-8000-000000000001");
+  const auto axis_id = id("15700000-0000-4000-8000-000000000002");
+  const auto curve_id = id("15700000-0000-4000-8000-000000000003");
+  const auto symbol_id = id("15700000-0000-4000-8000-000000000004");
+  auto depths = std::make_shared<const std::vector<double>>(
+      std::vector<double>{1000.0, 1001.0, 1002.0, 1003.0});
+  auto values = std::make_shared<const std::vector<double>>(
+      std::vector<double>{10.0, 40.0, 20.0, 60.0});
+  WellLogDocumentBuilder builder(document_id, DocumentRevision{7});
+  builder.add_sampling_axis(SamplingAxis{
+      .id = axis_id,
+      .coordinates = BufferView::from_vector(depths),
+      .domain = DepthDomain::measured_depth,
+      .unit = "m",
+      .direction = AxisDirection::increasing,
+  });
+  builder.add_curve(Curve{
+      .id = curve_id,
+      .mnemonic = "GR",
+      .display_name = "Gamma Ray",
+      .unit = "API",
+      .sampling_axis_id = axis_id,
+      .values = BufferView::from_vector(values),
+      .nulls = {},
+  });
+  builder.add_symbol(SymbolOccurrence{
+      .id = symbol_id,
+      .reference_depth = 1001.5,
+      .track_fraction = 0.5,
+      .kind = SymbolKind::diamond,
+      .label = "Sym",
+  });
+  auto document = builder.build();
+
+  WellLogSession session;
+  require(session.execute(SetDocumentCommand{document}).has_value(),
+          "symbol fixture document must load");
+
+  const auto track_id = id("15700000-0000-4000-8000-000000000010");
+  const auto scale_id = id("15700000-0000-4000-8000-000000000011");
+  const auto layer_id = id("15700000-0000-4000-8000-000000000012");
+  const auto symbol_layer_id = id("15700000-0000-4000-8000-000000000013");
+  ScenePresentationBuilder presentation(
+      document.id(),
+      ReferenceDepthRange{.domain = DepthDomain::measured_depth,
+                          .unit = "m",
+                          .top = 1000.0,
+                          .bottom = 1003.0},
+      Millimetres{80.0}, "font-fixture-v1");
+  presentation.add_track(
+      TrackSpec{.id = track_id, .width = Millimetres{40.0}, .z_order = 1});
+  presentation.add_scale(TrackScaleSpec{.id = scale_id,
+                                        .track_id = track_id,
+                                        .mode = ScaleMode::linear,
+                                        .minimum = 0.0,
+                                        .maximum = 100.0,
+                                        .direction = ScaleDirection::left_to_right,
+                                        .unit = "API"});
+  presentation.add_curve_layer(CurveLayerSpec{
+      .id = layer_id,
+      .track_id = track_id,
+      .curve_id = curve_id,
+      .scale_id = scale_id,
+      .color = RgbaColor{.red = 20, .green = 160, .blue = 20, .alpha = 255},
+      .line_width = Millimetres{0.4},
+      .z_order = 1,
+      .visible = true,
+  });
+  presentation.add_symbol_layer(SymbolLayerSpec{
+      .id = symbol_layer_id,
+      .track_id = track_id,
+      .z_order = 2,
+      .color = RgbaColor{.red = 200, .green = 30, .blue = 30, .alpha = 255},
+      .symbol_size = Millimetres{3.0},
+  });
+  require(session.execute(SetPresentationCommand{presentation.build()}).has_value(),
+          "symbol fixture presentation must load");
+  const auto scene = session.prepared_scene(document.id());
+  require(scene != nullptr && !scene->symbol_layers().empty() &&
+              !scene->symbols().empty(),
+          "fixture must prepare symbol layers");
+
+  ExportSnapshot snapshot{
+      .document_id = document.id(),
+      .document_revision = document.revision(),
+      .presentation_version = PresentationVersion{1},
+      .depth_transform =
+          DepthTransformDescriptor{.domain = DepthDomain::measured_depth,
+                                   .unit = "m",
+                                   .reference_top = 1000.0,
+                                   .reference_bottom = 1003.0,
+                                   .version = 1},
+      .font_asset_fingerprint = "font-fixture-v1",
+      .page =
+          ExportPageSpec{
+              .mode = PaginationMode::continuous,
+              .page_width = Millimetres{80.0},
+              .page_height = Millimetres{120.0},
+              .dpi = 100,
+              .well_name = "Raster-Symbol-Fixture",
+          },
+  };
+  return Fixture{.document = std::move(document),
+                 .scene = *scene,
+                 .snapshot = std::move(snapshot)};
+}
+
 std::filesystem::path temp_file(std::string_view name) {
   return std::filesystem::temp_directory_path() / name;
 }
@@ -194,6 +302,77 @@ void png_pixels_decode_and_carry_background_and_curve() {
     }
   }
   require(drew, "exported PNG must contain curve pixels beyond background");
+  std::filesystem::remove(path);
+}
+
+void raster_draws_symbol_layer_pixels() {
+  // Symbol layers (PreparedSymbol) must reach the raster path: the diamond
+  // glyph draws at the prepared scene-mm center, below the curve pass.
+  auto fixture = make_symbol_fixture();
+  const auto path = temp_file("welllog-157-symbol.png");
+  std::filesystem::remove(path);
+  RasterExportRequest req{
+      .path = path,
+      .format = RasterImageFormat::png,
+      .width_px = 120,
+      .height_px = 200,
+      .background = RgbaColor{255, 255, 255, 255},
+      .color_space = RasterColorSpace::srgb,
+      .tile_height_px = 16,
+  };
+  const auto report = export_raster_sync(fixture.scene, fixture.snapshot, req);
+  require(report.has_value(), "symbol PNG export must succeed");
+
+  const auto png = decode_png(path);
+  require(png.has_value(), "PNG must decode with the test-side reader");
+  require(png->width == 120 && png->height == 200,
+          "decoded dimensions must match the request");
+  require(fixture.scene.symbol_layers().size() == 1 &&
+              fixture.scene.symbols().size() == 1,
+          "fixture must prepare exactly one symbol layer with one symbol");
+
+  const auto &layer = fixture.scene.symbol_layers().front();
+  const auto &symbol = fixture.scene.symbols().front();
+  const auto channels = 4U;
+  const auto stride = static_cast<std::size_t>(png->width) * channels;
+  const auto pixel = [&](std::uint32_t x, std::uint32_t y) {
+    const auto at = stride * y + static_cast<std::size_t>(x) * channels;
+    return std::array<std::uint8_t, 4>{
+        png->samples[at], png->samples[at + 1], png->samples[at + 2],
+        png->samples[at + 3]};
+  };
+  const auto color =
+      std::array<std::uint8_t, 4>{layer.color.red, layer.color.green,
+                                  layer.color.blue, layer.color.alpha};
+  // Symbol center is prepared in scene mm (display domain); the same
+  // scene mm × dpi mapping the raster path uses.
+  const auto ppm = static_cast<double>(report.value().dpi) / 25.4;
+  const auto cx =
+      static_cast<int>(std::lround(symbol.center.left.value * ppm));
+  const auto cy = static_cast<int>(std::lround(symbol.center.top.value * ppm));
+  const auto radius = static_cast<int>(
+      std::ceil(layer.symbol_size.value * ppm / 2.0));
+  const auto in_box = [&](int x, int y) {
+    return x >= cx - radius - 1 && x <= cx + radius + 1 && y >= cy - radius - 1 &&
+           y <= cy + radius + 1;
+  };
+  bool glyph_drawn = false;
+  std::size_t color_pixels_outside = 0;
+  for (std::uint32_t y = 0; y < png->height; ++y) {
+    for (std::uint32_t x = 0; x < png->width; ++x) {
+      if (pixel(x, y) != color) {
+        continue;
+      }
+      if (in_box(static_cast<int>(x), static_cast<int>(y))) {
+        glyph_drawn = true;
+      } else {
+        ++color_pixels_outside;
+      }
+    }
+  }
+  require(glyph_drawn, "raster must draw the symbol glyph at its center");
+  require(color_pixels_outside == 0,
+          "symbol color appears only inside the glyph box (no stray pixels)");
   std::filesystem::remove(path);
 }
 
@@ -468,6 +647,7 @@ int main() {
   cancel_stops_work_and_cleans_temp();
   png_pixels_decode_and_carry_background_and_curve();
   gray_png_curve_samples_match_srgb_luma();
+  raster_draws_symbol_layer_pixels();
   raster_page_dimensions_match_the_shared_snapshot_geometry();
   return EXIT_SUCCESS;
 }

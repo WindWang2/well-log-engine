@@ -343,6 +343,36 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
     }
   }
 
+  // Symbol layers: discrete SymbolOccurrence glyphs (shared symbol_glyph
+  // geometry) at their prepared scene-mm centers. Drawn below curves to match
+  // the SVG/GL channel semantics (markers and symbols sit under curves).
+  for (const auto &layer : scene.symbol_layers()) {
+    const auto end = layer.first_symbol + layer.symbol_count;
+    const auto stroke = std::max(
+        1, static_cast<int>(std::lround(layer.symbol_size.value / 6.0 * ppm)));
+    for (std::uint64_t index = layer.first_symbol; index < end; ++index) {
+      const auto &symbol = scene.symbols()[index];
+      if (symbol.kind == SymbolKind::cross) {
+        // Stroke-only glyph: the two diagonals (same convention as the
+        // marker-symbol branch).
+        const auto half = static_cast<int>(
+            std::lround(layer.symbol_size.value / 2.0 * ppm));
+        const auto center = to_pixel(symbol.center, ppm, tile_origin_y);
+        draw_line(tile, geom.width, tile_rows, geom.channels, center.x - half,
+                  center.y - half, center.x + half, center.y + half,
+                  layer.color, stroke);
+        draw_line(tile, geom.width, tile_rows, geom.channels, center.x + half,
+                  center.y - half, center.x - half, center.y + half,
+                  layer.color, stroke);
+      } else {
+        fill_polygon(tile, geom.width, tile_rows, geom.channels,
+                     symbol_glyph(symbol.kind, layer.symbol_size).outline,
+                     symbol.center.left.value, symbol.center.top.value, ppm,
+                     tile_origin_y, layer.color);
+      }
+    }
+  }
+
   const auto segments = scene.curve_segments();
   const auto points = scene.curve_points();
   for (const auto &layer : scene.curve_layers()) {
