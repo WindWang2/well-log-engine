@@ -19,8 +19,10 @@ import numpy as np
 from well_log_workstation.workspace import Workspace, add_well
 
 if TYPE_CHECKING:
-    from well_log_workstation.lithology_model import LithologyModel
     from well_log_workstation.core_photo_model import CorePhotoModel
+    from well_log_workstation.lithology_model import LithologyModel
+    from well_log_workstation.perforation_model import PerforationModel
+    from well_log_workstation.well_test_model import WellTestModel
 
 
 class LasImportError(Exception):
@@ -70,6 +72,10 @@ class ImportedWellDocument:
     # Per-well core-photo segments (FRS §2.x): the shell attaches the loaded
     # ``wells/<id>/core_photos.json`` model before applying templates.
     core_photos: CorePhotoModel | None = None
+    # Epic C (C3/C4): per-well engineering data attached the same way —
+    # well-test intervals (试油/解释成果道) and perforations (射孔/井下工程道).
+    well_tests: WellTestModel | None = None
+    perforations: PerforationModel | None = None
 
     def curve_by_mnemonic(
         self, mnemonic: str, version: str | None = None

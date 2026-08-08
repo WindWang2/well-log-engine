@@ -189,6 +189,156 @@ def paint_core_photos(
     painter.restore()
 
 
+# Fluid → band color for the well-test track (试油/解释成果道, Epic C / C3).
+_FLUID_COLORS = {
+    "油": "#2e7d32",
+    "气": "#c62828",
+    "水": "#1565c0",
+    "油水同层": "#7b1fa2",
+    "气水同层": "#8e24aa",
+    "干层": "#6b7280",
+}
+
+# Status → symbol color for the perforation track (射孔/井下工程道, Epic C / C4).
+_PERFORATION_STATUS_COLORS = {
+    "已射": "#1f1f1f",
+    "已封堵": "#9e9e9e",
+    "补射": "#c62828",
+    "未射": "#f57c00",
+}
+
+
+def paint_well_test_track(
+    painter: QPainter,
+    x: int,
+    y_top: int,
+    tw: int,
+    th: int,
+    d0: float,
+    d1: float,
+    track,
+) -> None:
+    """Draw tested intervals as fluid-colored bands (Epic C 试油/解释成果道).
+
+    Shared by the interactive canvas and plot export. Band fill follows the
+    fluid (油/气/水/…); the label is 「类型·结论」 and, on wide tracks, the
+    interpretation line below. Bands render against the display depth axis —
+    TVD/TVDSS-domain intervals are not projected yet (explicit, gap doc).
+    """
+    if tw < 4 or th < 4:
+        return
+    span = d1 - d0
+    if span <= 0:
+        return
+    intervals = getattr(track, "well_test_intervals", None) or []
+    for itv in intervals:
+        if not math.isfinite(itv.top) or not math.isfinite(itv.bottom):
+            continue
+        if itv.bottom <= itv.top:
+            continue
+        if itv.bottom < d0 or itv.top > d1:
+            continue
+        y0 = max(float(y_top), y_top + ((itv.top - d0) / span) * th)
+        y1 = min(float(y_top + th), y_top + ((itv.bottom - d0) / span) * th)
+        if y1 - y0 < 0.5:
+            continue
+        color = QColor(_FLUID_COLORS.get(itv.fluid, "#6b7280"))
+        fill = QColor(color)
+        fill.setAlpha(56)
+        painter.fillRect(QRectF(x, y0, tw, y1 - y0), fill)
+        painter.setPen(QPen(color, 1))
+        painter.drawRect(QRectF(x + 0.5, y0 + 0.5, tw - 1, y1 - y0 - 1))
+        if tw >= 48:
+            label = "·".join(
+                p for p in (itv.test_type, itv.result) if str(p).strip()
+            ) or itv.fluid
+            mid = (y0 + y1) / 2
+            painter.setPen(QColor("#111111"))
+            painter.drawText(
+                QRectF(x + 2, mid - 8, tw - 4, 16),
+                Qt.AlignmentFlag.AlignCenter,
+                label,
+            )
+            if tw >= 64 and itv.interpretation:
+                painter.setPen(QColor("#333333"))
+                painter.drawText(
+                    QRectF(x + 2, mid + 8, tw - 4, 14),
+                    Qt.AlignmentFlag.AlignCenter,
+                    str(itv.interpretation)[:30],
+                )
+
+
+def paint_perforation_track(
+    painter: QPainter,
+    x: int,
+    y_top: int,
+    tw: int,
+    th: int,
+    d0: float,
+    d1: float,
+    track,
+) -> None:
+    """Draw perforated intervals with shot-dot symbols (Epic C 射孔/井下工程道).
+
+    Shared by the interactive canvas and plot export. Each interval is a
+    status-colored band with one dot per shot (shot_density · thickness,
+    clamped to 40) or a default 5-dot pattern when the density is unknown.
+    Bands render against the display depth axis (see well-test note).
+    """
+    if tw < 4 or th < 4:
+        return
+    span = d1 - d0
+    if span <= 0:
+        return
+    intervals = getattr(track, "perforation_intervals", None) or []
+    for itv in intervals:
+        if not math.isfinite(itv.top) or not math.isfinite(itv.bottom):
+            continue
+        if itv.bottom <= itv.top:
+            continue
+        if itv.bottom < d0 or itv.top > d1:
+            continue
+        y0 = max(float(y_top), y_top + ((itv.top - d0) / span) * th)
+        y1 = min(float(y_top + th), y_top + ((itv.bottom - d0) / span) * th)
+        if y1 - y0 < 0.5:
+            continue
+        color = QColor(_PERFORATION_STATUS_COLORS.get(itv.status, "#1f1f1f"))
+        band = QColor(color)
+        band.setAlpha(40)
+        painter.fillRect(QRectF(x, y0, tw, y1 - y0), band)
+        # One dot per shot, evenly spaced along the band.
+        n_dots = 5
+        if itv.shot_density and itv.shot_density > 0:
+            n_dots = max(
+                2, min(40, int(round(itv.shot_density * (itv.bottom - itv.top))))
+            )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        for i in range(n_dots):
+            frac = (i + 1) / (n_dots + 1)
+            painter.drawEllipse(
+                QPointF(x + tw / 2, y0 + frac * (y1 - y0)), 2.5, 2.5
+            )
+        # Interval boundaries.
+        painter.setPen(QPen(QColor("#8a8a8a"), 1))
+        if y0 > y_top + 0.5:
+            painter.drawLine(x, int(round(y0)), x + tw, int(round(y0)))
+        if y1 < y_top + th - 0.5:
+            painter.drawLine(x, int(round(y1)), x + tw, int(round(y1)))
+        if tw >= 48:
+            painter.setPen(QColor("#222222"))
+            label = (
+                f"{itv.status}·{itv.shot_density:g}孔/m"
+                if itv.shot_density and itv.shot_density > 0
+                else itv.status
+            )
+            painter.drawText(
+                QRectF(x + 2, y0 + 2, tw - 4, 14),
+                Qt.AlignmentFlag.AlignCenter,
+                label,
+            )
+
+
 class MultiTrackCanvas(QWidget):
     """Single-well multi-track view with shared depth window (pan/zoom)."""
 
@@ -993,6 +1143,14 @@ class MultiTrackCanvas(QWidget):
                 resolver = self._core_photo_resolver or (lambda _p: None)
                 paint_core_photos(
                     p, x, top, tw, bottom - top, d0, d1, track, resolver
+                )
+            elif track.role == "well_test":
+                paint_well_test_track(
+                    p, x, top, tw, bottom - top, d0, d1, track
+                )
+            elif track.role == "perforation":
+                paint_perforation_track(
+                    p, x, top, tw, bottom - top, d0, d1, track
                 )
             else:
                 # Crossover fill (FRS §2.x 双曲线交叉充填): dual-curve track

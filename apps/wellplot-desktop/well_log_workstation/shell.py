@@ -2651,6 +2651,14 @@ class WellLogWorkstationWindow(QMainWindow):
 
         doc.lithology = load_lithology_for_well(self._workspace, well_id)[0]
         doc.core_photos = load_core_photos_for_well(self._workspace, well_id)[0]
+        # Epic C (C3/C4): engineering tracks (试油/射孔) bind the same way.
+        from well_log_workstation.perforation_model import (
+            load_perforation_for_well,
+        )
+        from well_log_workstation.well_test_model import load_well_test_for_well
+
+        doc.well_tests = load_well_test_for_well(self._workspace, well_id)[0]
+        doc.perforations = load_perforation_for_well(self._workspace, well_id)[0]
         template = get_builtin_template(template_id)
         if template is None:
             raise WorkspaceError(f"未知图版: {template_id}")
@@ -5535,6 +5543,12 @@ class WellLogWorkstationWindow(QMainWindow):
                 return
             note = f"已保存 {entry.name} 射孔（{len(model.intervals)} 层段）"
         self._selected_well_id = well_id
+        # Re-apply the current template so the engineering tracks show the
+        # freshly saved intervals (same as the lithology editor flow).
+        if self._active_plot_type == "single_well" and self._presentation is not None:
+            self.apply_template_to_well(well_id, self._presentation.template_id)
+        else:
+            self.multi_track_canvas.update()
         self.statusBar().showMessage(note, 4000)
 
     def _on_edit_core_data(self) -> None:

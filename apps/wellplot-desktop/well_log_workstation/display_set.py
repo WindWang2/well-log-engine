@@ -420,6 +420,38 @@ def presentation_from_display_set(
                     ),
                 )
             )
+        elif role == "well_test":
+            bound_tracks.append(
+                BoundTrack(
+                    id=str(t.get("id") or "well_test"),
+                    role="well_test",
+                    title=str(t.get("title") or "试油"),
+                    width_fraction=float(t.get("width_fraction") or 0.3),
+                    scale=None,
+                    layers=[],
+                    well_test_intervals=(
+                        list(document.well_tests.intervals)
+                        if getattr(document, "well_tests", None) is not None
+                        else []
+                    ),
+                )
+            )
+        elif role == "perforation":
+            bound_tracks.append(
+                BoundTrack(
+                    id=str(t.get("id") or "perforation"),
+                    role="perforation",
+                    title=str(t.get("title") or "射孔"),
+                    width_fraction=float(t.get("width_fraction") or 0.22),
+                    scale=None,
+                    layers=[],
+                    perforation_intervals=(
+                        list(document.perforations.intervals)
+                        if getattr(document, "perforations", None) is not None
+                        else []
+                    ),
+                )
+            )
 
     for desc in styled:
         # Multi-rate (Epic A): a versioned leaf ("doc:mnemonic:version")

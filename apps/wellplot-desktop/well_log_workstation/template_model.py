@@ -14,8 +14,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from well_log_workstation.las_import import ImportedCurve, ImportedWellDocument
-from well_log_workstation.lithology_model import LithologySegment
 from well_log_workstation.core_photo_model import CorePhotoSegment
+from well_log_workstation.lithology_model import LithologySegment
+from well_log_workstation.perforation_model import PerforationInterval
+from well_log_workstation.well_test_model import WellTestInterval
 
 ScaleMode = Literal["linear", "log"]
 
@@ -79,6 +81,10 @@ class BoundTrack:
     litho_segments: list[LithologySegment] = field(default_factory=list)
     # Core-photo depth bands (role == "image", FRS §2.x): depth-ranged images.
     core_photo_segments: list[CorePhotoSegment] = field(default_factory=list)
+    # Well-test bands (role == "well_test", Epic C / C3): tested intervals.
+    well_test_intervals: list[WellTestInterval] = field(default_factory=list)
+    # Perforation bands (role == "perforation", Epic C / C4): shot intervals.
+    perforation_intervals: list[PerforationInterval] = field(default_factory=list)
     # Runtime layout edit (#292 / T4); default visible.
     visible: bool = True
 
@@ -315,6 +321,8 @@ def apply_template(
         layers_out: list[BoundCurveLayer] = []
         litho_segments_out: list[LithologySegment] = []
         core_photo_segments_out: list[CorePhotoSegment] = []
+        well_test_intervals_out: list[WellTestInterval] = []
+        perforation_intervals_out: list[PerforationInterval] = []
         if role == "curve":
             for layer in t.get("layers") or []:
                 if str(layer.get("type") or "curve") != "curve":
@@ -340,6 +348,10 @@ def apply_template(
             litho_segments_out = list(document.lithology.segments)
         elif role == "image" and getattr(document, "core_photos", None) is not None:
             core_photo_segments_out = list(document.core_photos.segments)
+        elif role == "well_test" and getattr(document, "well_tests", None) is not None:
+            well_test_intervals_out = list(document.well_tests.intervals)
+        elif role == "perforation" and getattr(document, "perforations", None) is not None:
+            perforation_intervals_out = list(document.perforations.intervals)
         bound_tracks.append(
             BoundTrack(
                 id=str(t.get("id") or f"track-{len(bound_tracks)}"),
@@ -350,6 +362,8 @@ def apply_template(
                 layers=layers_out,
                 litho_segments=litho_segments_out,
                 core_photo_segments=core_photo_segments_out,
+                well_test_intervals=well_test_intervals_out,
+                perforation_intervals=perforation_intervals_out,
             )
         )
 

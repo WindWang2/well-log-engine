@@ -115,6 +115,24 @@ def _paint_presentation(
                 painter, int(x), int(top), int(tw - 6), int(bottom - top),
                 d0, d1, track, resolver,
             )
+        elif track.role == "well_test":
+            from well_log_workstation.multi_track_canvas import (
+                paint_well_test_track,
+            )
+
+            paint_well_test_track(
+                painter, int(x), int(top), int(tw - 6), int(bottom - top),
+                d0, d1, track,
+            )
+        elif track.role == "perforation":
+            from well_log_workstation.multi_track_canvas import (
+                paint_perforation_track,
+            )
+
+            paint_perforation_track(
+                painter, int(x), int(top), int(tw - 6), int(bottom - top),
+                d0, d1, track,
+            )
         else:
             # Crossover fill (FRS §2.x 双曲线交叉充填) — under the curve lines.
             from well_log_workstation.crossover_fill import paint_crossover_fill
