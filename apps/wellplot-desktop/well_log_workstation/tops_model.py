@@ -31,6 +31,10 @@ class FormationTop:
     unit: str = "m"
     color: str = "#c0392b"
     id: str = ""
+    # Optional reference into the workspace stratigraphic dictionary (Epic C):
+    # a top may name a unified unit instead of free text. Empty = historic
+    # free-text behaviour; old workspaces stay readable.
+    unit_id: str = ""
 
     def display_label(self) -> str:
         return f"{self.name}  {self.depth:g} {self.unit}".strip()
@@ -67,7 +71,10 @@ def _from_json_item(item: dict[str, Any]) -> FormationTop | None:
     color = str(item.get("color") or "#c0392b")
     unit = str(item.get("unit") or "m")
     tid = str(item.get("id") or "")
-    return FormationTop(name=name, depth=depth, unit=unit, color=color, id=tid)
+    unit_id = str(item.get("unit_id") or "")
+    return FormationTop(
+        name=name, depth=depth, unit=unit, color=color, id=tid, unit_id=unit_id
+    )
 
 
 def load_tops_for_well(
@@ -149,6 +156,7 @@ def save_tops_for_well(
                 "depth": t.depth,
                 "unit": t.unit,
                 "color": t.color,
+                **({"unit_id": t.unit_id} if t.unit_id else {}),
             }
             for t in tops
         ],
