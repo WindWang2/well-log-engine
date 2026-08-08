@@ -17,6 +17,42 @@ from PySide6.QtWidgets import QWidget
 from well_log_workstation.template_model import HostPresentation, ScaleSpec
 from well_log_workstation.tops_model import FormationTop
 
+# Height of the two-line track header (curve name+scale / unit).
+TRACK_HEADER_HEIGHT = 40
+
+# Visual constants for the ResFormStar-style frame.
+_FRAME_COLOR = QColor("#333333")
+_FRAME_INNER_COLOR = QColor("#999999")
+_GRID_MAJOR = QColor("#d0d0d0")
+_GRID_MINOR = QColor("#e8e8e8")
+_DEPTH_MAJOR_TICK = QColor("#444444")
+_DEPTH_MINOR_TICK = QColor("#888888")
+
+
+def _nice_ticks(d0: float, d1: float, target_count: int = 10) -> list[float]:
+    """Return nice round-number depth ticks in [d0, d1] (mirrors SDK nice_axis_ticks)."""
+    if d1 <= d0:
+        return [d0]
+    span = d1 - d0
+    raw_step = span / max(1, target_count)
+    # round step up to 1/2/5 × 10^n
+    mag = 10 ** math.floor(math.log10(raw_step))
+    for mult in (1, 2, 5, 10):
+        step = mult * mag
+        if step >= raw_step:
+            break
+    start = math.ceil(d0 / step) * step
+    ticks: list[float] = []
+    v = start
+    # float round to avoid 0.0000001 drift
+    n_steps = int((d1 - start) / step) + 1
+    for i in range(n_steps + 1):
+        t = round(start + i * step, 6)
+        if d0 - 1e-9 <= t <= d1 + 1e-9:
+            ticks.append(t)
+    return ticks
+
+
 
 def track_band(pres: HostPresentation, height: int) -> tuple[int, int]:
     """(top, bottom) of the track band for a presentation (mirrors _plot_band)."""
@@ -36,7 +72,7 @@ def track_band(pres: HostPresentation, height: int) -> tuple[int, int]:
             ),
         )
     title_h = 6 + n_lines * 16
-    return title_h + 26, height - 18
+    return title_h + TRACK_HEADER_HEIGHT, height - 18
 
 
 def track_header_rects(
@@ -59,7 +95,7 @@ def track_header_rects(
         entries.append(
             (
                 track,
-                QRect(x, top - 26, tw - 4, 24),
+                QRect(x, top - TRACK_HEADER_HEIGHT, tw - 4, TRACK_HEADER_HEIGHT),
                 QRect(x, top, tw - 4, bottom - top),
             )
         )
@@ -365,7 +401,7 @@ class MultiTrackCanvas(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("MultiTrackCanvas")
-        self.setMinimumSize(400, 400)
+        self.setMinimumSize(300, 200)
         self._presentation: HostPresentation | None = None
         # Core-photo image path resolver (FRS §2.x): maps a segment's
         # relative image_path to an absolute path via the active workspace.
@@ -1044,7 +1080,7 @@ class MultiTrackCanvas(QWidget):
         if self._presentation is not None:
             n_lines = max(1, len(self._header_lines(self._presentation)))
         title_h = 6 + n_lines * 16
-        track_hdr = 26
+        track_hdr = TRACK_HEADER_HEIGHT
         footer_h = 18
         return title_h + track_hdr, h - footer_h
 
@@ -1117,24 +1153,134 @@ class MultiTrackCanvas(QWidget):
         track_left = entries[0][2].left()
         track_right = entries[-1][2].right()
 
+        # --- ResFormStar-style depth grid across all tracks ---
+        depth_ticks = _nice_ticks(d0, d1, target_count=12)
+        minor_step = 5.0
+        # Draw minor horizontal grid lines first (under everything).
+        if depth_ticks:
+            actual_step = depth_ticks[1] - depth_ticks[0] if len(depth_ticks) > 1 else 50.0
+            minor_step = actual_step / 5.0
+            v = math.ceil(d0 / minor_step) * minor_step
+            p.setPen(QPen(_GRID_MINOR, 0.5))
+            while v <= d1:
+                yy = top + int(((v - d0) / (d1 - d0)) * (bottom - top))
+                p.drawLine(track_left, yy, track_right, yy)
+                v += minor_step
+
+        # Major horizontal grid lines (on nice depth ticks).
+        p.setPen(QPen(_GRID_MAJOR, 0.8))
+        for dt in depth_ticks:
+            yy = top + int(((dt - d0) / (d1 - d0)) * (bottom - top))
+            p.drawLine(track_left, yy, track_right, yy)
+
+        # --- Publication frame: outer double-line border ---
+        # Only the border; the title is already drawn above (left-aligned).
+        frame_pen = QPen(_FRAME_COLOR, 1.5)
+        p.setPen(frame_pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(QRect(track_left - 1, top - TRACK_HEADER_HEIGHT - 1,
+                         track_right - track_left + 2,
+                         bottom - top + TRACK_HEADER_HEIGHT + 2))
+        p.setPen(QPen(_FRAME_INNER_COLOR, 0.5))
+        p.drawRect(QRect(track_left + 1, top - TRACK_HEADER_HEIGHT + 1,
+                         track_right - track_left - 2,
+                         bottom - top + TRACK_HEADER_HEIGHT - 2))
+
         for track, header, body in entries:
             x, tw = body.x(), body.width()
-            # per-track column header
+            # --- Two-line track header ---
             p.setPen(QPen(QColor("#333"), 1))
+            p.setBrush(QColor("#f5f5f5"))
             p.drawRect(header)
-            p.drawText(header.x() + 4, header.y() + 16, track.title[:12])
+            p.setBrush(Qt.BrushStyle.NoBrush)
 
-            # track body
+            hdr_font = p.font()
+            if track.role == "depth":
+                hdr_font.setBold(True)
+                hdr_font.setPointSize(9)
+                p.setFont(hdr_font)
+                p.setPen(QColor("#222"))
+                top_rect = QRect(header.x() + 4, header.y() + 2,
+                                 header.width() - 8, 18)
+                p.drawText(top_rect, Qt.AlignmentFlag.AlignCenter, "深度")
+                unit_font = p.font()
+                unit_font.setBold(False)
+                unit_font.setPointSize(8)
+                p.setFont(unit_font)
+                p.setPen(QColor("#666"))
+                bot_rect = QRect(header.x() + 4, header.y() + 22,
+                                 header.width() - 8, 16)
+                p.drawText(bot_rect, Qt.AlignmentFlag.AlignCenter,
+                           pres.depth_unit or "m")
+            elif track.scale is not None:
+                sc = track.scale
+                # Top line (y+2, 18px): curve name + scale range
+                hdr_font.setBold(True)
+                hdr_font.setPointSize(9)
+                p.setFont(hdr_font)
+                p.setPen(QColor("#222"))
+                top_rect = QRect(header.x() + 4, header.y() + 2,
+                                 header.width() - 8, 18)
+                top_text = f"{track.title[:8]} {sc.min:g}–{sc.max:g}"
+                p.drawText(
+                    top_rect,
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    top_text,
+                )
+                # Bottom line (y+22, 16px): unit + mode
+                unit_font = p.font()
+                unit_font.setBold(False)
+                unit_font.setPointSize(8)
+                p.setFont(unit_font)
+                p.setPen(QColor("#666"))
+                bot_rect = QRect(header.x() + 4, header.y() + 22,
+                                 header.width() - 8, 16)
+                bottom_text = sc.unit or ""
+                if sc.mode == "log":
+                    bottom_text = (bottom_text + " LOG").strip()
+                p.drawText(
+                    bot_rect,
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    bottom_text,
+                )
+            else:
+                # Non-depth track without scale (litho/image/etc.)
+                hdr_font.setBold(True)
+                hdr_font.setPointSize(9)
+                p.setFont(hdr_font)
+                p.setPen(QColor("#222"))
+                p.drawText(header, Qt.AlignmentFlag.AlignCenter, track.title[:12])
+
+            # --- Track body with grid ---
             p.setPen(QPen(QColor("#bbbbbb"), 1))
             p.drawRect(body)
 
+            # Vertical grid lines for curve tracks (4 divisions)
+            if track.role not in ("depth", "litho", "image", "well_test", "perforation") and tw > 30:
+                divisions = 4
+                p.setPen(QPen(_GRID_MAJOR, 0.5))
+                for k in range(1, divisions):
+                    gx = x + int(tw * k / divisions)
+                    p.drawLine(gx, top, gx, bottom)
+
             if track.role == "depth":
-                p.setPen(QColor("#444"))
-                for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
-                    yy = top + int((bottom - top) * frac)
-                    depth_v = d0 + (d1 - d0) * frac
-                    p.drawLine(x, yy, x + 6, yy)
-                    p.drawText(x + 8, yy + 4, f"{depth_v:.1f}")
+                # Major depth ticks + labels
+                p.setPen(QPen(_DEPTH_MAJOR_TICK, 1))
+                for dt in depth_ticks:
+                    yy = top + int(((dt - d0) / (d1 - d0)) * (bottom - top))
+                    p.drawLine(x, yy, x + 10, yy)
+                    p.setPen(QColor("#333"))
+                    p.drawText(x + 12, yy + 4, f"{dt:.0f}")
+                    p.setPen(QPen(_DEPTH_MAJOR_TICK, 1))
+                # Minor ticks (no labels)
+                p.setPen(QPen(_DEPTH_MINOR_TICK, 0.5))
+                v = math.ceil(d0 / minor_step) * minor_step
+                while v <= d1:
+                    # skip majors
+                    if not any(abs(v - mt) < minor_step * 0.5 for mt in depth_ticks):
+                        yy = top + int(((v - d0) / (d1 - d0)) * (bottom - top))
+                        p.drawLine(x, yy, x + 5, yy)
+                    v += minor_step
             elif track.role == "litho":
                 paint_litho_bands(
                     p, x, top, tw, bottom - top, d0, d1, track
@@ -1206,7 +1352,7 @@ class MultiTrackCanvas(QWidget):
             else:
                 x_line = entries[-1][1].x() + entries[-1][1].width()
             p.setPen(QPen(QColor("#e74c3c"), 2))
-            p.drawLine(x_line, top - 26, x_line, bottom)
+            p.drawLine(x_line, top - TRACK_HEADER_HEIGHT, x_line, bottom)
 
         # Secondary depth axis (Epic B 多轴): right-margin ruler from the
         # SDK-authoritative tick semantics; the plot area above already

@@ -21,6 +21,44 @@ from well_log_workstation.well_test_model import WellTestInterval
 
 ScaleMode = Literal["linear", "log"]
 
+# Industry-standard curve colors (mnemonic → hex), aligned with ResFormStar /
+# common Chinese oilfield logging software conventions. Applied when a template
+# layer omits a color or uses the legacy default blue.
+_INDUSTRY_CURVE_COLORS: dict[str, str] = {
+    # Gamma ray — green
+    "GR": "#2ca02c", "SGR": "#2ca02c", "GAM": "#2ca02c", "GAMMA": "#2ca02c",
+    "CGR": "#2ca02c", "TH": "#2ca02c",
+    # Resistivity — red
+    "RT": "#d62728", "RD": "#d62728", "LLD": "#d62728", "ILD": "#d62728",
+    "AT90": "#d62728", "RXO": "#d62728", "RS": "#d62728", "LLS": "#d62728",
+    "AC90": "#d62728", "RLLD": "#d62728",
+    # Density — blue
+    "DEN": "#1f77b4", "RHOB": "#1f77b4", "ZDEN": "#1f77b4", "RHOZ": "#1f77b4",
+    "RHO8": "#1f77b4",
+    # Sonic — purple
+    "AC": "#9467bd", "DT": "#9467bd", "DTP": "#9467bd", "DTC": "#9467bd",
+    "AC08": "#9467bd",
+    # Neutron porosity — orange
+    "CNL": "#ff7f0e", "NPHI": "#ff7f0e", "TNPH": "#ff7f0e", "NPOR": "#ff7f0e",
+    # Caliper — black/dark grey
+    "CAL": "#333333", "CALI": "#333333", "DCAL": "#333333", "HCAL": "#333333",
+    # Spontaneous potential — brown
+    "SP": "#8c564b", "PSP": "#8c564b",
+    # Photoelectric — teal
+    "PE": "#17becf", "PEF": "#17becf", "LITH": "#17becf",
+}
+
+_DEFAULT_CURVE_COLOR = "#1a6fb5"
+
+
+def _industry_color(mnemonic: str, template_color: str | None) -> str:
+    """Return the color for a curve layer, preferring industry-standard by mnemonic."""
+    color = (template_color or "").strip()
+    if color and color != _DEFAULT_CURVE_COLOR:
+        return color
+    return _INDUSTRY_CURVE_COLORS.get(mnemonic.strip().upper(), color or _DEFAULT_CURVE_COLOR)
+
+
 
 @dataclass
 class ScaleSpec:
@@ -334,7 +372,7 @@ def apply_template(
                 layers_out.append(
                     BoundCurveLayer(
                         mnemonic=curve.mnemonic,
-                        color=str(layer.get("color") or "#1a6fb5"),
+                        color=_industry_color(curve.mnemonic, layer.get("color")),
                         unit=curve.unit,
                         values=curve.values,
                         null_mask=curve.null_mask,

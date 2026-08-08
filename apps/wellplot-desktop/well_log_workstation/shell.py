@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
+    QScrollArea,
 )
 
 from well_log_workstation import __version__
@@ -970,8 +971,20 @@ class WellLogWorkstationWindow(QMainWindow):
         return pane
 
     def _build_right(self) -> QWidget:
+        # The entire right pane content lives in an inner widget wrapped by a
+        # QScrollArea, so the window can be resized small without the pane
+        # imposing a large minimum height.
+        scroll = QScrollArea()
+        scroll.setObjectName("RightPaneScroll")
+        scroll.setWidgetResizable(True)
+        from PySide6.QtWidgets import QFrame as _QFrame
+        from PySide6.QtCore import Qt as _Qt
+        scroll.setHorizontalScrollBarPolicy(_Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(_QFrame.Shape.NoFrame)
+
         pane = QWidget()
         pane.setObjectName("RightPane")
+        scroll.setWidget(pane)
         layout = QVBoxLayout(pane)
 
         layout.addWidget(QLabel("属性 / 图版 / 层位"))
@@ -1261,7 +1274,7 @@ class WellLogWorkstationWindow(QMainWindow):
         layout.addLayout(link_btns)
 
         layout.addStretch(1)
-        return pane
+        return scroll
 
     def _build_status(self) -> None:
         status = QStatusBar(self)

@@ -31,6 +31,24 @@ def main(argv: list[str] | None = None) -> int:
 
     configure_qt_platform_for_session(warn=True)
 
+    # Set the default GL surface format BEFORE QApplication is created.
+    # Without this, PySide6's Qt on Wayland + NVIDIA selects an
+    # EGL_OPENGL_ES2_BIT config (GLES 2.0). The engine's WellLogView
+    # (QOpenGLWidget) then cannot create a shared desktop GL 3.3 Core
+    # context (eglCreateContext returns NULL — different renderable type
+    # cannot share), the FBO texture never composites to the wl_surface,
+    # and the view stays black. Forcing desktop OpenGL + depth/stencil
+    # matches the C++ path. See docs/black-screen-diagnosis.md.
+    from PySide6.QtGui import QSurfaceFormat
+
+    fmt = QSurfaceFormat()
+    fmt.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
+    fmt.setVersion(3, 3)
+    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
+    fmt.setDepthBufferSize(24)
+    fmt.setStencilBufferSize(8)
+    QSurfaceFormat.setDefaultFormat(fmt)
+
     from PySide6.QtWidgets import QApplication
 
     from well_log_workstation.shell import WellLogWorkstationWindow
