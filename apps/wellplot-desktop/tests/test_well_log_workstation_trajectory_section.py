@@ -404,10 +404,13 @@ def test_unfolded_warps_curve_along_path(qtbot) -> None:
     canvas.set_section([pres, pres])
     canvas.set_depth_range(0.0, 200.0)
 
-    # Equal mode: curve bottom at the well-1 column (315, 456), not at (115, 470).
+    # Equal mode: curve bottom at the well-1 column (315, 456), not at the
+    # unfolded warp point. Probe at (115, 456) — inside the strip, above the
+    # footer text band (y >= 464), whose glyph rendering is font-environment
+    # dependent and can carry colored (subpixel) fringes on some CI hosts.
     img_equal = _render_canvas(canvas)
     assert _blueish_at(img_equal, 315, 456)
-    assert not _blueish_at(img_equal, 115, 470)
+    assert not _blueish_at(img_equal, 115, 456)
 
     # Unfolded: deviated path + lateral offsets; the bottom sample warps to
     # (115, 470) and the column bottom is left empty.
