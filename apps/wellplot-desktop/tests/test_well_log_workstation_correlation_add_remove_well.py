@@ -181,8 +181,15 @@ def test_remove_well_prunes_links(qtbot, tmp_path: Path) -> None:
         assert lk.right_well_id != id2
 
 
-def test_remove_refuses_below_two(qtbot, tmp_path: Path) -> None:
+def test_remove_refuses_below_two(
+    qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A 2-well plot must refuse to drop below 2 wells."""
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(
+        QMessageBox, "information", lambda *a, **k: None
+    )  # modal would block offscreen
     win, ws, plot, (id1, id2, id3) = _three_wells(qtbot, tmp_path)
     assert _reload(ws, plot).well_ids == [id1, id2]
     win.corr_well_list.setCurrentRow(0)

@@ -30,7 +30,7 @@
 - **Desktop pytest：838 = 837 passed + 1 环境相关失败**（packaging 子进程测试，harness `sys.executable` 异常，同前轮）；退出段 exit 139 为既有第三方问题（见 `exit-segfault-diagnosis.md`）。
 - enum append-only：SymbolKind 仅尾部追加；undo_redo 数值断言在 74/74 内。
 
-## 遗留
+## 遗留（两项均已交付，见 epic-d-surface-tst-acceptance-report.md）
 
-- raster 后端暂不渲染 `PreparedSymbol`（SymbolOccurrence）——本切片范围仅为 marker 符号；SymbolOccurrence 的 raster 渲染为后续可选。
-- 单井引擎预览（`open_engine_preview`）暂不应用 tvd/tvdss transform（对比图多井路径已接线）；如需可后续对齐。
+- ~~raster 后端暂不渲染 `PreparedSymbol`（SymbolOccurrence）~~ ✅：`rasterize_tile` 新增 symbol pass（interval 与 curve 之间，符号在曲线之下，与 SVG/GL 语义对齐；cross 走 draw_line 双对角线，其余 kind 用 `symbol_glyph` + `fill_polygon`），内容测试 `raster_draws_symbol_layer_pixels`（字形中心像素 + 无杂散色块）。
+- ~~单井引擎预览（`open_engine_preview`）暂不应用 tvd/tvdss transform~~ ✅：`submit_multi_track_presentation` / `load_presentation_into_view` 透传 `depth_transform`，单井提交点按多井模式从测斜构建控制点。
