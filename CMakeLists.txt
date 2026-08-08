@@ -1108,6 +1108,23 @@ if(WELLLOG_BUILD_TESTS)
         COMMAND welllog_tst_tests
     )
 
+    add_executable(welllog_tst_layers_tests
+        tests/integration/tst_layers_test.cpp
+    )
+    target_compile_features(
+        welllog_tst_layers_tests
+        PRIVATE cxx_std_20
+    )
+    welllog_enable_warnings(welllog_tst_layers_tests)
+    target_link_libraries(
+        welllog_tst_layers_tests
+        PRIVATE WellLog::Scene
+    )
+    add_test(
+        NAME welllog.tst-layers
+        COMMAND welllog_tst_layers_tests
+    )
+
     if(WELLLOG_BUILD_TEXT)
         add_executable(welllog_text_engine_tests
             tests/text/text_engine_test.cpp
