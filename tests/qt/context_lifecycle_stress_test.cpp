@@ -36,6 +36,18 @@ EntityId id(std::string_view text) {
   return *parsed;
 }
 
+// Q_ASSERT's condition is not evaluated under QT_NO_DEBUG — fixture commands
+// executed inside one would silently never run in Release builds. Require the
+// command to succeed in every build type and surface the engine error.
+template <typename T>
+void require_command(const Result<T> &result, std::string_view what) {
+  if (!result.has_value()) {
+    const auto &error = result.error();
+    qFatal("%s failed: code=%d message=%d", std::string{what}.c_str(),
+           static_cast<int>(error.code), static_cast<int>(error.message));
+  }
+}
+
 struct Fixture {
   EntityId document_id;
   std::shared_ptr<WellLogSession> session;
@@ -73,8 +85,8 @@ Fixture make_fixture(PerformanceBudgets budgets = PerformanceBudgets{}) {
   });
 
   auto session = std::make_shared<WellLogSession>(budgets);
-  Q_ASSERT(session->execute(SetDocumentCommand{document_builder.build()})
-               .has_value());
+  require_command(session->execute(SetDocumentCommand{document_builder.build()}),
+                  "fixture SetDocumentCommand");
   ScenePresentationBuilder presentation_builder(
       document_id,
       ReferenceDepthRange{
@@ -111,9 +123,9 @@ Fixture make_fixture(PerformanceBudgets budgets = PerformanceBudgets{}) {
       .z_order = 0,
       .visible = true,
   });
-  Q_ASSERT(
-      session->execute(SetPresentationCommand{presentation_builder.build()})
-          .has_value());
+  require_command(
+      session->execute(SetPresentationCommand{presentation_builder.build()}),
+      "fixture SetPresentationCommand");
   return Fixture{.document_id = document_id, .session = std::move(session)};
 }
 

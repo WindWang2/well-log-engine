@@ -137,7 +137,7 @@ if(WELLLOG_BUILD_PYTHON)
         COMMAND
             "${Python_EXECUTABLE}"
             -c
-            "import pathlib, PySide6, shiboken6, shiboken6_generator; print(pathlib.Path(PySide6.__file__).parent / 'lib' / 'cmake'); print(pathlib.Path(shiboken6.__file__).parent / 'lib' / 'cmake'); print(pathlib.Path(shiboken6_generator.__file__).parent / 'lib' / 'cmake')"
+            "import pathlib, PySide6, shiboken6, shiboken6_generator; print(pathlib.Path(PySide6.__file__).parent / 'lib' / 'cmake'); print(pathlib.Path(shiboken6.__file__).parent / 'lib' / 'cmake'); print(pathlib.Path(shiboken6_generator.__file__).parent / 'lib' / 'cmake'); print(pathlib.Path(PySide6.__file__).parent.parent)"
         RESULT_VARIABLE WELLLOG_PYTHON_PROFILE_RESULT
         OUTPUT_VARIABLE WELLLOG_PYTHON_CMAKE_PATHS
         OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -149,6 +149,19 @@ if(WELLLOG_BUILD_PYTHON)
         )
     endif()
     string(REPLACE "\n" ";" WELLLOG_PYTHON_CMAKE_PATHS "${WELLLOG_PYTHON_CMAKE_PATHS}")
+    # Last line: the site-packages directory hosting PySide6. Kept separate so
+    # the python CTest tests can run the selected interpreter without relying
+    # on ambient PYTHONPATH (E1/E2: controlled runtime, no shell assumptions).
+    list(LENGTH WELLLOG_PYTHON_CMAKE_PATHS _welllog_py_paths_len)
+    if(_welllog_py_paths_len LESS 4)
+        message(
+            FATAL_ERROR
+            "Python profile step returned incomplete PySide6 locations"
+        )
+    endif()
+    math(EXPR _welllog_py_last "${_welllog_py_paths_len} - 1")
+    list(GET WELLLOG_PYTHON_CMAKE_PATHS ${_welllog_py_last} WELLLOG_PYTHON_SITE_PACKAGES)
+    list(REMOVE_AT WELLLOG_PYTHON_CMAKE_PATHS ${_welllog_py_last})
     list(PREPEND CMAKE_PREFIX_PATH ${WELLLOG_PYTHON_CMAKE_PATHS})
     find_package(Shiboken6 REQUIRED CONFIG)
     find_package(PySide6 REQUIRED CONFIG)
@@ -1435,7 +1448,7 @@ if(WELLLOG_BUILD_TESTS)
     welllog_enable_warnings(welllog_raster_export_tests)
     target_link_libraries(
         welllog_raster_export_tests
-        PRIVATE WellLog::ExportRaster WellLog::Session
+        PRIVATE WellLog::ExportRaster WellLog::Session ZLIB::ZLIB
     )
     add_test(NAME welllog.raster-export COMMAND welllog_raster_export_tests)
 
@@ -1901,11 +1914,14 @@ if(WELLLOG_BUILD_TESTS)
         )
     endif()
     if(WELLLOG_BUILD_PYTHON)
+        # Controlled runtime (E1/E2): the python tests run the configured
+        # interpreter with the build's welllog package AND the interpreter's
+        # own PySide6/shiboken site-packages — never ambient shell PYTHONPATH.
         add_test(
             NAME welllog.python.qt-embedding
             COMMAND
                 "${CMAKE_COMMAND}" -E env
-                "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python"
+                "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python:${WELLLOG_PYTHON_SITE_PACKAGES}"
                 "QT_QPA_PLATFORM=minimal"
                 "${Python_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/python/test_qt_embedding.py"
@@ -1914,7 +1930,7 @@ if(WELLLOG_BUILD_TESTS)
             NAME welllog.python.qt-lifecycle-stress
             COMMAND
                 "${CMAKE_COMMAND}" -E env
-                "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python"
+                "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python:${WELLLOG_PYTHON_SITE_PACKAGES}"
                 "QT_QPA_PLATFORM=minimal"
                 "${Python_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/python/test_qt_lifecycle_stress.py"
@@ -1991,6 +2007,8 @@ if(WELLLOG_BUILD_TESTS)
         welllog.svg.package.consumer
         welllog.fuzz-binary-sources
         welllog.fuzz-assets
+        welllog.raster-export
+        welllog.export-parity
     )
     foreach(_t IN LISTS _welllog_release_gate_tests)
         if(TEST ${_t})

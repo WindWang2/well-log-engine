@@ -32,6 +32,38 @@
       "displayName": "WellLogEngine development with pinned vcpkg",
       "binaryDir": "${sourceDir}/build/dev-vcpkg",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+    },
+    {
+      "name": "dev-python",
+      "inherits": "dev",
+      "displayName": "WellLogEngine + Shiboken6 Python bindings (controlled runtime)",
+      "binaryDir": "${sourceDir}/build/dev-python",
+      "cacheVariables": {
+        "WELLLOG_BUILD_PYTHON": "ON",
+        "WELLLOG_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "dev-qt",
+      "inherits": "dev",
+      "displayName": "WellLogEngine + Qt Widgets adapter",
+      "binaryDir": "${sourceDir}/build/dev-qt",
+      "cacheVariables": {
+        "WELLLOG_BUILD_QT_WIDGETS": "ON",
+        "WELLLOG_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "sanitize",
+      "displayName": "WellLogEngine ASan+UBSan (E1/E2 diagnostic)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/sanitize",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "WELLLOG_BUILD_TESTS": "ON",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
     }
   ],
   "buildPresets": [
@@ -46,6 +78,18 @@
     {
       "name": "dev-vcpkg",
       "configurePreset": "dev-vcpkg"
+    },
+    {
+      "name": "dev-python",
+      "configurePreset": "dev-python"
+    },
+    {
+      "name": "dev-qt",
+      "configurePreset": "dev-qt"
+    },
+    {
+      "name": "sanitize",
+      "configurePreset": "sanitize"
     }
   ],
   "testPresets": [
@@ -66,6 +110,38 @@
     {
       "name": "dev-vcpkg",
       "configurePreset": "dev-vcpkg",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "dev-python",
+      "configurePreset": "dev-python",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "dev-qt",
+      "configurePreset": "dev-qt",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "raster",
+      "configurePreset": "dev",
+      "displayName": "Raster export focused tests (E5)",
+      "filter": {
+        "include": ["welllog.raster-export", "welllog.render-raster"]
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "sanitize",
+      "configurePreset": "sanitize",
       "output": {
         "outputOnFailure": true
       }

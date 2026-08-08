@@ -56,6 +56,16 @@ WELLLOG_GATE_ENFORCE_SLO=1 ctest --test-dir … -L '^release-gate-full$' -V
 pytest tests/test_welllog_engine_adapter.py tests/test_well_log_canvas_panel.py -q
 ```
 
+`run_release_gate.sh` additionally runs the environment-governance smoke chain
+(E1–E5): L1 binding-environment diagnostics, native binding import +
+`welllog.python.*` CTest tests, raster focused tests, wheel smoke in a clean
+target dir, and the Desktop binding-first tests under
+`WLWS_REQUIRE_NATIVE_BINDING=1` strict mode. Wheel smoke needs a wheel
+(`WELLLOG_WHEEL` or `dist/*.whl`); binding smokes need the controlled Python
+runtime from `scripts/python_env.sh` (see
+`docs/environment-binding-policy.md`). Overrides: `WELLLOG_BUILD_DIR`,
+`WELLLOG_WHEEL`, `WELLLOG_SKIP_WHEEL`, `WELLLOG_SKIP_DESKTOP`.
+
 ## Platform matrix (process)
 
 Record evidence for each cell before a public release:

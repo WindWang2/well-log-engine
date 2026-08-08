@@ -270,3 +270,50 @@ layout.addWidget(view)
 - 保持 Legacy Widget 作为 Feature Flag 回退，直至验收完成。
 
 Adapter 不得复制新内核的布局、LOD、选择或导出逻辑。
+
+## 15. 真实 binding 路径（2026-08 环境治理后）
+
+本文前 14 节是设计契约；本节记录当前代码库中实际生效的构建/加载路径。
+
+### 构件
+
+| 构件 | 位置 |
+|---|---|
+| Shiboken typesystem | `src/python/typesystem_welllog.xml`（模块 `welllog._QtWidgets`） |
+| 绑定头 | `src/python/bindings.hpp`（仅 WellLogView） |
+| NumPy/载荷桥 | `src/python/numpy_bridge.cpp`（`welllog::python::submit_curve` 等） |
+| Python 包 | `python/welllog/`（`__init__.py` + `errors.py` + `py.typed`） |
+| 生成产物 | CMake `shiboken_generator_create_binding` → `welllog/_QtWidgets.abi3.so` |
+| wheel | `pyproject.toml`（scikit-build-core，`cp311-abi3` 标签） |
+
+### 构建路径（受控 runtime）
+
+- CMake：`-DWELLLOG_BUILD_PYTHON=ON`（强制 `WELLLOG_BUILD_QT_WIDGETS=ON`），
+  显式 `-DPython_EXECUTABLE` 指向受控 base 解释器。
+- 环境：`source scripts/welllog_env.sh`（解析非 conda base 解释器 +
+  venv site-packages，见 `docs/environment-binding-policy.md`）。
+- configure 时 profile 步骤解析 PySide6/shiboken6/shiboken6_generator 的
+  cmake 路径并 prepend `CMAKE_PREFIX_PATH`；同时输出 site-packages 注入
+  python CTest 的 `PYTHONPATH`（测试不再依赖 shell 环境）。
+- 版本一致性由 CMake FATAL 强制：PySide6 == Shiboken6 == Shiboken6Tools ==
+  Qt6（同一 SDK profile）。
+
+### 加载路径与 Desktop resolver
+
+`apps/wellplot-desktop/well_log_workstation/engine_bridge.py`：
+
+1. `probe_engine()` 优先 `from welllog import WellLogView`（mode=native）。
+2. 失败时（非严格模式）回退直接加载 `welllog._QtWidgets` 扩展
+   （mode=extension），再回退 sys.path 扫描 `.abi3.so`。
+3. `WLWS_REQUIRE_NATIVE_BINDING=1`（E3 严格模式）下只接受 native 路径；
+   package 加载失败即 fail-fast，detail 携带原始错误，禁止 extension
+   fallback 掩盖失败。最终用户默认行为不变。
+
+### 已验证（本机）
+
+- `ctest -R welllog.python.` 在受控 runtime 下全绿（qt-embedding +
+  qt-lifecycle-stress）。
+- wheel 在 clean target 目录安装后 `tests/python/wheel_smoke.py` 通过；
+  `cp311-abi3` 标签在 CPython 3.11 与 3.12 双版本实测可加载。
+- 退出期崩溃诊断见
+  `apps/wellplot-desktop/docs/exit-segfault-diagnosis.md`。

@@ -41,6 +41,12 @@ class EngineCapability:
     available: bool
     detail: str
     well_log_view_cls: type | None = None
+    # How the capability was reached:
+    #   "native"    — the welllog package imported normally (WellLogView).
+    #   "extension" — package __init__ failed; the raw _QtWidgets extension
+    #                 was loaded directly (still native code, degraded init).
+    #   None        — unavailable.
+    mode: str | None = None
 
 
 _cached: EngineCapability | None = None
@@ -49,6 +55,20 @@ _cached: EngineCapability | None = None
 def reset_engine_capability_cache() -> None:
     global _cached
     _cached = None
+
+
+def _strict_native() -> bool:
+    """True when the bridge must prove the *package* path (native binding).
+
+    WLWS_REQUIRE_NATIVE_BINDING=1 gates test/CI runs so a broken package
+    init or a degraded raw-extension load cannot masquerade as the native
+    binding. End-user default (unset) keeps the existing graceful degrade.
+    """
+    return os.environ.get("WLWS_REQUIRE_NATIVE_BINDING", "").strip() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def probe_engine() -> EngineCapability:
@@ -65,10 +85,23 @@ def probe_engine() -> EngineCapability:
     try:
         from welllog import WellLogView  # type: ignore
 
-        _cached = EngineCapability(True, "welllog.WellLogView", WellLogView)
+        _cached = EngineCapability(
+            True, "welllog.WellLogView", WellLogView, mode="native"
+        )
         return _cached
     except Exception as exc_pkg:  # noqa: BLE001
         pkg_err = str(exc_pkg)
+
+    # Strict mode (E3): the package path is the only acceptable proof of the
+    # native binding. A broken __init__ or missing wrapper must surface as a
+    # failure instead of being papered over by the raw-extension fallback.
+    if _strict_native():
+        _cached = EngineCapability(
+            False,
+            f"WLWS_REQUIRE_NATIVE_BINDING set; welllog package import failed: "
+            f"{pkg_err}",
+        )
+        return _cached
 
     # Fallback: load extension without package __init__ (e.g. missing TableModel)
     try:
@@ -107,7 +140,10 @@ def probe_engine() -> EngineCapability:
             )
             return _cached
         _cached = EngineCapability(
-            True, f"welllog._QtWidgets.WellLogView ({pkg_err})", view_cls
+            True,
+            f"welllog._QtWidgets.WellLogView ({pkg_err})",
+            view_cls,
+            mode="extension",
         )
         return _cached
     except Exception as exc_ext:  # noqa: BLE001

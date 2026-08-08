@@ -67,14 +67,23 @@
 
 - correlation 0.12/0.92 经验映射（决策保留，见上）
 - SVG 引擎导出为单场景路径（无分页页带，ruler 属分页 PDF 特性）
-- 5 个既有 ctest 环境/配置失败：`python.qt-embedding`/`python.qt-lifecycle-stress`（conda libstdc++ 缺 `GLIBCXX_3.4.35`）；3× `package.consumer`（本配置未构建 `libwelllog-export-raster.a`）——与 Goal 代码无关
+- **2026-08-08 环境治理后已关闭**：conda libstdc++ 缺 `GLIBCXX_3.4.35` 的
+  2 个 python binding ctest（受控 runtime + CMake site-packages 注入，
+  现 Release/Debug 均 72/72 全绿）；raster 未进入受控 build 的疑虑
+  （raster target 本就在默认 build，现补内容级验证并纳入 release-gate 标签）
 - `append-coalescing-stress` 在 -j8 下 flaky（单独跑通过）
-- Desktop 套件退出段 segfault（exit 139，全过后发生；纯基线复现，既有问题）
-- 系统 `cmake` 损坏 → 构建须用 `.venv/bin/cmake`
+- Desktop 套件退出段 segfault（exit 139，全过后发生）——本轮定位为第三方
+  （Qt offscreen 静态单例 × Shiboken 退出期 UAF，与 welllog 无关；
+  详见 `docs/exit-segfault-diagnosis.md`）
+- 系统 `cmake` 损坏 → 构建须用 `.venv/bin/cmake`（已固化到
+  `scripts/welllog_env.sh`）
+- Desktop `test_main_version_subprocess` 在 harness 下失败
+  （`sys.executable` 解析为宿主 AppImage；环境相关，非代码回归）
 
 ## 结论与后续
 
-**Goal 四个 Epic 全部验收通过**。后续可选方向（按推荐序）：
-1. Epic D 终极扩展：三维曲面（非平面 mesh）bedding TST
-2. Epic C 可选：SDK marker 符号（casing_shoe）、TVD/TVDSS 域区间道投影
-3. 环境治理：修复 conda libstdc++（GLIBCXX_3.4.35）以启用 Python 绑定测试、构建 raster 目标
+**Goal 四个 Epic 全部验收通过**（+ 2026-08-08 环境治理 Goal 全项验收，见
+`docs/environment-binding-acceptance-report.md`）。后续可选方向（按推荐序）：
+1. Epic C 收尾：SDK marker 符号（casing_shoe）、TVD/TVDSS 域区间道投影
+2. Epic D 终极扩展：三维曲面（非平面 mesh）bedding TST
+3. （可选）PySide6 升级后重验 Desktop 退出段 segfault 是否消失

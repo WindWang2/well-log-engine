@@ -55,6 +55,19 @@ EntityId id(std::string_view text) {
   return *parsed;
 }
 
+// Fixture commands must succeed in every build type: a bare Q_ASSERT is
+// compiled out under QT_NO_DEBUG and silently leaves the session without a
+// document/presentation (Release-only cascade failures that Debug never
+// sees). Surface the engine error instead.
+template <typename T>
+void require_command(const Result<T> &result, std::string_view what) {
+  if (!result.has_value()) {
+    const auto &error = result.error();
+    qFatal("%s failed: code=%d message=%d", std::string{what}.c_str(),
+           static_cast<int>(error.code), static_cast<int>(error.message));
+  }
+}
+
 PreparedViewFixture
 prepared_view_fixture(PerformanceBudgets budgets = PerformanceBudgets{}) {
   const auto document_id = id("60000000-0000-4000-8000-000000000001");
@@ -87,8 +100,8 @@ prepared_view_fixture(PerformanceBudgets budgets = PerformanceBudgets{}) {
   });
 
   auto session = std::make_shared<WellLogSession>(budgets);
-  Q_ASSERT(session->execute(SetDocumentCommand{document_builder.build()})
-               .has_value());
+  require_command(session->execute(SetDocumentCommand{document_builder.build()}),
+                  "fixture SetDocumentCommand");
   ScenePresentationBuilder presentation_builder(
       document_id,
       ReferenceDepthRange{
@@ -125,9 +138,9 @@ prepared_view_fixture(PerformanceBudgets budgets = PerformanceBudgets{}) {
       .z_order = 0,
       .visible = true,
   });
-  Q_ASSERT(
-      session->execute(SetPresentationCommand{presentation_builder.build()})
-          .has_value());
+  require_command(
+      session->execute(SetPresentationCommand{presentation_builder.build()}),
+      "fixture SetPresentationCommand");
   return PreparedViewFixture{
       .document_id = document_id,
       .curve_id = curve_id,
@@ -572,8 +585,8 @@ void WellLogViewTest::layered_scene_renders_intervals_patterns_symbols_and_text(
 
   auto session = std::make_shared<WellLogSession>();
   session->set_text_engine(std::make_shared<HarfBuzzTextEngine>());
-  Q_ASSERT(session->execute(SetDocumentCommand{document_builder.build()})
-               .has_value());
+  require_command(session->execute(SetDocumentCommand{document_builder.build()}),
+                  "layered fixture SetDocumentCommand");
   ScenePresentationBuilder presentation_builder(
       document_id,
       ReferenceDepthRange{
@@ -631,9 +644,9 @@ void WellLogViewTest::layered_scene_renders_intervals_patterns_symbols_and_text(
       .z_order = 3,
       .color = RgbaColor{0, 0, 0, 255},
   });
-  Q_ASSERT(
-      session->execute(SetPresentationCommand{presentation_builder.build()})
-          .has_value());
+  require_command(
+      session->execute(SetPresentationCommand{presentation_builder.build()}),
+      "fixture SetPresentationCommand");
   QVERIFY(session->prepared_scene(document_id) != nullptr);
   QVERIFY(!session->prepared_scene(document_id)->intervals().empty());
   QVERIFY(!session->prepared_scene(document_id)->text_runs().empty());

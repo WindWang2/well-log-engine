@@ -1,6 +1,9 @@
 #include <welllog/export/raster.hpp>
 #include <welllog/session/session.hpp>
 
+#include <zlib.h>
+
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -8,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -134,6 +138,235 @@ Fixture make_curve_fixture() {
 
 std::filesystem::path temp_file(std::string_view name) {
   return std::filesystem::temp_directory_path() / name;
+}
+
+// --- minimal PNG reader (test-side; production writer emits 8-bit RGBA or
+// gray with filter 0 per row — E5 content-level verification) ---------------
+
+struct DecodedPng {
+  std::uint32_t width{};
+  std::uint32_t height{};
+  unsigned char bit_depth{};
+  unsigned char color_type{};
+  std::vector<std::uint8_t> samples;  // raw, unfiltered, row-major
+};
+
+std::optional<DecodedPng> decode_png(const std::filesystem::path &path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return std::nullopt;
+  }
+  std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+  static constexpr unsigned char signature[8] = {137, 80, 78, 71, 13, 10,
+                                                 26, 10};
+  if (bytes.size() < 8 ||
+      !std::equal(signature, signature + 8, bytes.begin())) {
+    return std::nullopt;
+  }
+  DecodedPng png;
+  std::string idat;
+  std::size_t pos = 8;
+  bool saw_ihdr = false;
+  while (pos + 12 <= bytes.size()) {
+    const auto length = (static_cast<std::uint32_t>(bytes[pos]) << 24U) |
+                        (static_cast<std::uint32_t>(bytes[pos + 1]) << 16U) |
+                        (static_cast<std::uint32_t>(bytes[pos + 2]) << 8U) |
+                        static_cast<std::uint32_t>(bytes[pos + 3]);
+    const std::string type(reinterpret_cast<const char *>(bytes.data() + pos + 4),
+                           4);
+    const auto data_begin = pos + 8;
+    const auto data_end = data_begin + length;
+    if (data_end + 4 > bytes.size()) {
+      return std::nullopt;
+    }
+    if (type == "IHDR" && length >= 13) {
+      png.width = (static_cast<std::uint32_t>(bytes[data_begin]) << 24U) |
+                  (static_cast<std::uint32_t>(bytes[data_begin + 1]) << 16U) |
+                  (static_cast<std::uint32_t>(bytes[data_begin + 2]) << 8U) |
+                  static_cast<std::uint32_t>(bytes[data_begin + 3]);
+      png.height = (static_cast<std::uint32_t>(bytes[data_begin + 4]) << 24U) |
+                   (static_cast<std::uint32_t>(bytes[data_begin + 5]) << 16U) |
+                   (static_cast<std::uint32_t>(bytes[data_begin + 6]) << 8U) |
+                   static_cast<std::uint32_t>(bytes[data_begin + 7]);
+      png.bit_depth = bytes[data_begin + 8];
+      png.color_type = bytes[data_begin + 9];
+      saw_ihdr = true;
+    } else if (type == "IDAT") {
+      idat.append(reinterpret_cast<const char *>(bytes.data() + data_begin),
+                  length);
+    } else if (type == "IEND") {
+      break;
+    }
+    pos = data_end + 4;  // skip CRC
+  }
+  if (!saw_ihdr || png.bit_depth != 8 ||
+      (png.color_type != 6 && png.color_type != 0)) {
+    return std::nullopt;
+  }
+  const auto channels = png.color_type == 6 ? 4U : 1U;
+  std::vector<unsigned char> inflated;
+  z_stream stream{};
+  stream.next_in = reinterpret_cast<Bytef *>(idat.data());
+  stream.avail_in = static_cast<uInt>(idat.size());
+  if (inflateInit(&stream) != Z_OK) {
+    return std::nullopt;
+  }
+  std::vector<unsigned char> block(64U * 1024U);
+  int ret;
+  do {
+    stream.next_out = block.data();
+    stream.avail_out = static_cast<uInt>(block.size());
+    ret = inflate(&stream, Z_NO_FLUSH);
+    if (ret != Z_OK && ret != Z_STREAM_END) {
+      inflateEnd(&stream);
+      return std::nullopt;
+    }
+    inflated.insert(inflated.end(), block.begin(),
+                    block.begin() + (block.size() - stream.avail_out));
+  } while (ret != Z_STREAM_END);
+  inflateEnd(&stream);
+
+  const auto stride = static_cast<std::size_t>(png.width) * channels;
+  png.samples.resize(stride * png.height);
+  auto src = inflated.begin();
+  for (std::uint32_t row = 0; row < png.height; ++row) {
+    if (src == inflated.end() || *src != 0) {
+      return std::nullopt;  // production writer emits filter 0 on every row
+    }
+    ++src;
+    const auto copy = std::min<std::size_t>(stride, inflated.end() - src);
+    std::copy_n(src, copy, png.samples.begin() + stride * row);
+    src += copy;
+  }
+  return png;
+}
+
+void png_pixels_decode_and_carry_background_and_curve() {
+  // E5: content-level verification — decode the PNG ourselves (zlib) and
+  // check dimensions, background, and that the curve really drew something.
+  auto fixture = make_curve_fixture();
+  const auto path = temp_file("welllog-157-content.png");
+  std::filesystem::remove(path);
+  RasterExportRequest req{
+      .path = path,
+      .format = RasterImageFormat::png,
+      .width_px = 120,
+      .height_px = 200,
+      .background = RgbaColor{255, 255, 255, 255},
+      .color_space = RasterColorSpace::srgb,
+      .tile_height_px = 16,
+  };
+  const auto report = export_raster_sync(fixture.scene, fixture.snapshot, req);
+  require(report.has_value(), "content PNG export must succeed");
+
+  const auto png = decode_png(path);
+  require(png.has_value(), "PNG must decode with the test-side reader");
+  require(png->width == 120 && png->height == 200,
+          "decoded dimensions must match the request");
+  require(png->bit_depth == 8 && png->color_type == 6,
+          "srgb export must be 8-bit RGBA");
+
+  const auto channels = 4U;
+  const auto stride = static_cast<std::size_t>(png->width) * channels;
+  const auto pixel = [&](std::uint32_t x, std::uint32_t y) {
+    const auto at = stride * y + static_cast<std::size_t>(x) * channels;
+    return std::array<std::uint8_t, 4>{
+        png->samples[at], png->samples[at + 1], png->samples[at + 2],
+        png->samples[at + 3]};
+  };
+  // Corners carry the background.
+  const auto bg = std::array<std::uint8_t, 4>{255, 255, 255, 255};
+  require(pixel(0, 0) == bg && pixel(119, 0) == bg &&
+              pixel(0, 199) == bg && pixel(119, 199) == bg,
+          "all four corners must be the requested background");
+  // The red curve (200,20,20) must draw: at least one non-background pixel.
+  bool drew = false;
+  for (std::uint32_t y = 0; y < 200 && !drew; ++y) {
+    for (std::uint32_t x = 0; x < 120; ++x) {
+      if (pixel(x, y) != bg) {
+        drew = true;
+        break;
+      }
+    }
+  }
+  require(drew, "exported PNG must contain curve pixels beyond background");
+  std::filesystem::remove(path);
+}
+
+void gray_png_curve_samples_match_srgb_luma() {
+  // E5: gray colour space applies the documented Y = round(0.2126 R +
+  // 0.7152 G + 0.0722 B) of sRGB — the red curve (200,20,20) → 58.
+  auto fixture = make_curve_fixture();
+  const auto path = temp_file("welllog-157-gray-content.png");
+  std::filesystem::remove(path);
+  RasterExportRequest req{
+      .path = path,
+      .format = RasterImageFormat::png,
+      .width_px = 100,
+      .height_px = 150,
+      .background = RgbaColor{255, 255, 255, 255},
+      .color_space = RasterColorSpace::gray,
+      .tile_height_px = 16,
+  };
+  const auto report = export_raster_sync(fixture.scene, fixture.snapshot, req);
+  require(report.has_value(), "gray PNG export must succeed");
+
+  const auto png = decode_png(path);
+  require(png.has_value(), "gray PNG must decode");
+  require(png->color_type == 0, "gray export must be color type 0");
+  const auto stride = static_cast<std::size_t>(png->width);
+  const auto sample = [&](std::uint32_t x, std::uint32_t y) {
+    return png->samples[stride * y + x];
+  };
+  require(sample(0, 0) == 255 && sample(99, 149) == 255,
+          "gray background must stay white");
+  bool drew_gray = false;
+  for (std::uint32_t y = 0; y < 150; ++y) {
+    for (std::uint32_t x = 0; x < 100; ++x) {
+      const auto v = sample(x, y);
+      if (v != 255) {
+        drew_gray = true;
+        // Red (200,20,20) → round(0.2126·200 + 0.7152·20 + 0.0722·20) = 58.
+        require(v == 58, "curve pixel must match the documented sRGB luma");
+      }
+    }
+  }
+  require(drew_gray, "gray PNG must contain curve pixels");
+  std::filesystem::remove(path);
+}
+
+void raster_page_dimensions_match_the_shared_snapshot_geometry() {
+  // E6: the raster path derives pixels from the SAME ExportSnapshot page
+  // geometry as PDF/SVG (page_width_mm × dpi). An explicit-width export must
+  // agree with the physical mm the other backends assert on.
+  auto fixture = make_curve_fixture();
+  const auto path = temp_file("welllog-157-geometry.png");
+  std::filesystem::remove(path);
+  RasterExportRequest req{
+      .path = path,
+      .format = RasterImageFormat::png,
+      .dpi_override = 100,
+      .background = RgbaColor{255, 255, 255, 255},
+      .tile_height_px = 16,
+  };
+  const auto report = export_raster_sync(fixture.scene, fixture.snapshot, req);
+  require(report.has_value(), "geometry PNG export must succeed");
+  // Pixels derive from the SCENE physical size × effective DPI (the same
+  // physical mm the PDF/SVG backends lay out in) — scene is the single
+  // source of truth, not the snapshot page spec.
+  const auto expect_w = static_cast<std::uint32_t>(
+      std::llround(fixture.scene.physical_width().value * 100.0 / 25.4));
+  const auto expect_h = static_cast<std::uint32_t>(
+      std::llround(fixture.scene.physical_height().value * 100.0 / 25.4));
+  require(report.value().width_px == expect_w &&
+              report.value().height_px == expect_h,
+          "raster pixels must derive from the shared page mm × dpi");
+  const auto png = decode_png(path);
+  require(png.has_value() && png->width == expect_w &&
+              png->height == expect_h,
+          "decoded pixels must match the report dimensions");
+  std::filesystem::remove(path);
 }
 
 void exports_png_and_tiff_with_snapshot_revision() {
@@ -330,5 +563,8 @@ int main() {
   rejects_overwrite_without_confirmation_and_resource_limits();
   async_job_reports_progress_and_survives_host_revision_change();
   cancel_stops_work_and_cleans_temp();
+  png_pixels_decode_and_carry_background_and_curve();
+  gray_png_curve_samples_match_srgb_luma();
+  raster_page_dimensions_match_the_shared_snapshot_geometry();
   return EXIT_SUCCESS;
 }
