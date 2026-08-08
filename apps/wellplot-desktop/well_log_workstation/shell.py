@@ -1503,6 +1503,54 @@ class WellLogWorkstationWindow(QMainWindow):
         view.show()
         return view
 
+    def _single_well_depth_transform(self) -> list[dict[str, float]] | None:
+        """MD→display (TVD/TVDSS) control points for the single-well engine view.
+
+        Single-well display domain is driven by the active ``PlotDocument``'s
+        ``datum_mode``: plot_document.py persists it for every plot type when
+        non-md (``_to_json``) and parses it for every type (md|tvdss|horizon),
+        so a single-well doc can already carry the domain even though the
+        ``corr_datum_mode`` combo (shell.py) serves correlation only. Returns
+        None when the domain is not tvd/tvdss, no plot doc is active, or the
+        survey/kb is unavailable — callers then keep the MD default.
+        """
+        if self._workspace is None or self._presentation is None:
+            return None
+        if self._active_plot_type != "single_well" or not self._active_plot_id:
+            return None
+        try:
+            plot = load_plot_document(self._workspace, self._active_plot_id)
+        except WorkspaceError:
+            return None
+        datum_mode = str(getattr(plot, "datum_mode", None) or "md")
+        if datum_mode not in ("tvd", "tvdss"):
+            return None
+        from well_log_workstation.engine_bridge import survey_depth_transform
+        from well_log_workstation.survey import compute_trajectory
+        from well_log_workstation.tops_model import load_survey_for_well
+
+        well_id = self._presentation.well_document_id
+        entry = next(
+            (w for w in self._workspace.wells if w.id == well_id), None
+        )
+        try:
+            stations, _diags = load_survey_for_well(self._workspace, well_id)
+        except WorkspaceError:
+            return None
+        if not stations:
+            return None
+        try:
+            if datum_mode == "tvdss":
+                if entry is None or entry.kb_m is None:
+                    return None  # TVDSS explicit unavailability
+                traj = compute_trajectory(stations, kb_m=float(entry.kb_m))
+            else:
+                traj = compute_trajectory(stations)
+        except Exception:  # noqa: BLE001 — malformed survey
+            return None
+        points = survey_depth_transform(traj, datum_mode)
+        return points or None
+
     def _sync_primary_single_well_surface(self) -> None:
         """Show host or engine as primary based on preference + availability."""
         if self._presentation is None:
@@ -1529,7 +1577,10 @@ class WellLogWorkstationWindow(QMainWindow):
         try:
             view = self._ensure_engine_view(self._engine_page)
             report = load_presentation_into_view(
-                view, self._presentation, tops=self._active_tops
+                view,
+                self._presentation,
+                tops=self._active_tops,
+                depth_transform=self._single_well_depth_transform(),
             )
             self._engine_last_error = None
             self._primary_surface = "engine"
@@ -4416,7 +4467,10 @@ class WellLogWorkstationWindow(QMainWindow):
                 # Force submit even if user preferred host
                 view = self._ensure_engine_view(self._engine_page)
                 load_presentation_into_view(
-                    view, self._presentation, tops=self._active_tops
+                    view,
+                    self._presentation,
+                    tops=self._active_tops,
+                    depth_transform=self._single_well_depth_transform(),
                 )
                 self._engine_view = view
             doc_id = self._presentation.well_document_id
@@ -4456,6 +4510,7 @@ class WellLogWorkstationWindow(QMainWindow):
             self._engine_view,
             self._presentation,
             tops=self._active_tops,
+            depth_transform=self._single_well_depth_transform(),
         )
 
     def open_engine_correlation_preview(self) -> dict[str, object]:

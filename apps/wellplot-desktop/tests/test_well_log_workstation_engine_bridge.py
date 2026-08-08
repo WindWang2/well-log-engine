@@ -14,11 +14,13 @@ from well_log_workstation.engine_bridge import (  # noqa: E402
     EngineUnavailable,
     create_well_log_view,
     engine_available,
+    load_presentation_into_view,
     presentation_to_multi_track_payload,
     presentations_to_multi_well_payload,
     primary_curve_from_presentation,
     probe_engine,
     reset_engine_capability_cache,
+    submit_multi_track_presentation,
 )
 from well_log_workstation.shell import WellLogWorkstationWindow  # noqa: E402
 from well_log_workstation.tops_model import FormationTop  # noqa: E402
@@ -407,6 +409,121 @@ def test_multi_track_payload_carries_depth_transform(
         pres, depth_transform=pts
     )
     assert payload["depth_transform"] == pts
+
+
+def test_submit_multi_track_wrapper_carries_depth_transform(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    """Wrapper layer: ``submit_multi_track_presentation`` and
+    ``load_presentation_into_view`` forward ``depth_transform`` into the engine
+    payload; default None keeps the MD behaviour (no key)."""
+    monkeypatch.setenv("WLWS_DISABLE_ENGINE", "1")
+    reset_engine_capability_cache()
+    ws = create_workspace(tmp_path / "wrap-xform")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    well_id = win.import_las_path(_write_las(tmp_path / "x.las"))
+    pres = win.apply_template_to_well(well_id, "std-gr-rt-den")
+    pts = [{"reference": 1000.0, "display": 10.0},
+           {"reference": 1003.0, "display": -5.0}]
+
+    class _FakeView:
+        def __init__(self) -> None:
+            self.payload: dict[str, object] | None = None
+
+        def submit_multi_track(
+            self, payload: dict[str, object]
+        ) -> dict[str, object]:
+            self.payload = payload
+            return {"track_count": 3, "curve_count": 3}
+
+    view = _FakeView()
+    report = submit_multi_track_presentation(view, pres, depth_transform=pts)
+    assert report["track_count"] == 3
+    assert view.payload is not None
+    assert view.payload["depth_transform"] == pts
+    # Default None → no transform key, unchanged behaviour.
+    view.payload = None
+    submit_multi_track_presentation(view, pres)
+    assert view.payload is not None
+    assert "depth_transform" not in view.payload
+    # load_presentation_into_view (single-well submit entry) passes it through.
+    view.payload = None
+    load_presentation_into_view(view, pres, depth_transform=pts)
+    assert view.payload is not None
+    assert view.payload["depth_transform"] == pts
+
+
+def test_single_well_engine_submission_carries_tvdss_transform(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    """Single-well engine submit carries an MD→TVDSS transform when the active
+    PlotDocument's datum_mode is tvdss (deviated survey + kb); the MD default
+    submits without a transform key."""
+    from dataclasses import replace  # noqa: PLC0415
+
+    from PySide6.QtWidgets import QWidget  # noqa: PLC0415
+
+    from well_log_workstation.plot_document import (  # noqa: PLC0415
+        load_plot_document,
+        save_plot_document,
+    )
+    from well_log_workstation.survey import SurveyStation  # noqa: PLC0415
+    from well_log_workstation.tops_model import save_survey_for_well  # noqa: PLC0415
+
+    monkeypatch.delenv("WLWS_DISABLE_ENGINE", raising=False)
+    reset_engine_capability_cache()
+    ws = create_workspace(tmp_path / "sw-tvdss")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    well_id = win.import_las_path(_write_las(tmp_path / "x.las"))
+    idx = next(i for i, w in enumerate(ws.wells) if w.id == well_id)
+    ws.wells[idx] = replace(ws.wells[idx], kb_m=25.0)
+    save_survey_for_well(
+        ws,
+        well_id,
+        [SurveyStation(0, 0, 0), SurveyStation(1000, 45, 0)],
+    )
+
+    class _FakeEngineView(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.payloads: list[dict[str, object]] = []
+
+        def submit_multi_track(
+            self, payload: dict[str, object]
+        ) -> dict[str, object]:
+            self.payloads.append(payload)
+            return {"track_count": 3, "curve_count": 3}
+
+    fake_view = _FakeEngineView()
+    monkeypatch.setattr(
+        "well_log_workstation.shell.create_well_log_view",
+        lambda parent=None: fake_view,
+    )
+    monkeypatch.setattr(
+        "well_log_workstation.shell.engine_available", lambda: True
+    )
+    win.create_single_well_plot_document(well_id, "std-gr-rt-den")
+    plot = load_plot_document(ws, win._active_plot_id)
+    # MD default: engine submits (if any) never carry a transform.
+    assert all("depth_transform" not in p for p in fake_view.payloads)
+    plot.datum_mode = "tvdss"
+    save_plot_document(ws, plot)
+    win.set_prefer_engine_canvas(True)
+    assert fake_view.payloads, "engine submit reached the fake view"
+    xform = fake_view.payloads[-1].get("depth_transform")
+    assert xform, "tvdss single-well submit carries depth_transform"
+    assert xform[0]["reference"] == 0.0
+    assert xform[0]["display"] == 25.0  # kb_m − tvd at MD 0
+    assert xform[-1]["display"] < 0.0  # TVDSS subsea decreases with MD
+    # MD default → no transform key.
+    plot.datum_mode = "md"
+    save_plot_document(ws, plot)
+    win.set_prefer_engine_canvas(True)
+    assert "depth_transform" not in fake_view.payloads[-1]
 
 
 def test_multi_well_payload_carries_per_well_depth_transform(

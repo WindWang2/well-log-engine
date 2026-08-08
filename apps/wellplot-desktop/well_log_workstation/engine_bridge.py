@@ -325,6 +325,7 @@ def load_presentation_into_view(
     presentation: HostPresentation,
     *,
     tops: list[FormationTop] | None = None,
+    depth_transform: list[dict[str, float]] | None = None,
 ) -> dict[str, object]:
     """Submit multi-track presentation to the engine.
 
@@ -333,6 +334,10 @@ def load_presentation_into_view(
     shows the first layer, usually GR, and hides other tracks). If multi-track
     is unavailable or fails, raise ``EngineSubmitError`` so the host canvas
     (full multi-track paint) is used instead.
+
+    ``depth_transform`` (optional) is the MD→display (TVD/TVDSS) control-point
+    list forwarded to ``submit_multi_track_presentation``; None keeps the MD
+    default.
     """
     n_curve_tracks = sum(
         1
@@ -341,7 +346,9 @@ def load_presentation_into_view(
     )
     if hasattr(view, "submit_multi_track"):
         try:
-            return submit_multi_track_presentation(view, presentation, tops=tops)
+            return submit_multi_track_presentation(
+                view, presentation, tops=tops, depth_transform=depth_transform
+            )
         except EngineSubmitError as exc:
             # Multi-track preferred: re-raise so shell falls back to host canvas
             # rather than a single-GR engine view.
@@ -541,11 +548,18 @@ def submit_multi_track_presentation(
     presentation: HostPresentation,
     *,
     tops: list[FormationTop] | None = None,
+    depth_transform: list[dict[str, float]] | None = None,
 ) -> dict[str, object]:
-    """Call WellLogView.submit_multi_track with a host presentation."""
+    """Call WellLogView.submit_multi_track with a host presentation.
+
+    ``depth_transform`` (optional) is forwarded to the payload builder
+    (MD→display TVD/TVDSS control points); None keeps the MD default.
+    """
     if not hasattr(view, "submit_multi_track"):
         raise EngineSubmitError("WellLogView 不支持 submit_multi_track（请重建 welllog 绑定）")
-    payload = presentation_to_multi_track_payload(presentation, tops=tops)
+    payload = presentation_to_multi_track_payload(
+        presentation, tops=tops, depth_transform=depth_transform
+    )
     try:
         report = view.submit_multi_track(payload)
     except Exception as exc:  # noqa: BLE001
