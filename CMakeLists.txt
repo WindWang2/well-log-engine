@@ -309,6 +309,7 @@ add_library(welllog_scene ${WELLLOG_LIBRARY_TYPE}
     src/scene/scene.cpp
     src/scene/time_depth.cpp
     src/scene/triangulate.cpp
+    src/scene/tst.cpp
 )
 add_library(WellLog::Scene ALIAS welllog_scene)
 set_target_properties(welllog_scene PROPERTIES
@@ -1088,6 +1089,23 @@ if(WELLLOG_BUILD_TESTS)
     add_test(
         NAME welllog.axis-ticks
         COMMAND welllog_axis_ticks_tests
+    )
+
+    add_executable(welllog_tst_tests
+        tests/integration/tst_test.cpp
+    )
+    target_compile_features(
+        welllog_tst_tests
+        PRIVATE cxx_std_20
+    )
+    welllog_enable_warnings(welllog_tst_tests)
+    target_link_libraries(
+        welllog_tst_tests
+        PRIVATE WellLog::Scene
+    )
+    add_test(
+        NAME welllog.tst
+        COMMAND welllog_tst_tests
     )
 
     if(WELLLOG_BUILD_TEXT)

@@ -42,6 +42,9 @@ enum class ErrorCode : std::uint16_t {
   // A TimeDepthRelationship is present but not a valid monotonic map.
   // Appended so existing error-code values remain unchanged.
   invalid_time_depth,
+  // TST geometry inputs are invalid (non-finite, non-unit, reversed).
+  // Appended so existing error-code values remain unchanged.
+  invalid_geometry,
 };
 
 enum class Severity : std::uint8_t {
@@ -107,6 +110,9 @@ enum class MessageKey : std::uint16_t {
   // A TimeDepthRelationship's points are not a valid monotonic depth↔TWT map.
   // Appended so existing message-key values remain unchanged.
   time_depth_relationship_invalid,
+  // TST geometry inputs are invalid (Epic D). Appended so existing
+  // message-key values remain unchanged.
+  invalid_geometry,
 };
 
 struct ErrorArgument {
