@@ -790,6 +790,32 @@ void dict_get_string_optional(PyObject *dict, const char *key, QString *out) {
   }
 }
 
+// Tolerant MarkerSemantic parsing for the markers payload list. An absent
+// key keeps `fallback` (historically formation_top); an unknown token maps to
+// custom rather than pretending to be a known semantic.
+[[nodiscard]] MarkerSemantic
+marker_semantic_from_dict(PyObject *marker, MarkerSemantic fallback) {
+  QString text;
+  dict_get_string_optional(marker, "semantic", &text);
+  if (text.isEmpty()) {
+    return fallback;
+  }
+  const auto s = text.toUtf8();
+  if (s == "formation_top") {
+    return MarkerSemantic::formation_top;
+  }
+  if (s == "fault") {
+    return MarkerSemantic::fault;
+  }
+  if (s == "fluid_contact") {
+    return MarkerSemantic::fluid_contact;
+  }
+  if (s == "casing_shoe") {
+    return MarkerSemantic::casing_shoe;
+  }
+  return MarkerSemantic::custom;
+}
+
 [[nodiscard]] RgbaColor parse_hex_color(const QString &text,
                                         RgbaColor fallback) {
   QString t = text.trimmed();
@@ -838,7 +864,9 @@ void dict_get_string_optional(PyObject *dict, const char *key, QString *out) {
 //   curves: [{curve_id, mnemonic, values, value_unit}],
 //   tracks: [{width_mm?, scale_min?, scale_max?, scale_mode?,
 //             layers: [{curve_id, color?}]}],
-//   markers?: [{id, depth, label?}]
+//   markers?: [{id, depth, label?, semantic?}]
+//   // semantic ∈ formation_top|fault|fluid_contact|casing_shoe|custom
+//   // (absent → formation_top; unknown → custom)
 // }
 [[nodiscard]] PyObject *
 submit_multi_track_impl(WellLogView *view, PyObject *payload) {
@@ -1016,7 +1044,8 @@ submit_multi_track_impl(WellLogView *view, PyObject *payload) {
       builder.add_marker(Marker{
           .id = *marker_id,
           .reference_depth = marker_depth,
-          .semantic = MarkerSemantic::formation_top,
+          .semantic =
+              marker_semantic_from_dict(marker, MarkerSemantic::formation_top),
           .label = label_utf8.constData(),
       });
     }
@@ -1120,6 +1149,34 @@ submit_multi_track_impl(WellLogView *view, PyObject *payload) {
           .bottom = bottom,
       },
       Millimetres{100.0}, "welllog-python-multi-track");
+
+  // Optional "depth_transform": [{reference, display}, ...] control points
+  // (TVD/TVDSS display domains). Same key as the multi-well path.
+  auto *xform_obj = PyDict_GetItemString(payload, "depth_transform");
+  if (xform_obj != nullptr && PyList_Check(xform_obj)) {
+    DepthTransform transform{};
+    const auto npts = PyList_Size(xform_obj);
+    for (Py_ssize_t pi = 0; pi < npts; ++pi) {
+      auto *pt = PyList_GetItem(xform_obj, pi);
+      if (pt == nullptr || !PyDict_Check(pt)) {
+        continue;
+      }
+      double ref = 0.0;
+      double disp = 0.0;
+      if (!dict_get_float(pt, "reference", &ref) ||
+          !dict_get_float(pt, "display", &disp)) {
+        continue;
+      }
+      transform.control_points.push_back(DepthControlPoint{
+          .reference_depth = ref,
+          .display_depth = disp,
+      });
+    }
+    if (!transform.control_points.empty()) {
+      transform.version = 1;
+      presentation_builder.set_depth_transform(transform);
+    }
+  }
 
   const auto track_count = PyList_Size(tracks_obj);
   int z_order = 0;
@@ -1272,6 +1329,14 @@ submit_multi_track_impl(WellLogView *view, PyObject *payload) {
 
   if (markers_obj != nullptr && PyList_Check(markers_obj) &&
       PyList_Size(markers_obj) > 0) {
+    // Optional "marker_symbols": true → the auto marker layer draws each
+    // marker's MarkerSemantic symbol glyph (SDK marker symbols).
+    bool marker_symbols = false;
+    auto *symbols_flag = PyDict_GetItemString(payload, "marker_symbols");
+    if (symbols_flag != nullptr && PyObject_IsTrue(symbols_flag) == 1) {
+      marker_symbols = true;
+    }
+    PyErr_Clear();
     // Marker layer on the first track that has curve layers.
     for (Py_ssize_t ti = 0; ti < track_count; ++ti) {
       auto *track = PyList_GetItem(tracks_obj, ti);
@@ -1295,6 +1360,7 @@ submit_multi_track_impl(WellLogView *view, PyObject *payload) {
           .line_color = RgbaColor{200, 40, 40, 255},
           .line_width = Millimetres{0.4},
           .draw_labels = true,
+          .draw_symbols = marker_symbols,
       });
       break;
     }
@@ -1764,8 +1830,13 @@ submit_multi_well_section_impl(WellLogView *view, PyObject *payload) {
             .bottom = shared_bottom,
         },
         Millimetres{well_width_mm}, "welllog-python-multi-well");
-    // Optional per-well transform points before build.
+    // Optional per-well transform points before build. Both historical keys
+    // are accepted: "transform_points" (multi-well) and "depth_transform"
+    // (single-well) — the Desktop host submits "depth_transform" uniformly.
     auto *xform_obj = PyDict_GetItemString(well, "transform_points");
+    if (xform_obj == nullptr) {
+      xform_obj = PyDict_GetItemString(well, "depth_transform");
+    }
     DepthTransform transform{};
     if (xform_obj != nullptr && PyList_Check(xform_obj)) {
       const auto npts = PyList_Size(xform_obj);
@@ -1974,6 +2045,12 @@ submit_multi_well_section_impl(WellLogView *view, PyObject *payload) {
 
     if (markers_obj != nullptr && PyList_Check(markers_obj) &&
         PyList_Size(markers_obj) > 0 && !first_track_id.is_nil()) {
+      bool marker_symbols = false;
+      auto *symbols_flag = PyDict_GetItemString(well, "marker_symbols");
+      if (symbols_flag != nullptr && PyObject_IsTrue(symbols_flag) == 1) {
+        marker_symbols = true;
+      }
+      PyErr_Clear();
       const auto marker_layer_id = derive_presentation_id(
           *document_id, "welllog-python/multi-marker-layer",
           {*document_id, *axis_id, first_track_id});
@@ -1984,6 +2061,7 @@ submit_multi_well_section_impl(WellLogView *view, PyObject *payload) {
           .line_color = RgbaColor{200, 40, 40, 255},
           .line_width = Millimetres{0.4},
           .draw_labels = false,
+          .draw_symbols = marker_symbols,
       });
     }
     auto presentation = presentation_builder.build();

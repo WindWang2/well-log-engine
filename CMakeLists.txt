@@ -1452,6 +1452,39 @@ if(WELLLOG_BUILD_TESTS)
     )
     add_test(NAME welllog.raster-export COMMAND welllog_raster_export_tests)
 
+    # SDK marker symbols (Epic C 收尾 slice 1): semantic → glyph mapping,
+    # shared geometry, and SVG/PDF/raster marker-symbol emission.
+    add_executable(welllog_marker_symbol_tests
+        tests/integration/marker_symbol_test.cpp
+    )
+    target_compile_features(welllog_marker_symbol_tests PRIVATE cxx_std_20)
+    welllog_enable_warnings(welllog_marker_symbol_tests)
+    target_link_libraries(
+        welllog_marker_symbol_tests
+        PRIVATE
+            WellLog::ExportPdf
+            WellLog::ExportRaster
+            WellLog::ExportVector
+            WellLog::Scene
+            WellLog::Session
+            ZLIB::ZLIB
+    )
+    add_test(NAME welllog.marker-symbols COMMAND welllog_marker_symbol_tests)
+
+    # TVD/TVDSS domain interval-track projection (Epic C 收尾 slice 2): a
+    # decreasing display-depth transform (TVDSS) projects intervals/markers
+    # correctly and stays reversible.
+    add_executable(welllog_tvdss_projection_tests
+        tests/integration/tvdss_projection_test.cpp
+    )
+    target_compile_features(welllog_tvdss_projection_tests PRIVATE cxx_std_20)
+    welllog_enable_warnings(welllog_tvdss_projection_tests)
+    target_link_libraries(
+        welllog_tvdss_projection_tests
+        PRIVATE WellLog::ExportVector WellLog::Scene WellLog::Session
+    )
+    add_test(NAME welllog.tvdss-projection COMMAND welllog_tvdss_projection_tests)
+
     add_executable(welllog_qc_derived_curve_tests
         tests/integration/qc_derived_curve_test.cpp
     )

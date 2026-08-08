@@ -400,6 +400,69 @@ class WellLogViewEmbeddingTest(unittest.TestCase):
         self.app.processEvents()
         gc.collect()
 
+    def test_marker_semantics_reach_the_exported_svg(self) -> None:
+        # SDK marker symbols (Epic C 收尾 slice 1): markers submitted with a
+        # semantic render as symbol glyphs in the exported SVG when
+        # marker_symbols is enabled; the semantic is recorded verbatim.
+        view = WellLogView()
+        depth = np.asarray([1000.0, 1000.5, 1001.0, 1001.5])
+        gr = np.asarray([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
+        for arr in (depth, gr):
+            arr.flags.writeable = False
+        doc_id = "30000000-0000-4000-8000-000000000101"
+        curve_id = "30000000-0000-4000-8000-000000000102"
+        shoe_id = "30000000-0000-4000-8000-000000000103"
+        top_id = "30000000-0000-4000-8000-000000000104"
+        payload = {
+            "document_id": doc_id,
+            "depth": depth,
+            "depth_unit": "m",
+            "curves": [
+                {"curve_id": curve_id, "mnemonic": "GR", "values": gr,
+                 "value_unit": "API"},
+            ],
+            "tracks": [
+                {"width_mm": 40.0, "scale_min": 0.0, "scale_max": 10.0,
+                 "layers": [{"curve_id": curve_id, "color": "#1972b8"}]},
+            ],
+            "markers": [
+                {"id": shoe_id, "depth": 1001.0, "label": "Shoe",
+                 "semantic": "casing_shoe"},
+                {"id": top_id, "depth": 1002.0, "label": "Top",
+                 "semantic": "formation_top"},
+                {"id": "30000000-0000-4000-8000-000000000105",
+                 "depth": 1000.5, "label": "Plain"},
+            ],
+            "marker_symbols": True,
+        }
+        report = view.submit_multi_track(payload)
+        self.assertIs(report["render_prepared"], True)
+
+        svg = view.export_scene_svg(doc_id).decode("utf-8", errors="replace")
+        self.assertIn(f"marker-symbol-{shoe_id}", svg,
+                      "casing_shoe marker must render its symbol glyph")
+        self.assertIn('data-semantic="casing_shoe"', svg)
+        self.assertIn('data-semantic="formation_top"', svg)
+        # Legacy marker without semantic keeps the historical behaviour
+        # (formation_top) — still rendered as a symbol under marker_symbols.
+        self.assertIn('data-semantic="formation_top"', svg)
+
+        # Without marker_symbols the glyph paths are not emitted.
+        payload.pop("marker_symbols")
+        view2 = WellLogView()
+        view2.submit_multi_track(payload)
+        svg2 = view2.export_scene_svg(doc_id).decode("utf-8", errors="replace")
+        self.assertNotIn("marker-symbol-", svg2,
+                         "marker_symbols=false emits no glyph paths")
+        self.assertIn(f"marker-{shoe_id}", svg2,
+                      "the marker line itself still renders")
+
+        view.deleteLater()
+        view2.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.app.processEvents()
+        gc.collect()
+
     def test_multi_rate_curves_with_own_depth_axes(self) -> None:
         # Epic A: a curve may carry its own "depth" (independent sampling
         # axis); curves without one share the document depth. Both must reach

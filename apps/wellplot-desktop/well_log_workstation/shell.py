@@ -4482,12 +4482,61 @@ class WellLogWorkstationWindow(QMainWindow):
             )
         tops_cols = self.correlation_canvas.tops_per_column()
         depth = self.correlation_canvas.depth_range()
+        # TVD/TVDSS 显示域 (Epic C 收尾 slice 2): when the section datum mode
+        # is tvd/tvdss, submit per-well MD→display transforms built from the
+        # survey trajectories so intervals/markers project into that domain.
+        datum_mode = (
+            self.corr_datum_mode.currentData()
+            if getattr(self, "corr_datum_mode", None) is not None
+            else "md"
+        )
+        depth_transform_per_well: dict[str, list[dict[str, float]]] | None = None
+        if datum_mode in ("tvd", "tvdss"):
+            from well_log_workstation.engine_bridge import survey_depth_transform
+            from well_log_workstation.survey import compute_trajectory
+            from well_log_workstation.tops_model import load_survey_for_well
+
+            depth_transform_per_well = {}
+            for pres in self._correlation_presentations:
+                entry = next(
+                    (
+                        w
+                        for w in self._workspace.wells
+                        if w.id == pres.well_document_id
+                    ),
+                    None,
+                )
+                if entry is None:
+                    continue
+                try:
+                    stations, _diags = load_survey_for_well(
+                        self._workspace, pres.well_document_id
+                    )
+                except WorkspaceError:
+                    continue
+                if not stations:
+                    continue
+                try:
+                    if datum_mode == "tvdss":
+                        if entry.kb_m is None:
+                            continue  # TVDSS explicit unavailability
+                        traj = compute_trajectory(
+                            stations, kb_m=float(entry.kb_m)
+                        )
+                    else:
+                        traj = compute_trajectory(stations)
+                except Exception:  # noqa: BLE001 — malformed survey
+                    continue
+                points = survey_depth_transform(traj, datum_mode)
+                if points:
+                    depth_transform_per_well[pres.well_name] = points
         return submit_multi_well_presentations(
             self._engine_view,
             self._correlation_presentations,
             tops_per_well=tops_cols,
             shared_depth=depth,
             links=self._correlation_links,
+            depth_transform_per_well=depth_transform_per_well,
         )
 
     def _select_well_in_tree(self, well_id: str) -> None:

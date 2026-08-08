@@ -178,6 +178,22 @@ void emit_circle_path(PdfPathStream &stream, double cx, double cy,
   stream.append_outline(commands);
 }
 
+void emit_arch_path(PdfPathStream &stream, double cx, double cy,
+                    double radius) noexcept {
+  // Casing-shoe arch: flat side up, bulge down (scene y-down). Two cubics
+  // from (cx-r,cy) through (cx,cy+r) to (cx+r,cy) + close.
+  const auto k = radius * circle_kappa;
+  const std::array<OutlineCommand, 3> commands{{
+      {OutlineVerb::cubic_to, {cx - radius, cy + k, cx - k, cy + radius,
+                               cx, cy + radius}},
+      {OutlineVerb::cubic_to, {cx + k, cy + radius, cx + radius, cy + k,
+                               cx + radius, cy}},
+      {OutlineVerb::close, {}},
+  }};
+  stream.move_to(cx - radius, cy);
+  stream.append_outline(commands);
+}
+
 // A per-page registry of the indirect objects (image XObjects + tiling
 // patterns) the page's content stream references. Patterns are keyed by their
 // PatternDefinition id so the same pattern referenced by many intervals shares
@@ -494,6 +510,18 @@ void emit_symbol(PdfPathStream &stream, const PreparedSymbol &symbol,
         .close()
         .fill();
     return;
+  case SymbolKind::triangle_down:
+    stream.move_to(cx, cy + half)
+        .line_to(cx + half, cy - half)
+        .line_to(cx - half, cy - half)
+        .close()
+        .fill();
+    return;
+  case SymbolKind::shoe:
+    // Casing-shoe arch (flat side up, bulge down) via two arcs + close.
+    emit_arch_path(stream, cx, cy, half);
+    stream.fill();
+    return;
   case SymbolKind::diamond:
     stream.move_to(cx, cy - half)
         .line_to(cx + half, cy)
@@ -501,6 +529,68 @@ void emit_symbol(PdfPathStream &stream, const PreparedSymbol &symbol,
         .line_to(cx - half, cy)
         .close()
         .fill();
+    return;
+  }
+}
+
+// Emits the marker-semantic symbol glyph at the left end of a marker line
+// (shape semantics from scene::symbol_for_marker_semantic).
+void emit_marker_symbol(PdfPathStream &stream, const PreparedMarker &marker,
+                        const PreparedMarkerLayer &layer, double left) noexcept {
+  const auto kind = symbol_for_marker_semantic(marker.semantic);
+  const auto half = layer.symbol_size.value / 2.0;
+  const auto cx = left + 1.0 + half;
+  const auto cy = marker.display_top.value;
+  stream.set_fill_color(layer.line_color.red, layer.line_color.green,
+                        layer.line_color.blue);
+  stream.set_stroke_color(layer.line_color.red, layer.line_color.green,
+                          layer.line_color.blue);
+  switch (kind) {
+  case SymbolKind::circle:
+    emit_circle_path(stream, cx, cy, half);
+    stream.fill();
+    return;
+  case SymbolKind::cross:
+    stream.set_line_width(layer.symbol_size.value / 6.0);
+    stream.move_to(cx - half, cy - half)
+        .line_to(cx + half, cy + half)
+        .move_to(cx + half, cy - half)
+        .line_to(cx - half, cy + half)
+        .stroke();
+    return;
+  case SymbolKind::square:
+    stream.move_to(cx - half, cy - half)
+        .line_to(cx + half, cy - half)
+        .line_to(cx + half, cy + half)
+        .line_to(cx - half, cy + half)
+        .close()
+        .fill();
+    return;
+  case SymbolKind::triangle_up:
+    stream.move_to(cx, cy - half)
+        .line_to(cx + half, cy + half)
+        .line_to(cx - half, cy + half)
+        .close()
+        .fill();
+    return;
+  case SymbolKind::triangle_down:
+    stream.move_to(cx, cy + half)
+        .line_to(cx + half, cy - half)
+        .line_to(cx - half, cy - half)
+        .close()
+        .fill();
+    return;
+  case SymbolKind::diamond:
+    stream.move_to(cx, cy - half)
+        .line_to(cx + half, cy)
+        .line_to(cx, cy + half)
+        .line_to(cx - half, cy)
+        .close()
+        .fill();
+    return;
+  case SymbolKind::shoe:
+    emit_arch_path(stream, cx, cy, half);
+    stream.fill();
     return;
   }
 }
@@ -957,6 +1047,9 @@ void emit_track_body(PdfPathStream &stream, const PreparedScene &scene,
           layer.first_marker + offset)];
       stream.move_to(left, marker.display_top.value)
           .line_to(right, marker.display_top.value);
+      if (layer.draw_symbols) {
+        emit_marker_symbol(stream, marker, layer, left);
+      }
     }
     stream.stroke();
   }

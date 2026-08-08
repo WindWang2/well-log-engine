@@ -376,6 +376,7 @@ def presentation_to_multi_track_payload(
     tops: list[FormationTop] | None = None,
     intervals: list[dict[str, Any]] | None = None,
     patterns: list[dict[str, Any]] | None = None,
+    depth_transform: list[dict[str, float]] | None = None,
 ) -> dict[str, Any]:
     """Build ``submit_multi_track`` payload from a host multi-track presentation.
 
@@ -498,13 +499,23 @@ def presentation_to_multi_track_payload(
         "curves": curves,
         "tracks": tracks_payload,
     }
+    if depth_transform:
+        # TVD/TVDSS 显示域: reference=MD → display=TVD/TVDSS control points
+        # (engine accepts either monotonic direction).
+        payload["depth_transform"] = depth_transform
     if tops:
         markers = []
         for t in tops:
             mid = t.id if t.id and _is_uuid(t.id) else str(uuid.uuid4())
-            markers.append(
-                {"id": mid, "depth": float(t.depth), "label": t.name}
-            )
+            entry: dict[str, object] = {
+                "id": mid,
+                "depth": float(t.depth),
+                "label": t.name,
+            }
+            semantic = getattr(t, "semantic", "") or ""
+            if semantic:
+                entry["semantic"] = semantic
+            markers.append(entry)
         if markers:
             payload["markers"] = markers
     if intervals:
@@ -552,6 +563,7 @@ def presentations_to_multi_well_payload(
     shared_depth: tuple[float, float] | None = None,
     links: list[HorizonLink] | None = None,
     multi_track: bool = True,
+    depth_transform_per_well: dict[str, list[dict[str, float]]] | None = None,
 ) -> dict[str, Any]:
     """Build multi-well payload; prefer multi-track columns when possible (#232)."""
     if len(presentations) < 1:
@@ -636,9 +648,15 @@ def presentations_to_multi_well_payload(
                 for t in tops_per_well[i]:
                     mid = t.id if t.id and _is_uuid(t.id) else str(uuid.uuid4())
                     marker_id_by_well_name[(pres.well_document_id, t.name)] = mid
-                    markers.append(
-                        {"id": mid, "depth": float(t.depth), "label": t.name}
-                    )
+                    entry: dict[str, object] = {
+                        "id": mid,
+                        "depth": float(t.depth),
+                        "label": t.name,
+                    }
+                    semantic = getattr(t, "semantic", "") or ""
+                    if semantic:
+                        entry["semantic"] = semantic
+                    markers.append(entry)
                 if markers:
                     well["markers"] = markers
         elif tops_per_well is not None and i < len(tops_per_well) and "markers" not in well:
@@ -646,11 +664,22 @@ def presentations_to_multi_well_payload(
             for t in tops_per_well[i]:
                 mid = t.id if t.id and _is_uuid(t.id) else str(uuid.uuid4())
                 marker_id_by_well_name[(pres.well_document_id, t.name)] = mid
-                markers.append(
-                    {"id": mid, "depth": float(t.depth), "label": t.name}
-                )
+                entry: dict[str, object] = {
+                    "id": mid,
+                    "depth": float(t.depth),
+                    "label": t.name,
+                }
+                semantic = getattr(t, "semantic", "") or ""
+                if semantic:
+                    entry["semantic"] = semantic
+                markers.append(entry)
             if markers:
                 well["markers"] = markers
+        if depth_transform_per_well:
+            xform = depth_transform_per_well.get(pres.well_name)
+            if xform:
+                # TVD/TVDSS 显示域: per-well MD→display control points.
+                well["depth_transform"] = xform
         wells.append(well)
 
     if shared_depth is not None:
@@ -704,6 +733,7 @@ def submit_multi_well_presentations(
     gap_mm: float = 5.0,
     shared_depth: tuple[float, float] | None = None,
     links: list[HorizonLink] | None = None,
+    depth_transform_per_well: dict[str, list[dict[str, float]]] | None = None,
 ) -> dict[str, object]:
     """Call WellLogView.submit_multi_well_section for correlation-lite."""
     if not hasattr(view, "submit_multi_well_section"):
@@ -716,6 +746,7 @@ def submit_multi_well_presentations(
         gap_mm=gap_mm,
         shared_depth=shared_depth,
         links=links,
+        depth_transform_per_well=depth_transform_per_well,
     )
     try:
         report = view.submit_multi_well_section(payload)
@@ -740,3 +771,33 @@ def _is_uuid(text: str) -> bool:
         return True
     except (ValueError, TypeError, AttributeError):
         return False
+
+
+def survey_depth_transform(
+    trajectory: Any, mode: str
+) -> list[dict[str, float]]:
+    """(reference=MD, display) control points for the engine depth transform.
+
+    TVD/TVDSS 域区间道投影 (Epic C 收尾 slice 2): from a survey trajectory
+    (survey.compute_trajectory output) build the control-point list the
+    engine submits as ``depth_transform``. TVD display increases with MD;
+    TVDSS display decreases (deeper → smaller subsea depth) — the engine
+    accepts either monotonic direction. Returns [] when the mode is not
+    tvd/tvdss or fewer than two finite stations exist.
+    """
+    if mode not in ("tvd", "tvdss"):
+        return []
+    md = np.asarray(trajectory.md, dtype=np.float64)
+    if mode == "tvd":
+        display = np.asarray(trajectory.tvd, dtype=np.float64)
+    else:
+        display = np.asarray(trajectory.tvdss, dtype=np.float64)
+    points = [
+        (float(a), float(b))
+        for a, b in zip(md, display)
+        if np.isfinite(a) and np.isfinite(b)
+    ]
+    if len(points) < 2:
+        return []
+    points.sort(key=lambda p: p[0])
+    return [{"reference": r, "display": d} for r, d in points]

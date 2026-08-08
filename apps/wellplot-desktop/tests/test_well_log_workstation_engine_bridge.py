@@ -135,6 +135,41 @@ def test_primary_curve_from_presentation(qtbot, tmp_path: Path, monkeypatch) -> 
     assert mnemonic
 
 
+def test_marker_semantic_reaches_the_engine_payload(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    """SDK marker symbols: FormationTop.semantic flows into the payload;
+    legacy tops (no semantic) keep the historical shape (no key)."""
+    monkeypatch.setenv("WLWS_DISABLE_ENGINE", "1")
+    reset_engine_capability_cache()
+    ws = create_workspace(tmp_path / "sem")
+    las = _write_las(tmp_path / "s.las")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    well_id = win.import_las_path(las)
+    pres = win.apply_template_to_well(well_id, "std-gr-rt-den")
+    tops = [
+        FormationTop(
+            name="CSG",
+            depth=1001.0,
+            id="00000000-0000-0000-0000-000000000001",
+            semantic="casing_shoe",
+        ),
+        FormationTop(
+            name="T1",
+            depth=1002.0,
+            id="00000000-0000-0000-0000-000000000002",
+        ),
+    ]
+    payload = presentation_to_multi_track_payload(pres, tops=tops)
+    by_label = {m["label"]: m for m in payload["markers"]}
+    assert by_label["CSG"]["semantic"] == "casing_shoe"
+    assert "semantic" not in by_label["T1"], (
+        "legacy tops must not fabricate a semantic"
+    )
+
+
 def test_multi_track_payload_from_presentation(
     qtbot, tmp_path: Path, monkeypatch
 ) -> None:
@@ -320,3 +355,124 @@ def test_multi_track_payload_per_curve_depth(
             assert c["values"].size == n, (
                 f"shared-axis curve {mnem} must match the shared depth"
             )
+
+
+def test_survey_depth_transform_builds_control_points() -> None:
+    """TVD/TVDSS 域区间道投影: MD→display control points from a trajectory."""
+    from dataclasses import replace  # noqa: PLC0415
+
+    from well_log_workstation.engine_bridge import survey_depth_transform  # noqa: PLC0415
+    from well_log_workstation.survey import (  # noqa: PLC0415
+        SurveyStation,
+        compute_trajectory,
+    )
+
+    traj = compute_trajectory(
+        [SurveyStation(0, 0, 0), SurveyStation(1000, 45, 0)]
+    )
+    pts = survey_depth_transform(traj, "tvd")
+    assert len(pts) >= 2
+    refs = [p["reference"] for p in pts]
+    disps = [p["display"] for p in pts]
+    assert refs == sorted(refs), "MD control points are sorted"
+    assert disps == sorted(disps), "TVD display increases with MD"
+
+    pts_ss = survey_depth_transform(traj, "tvdss")
+    d_ss = [p["display"] for p in pts_ss]
+    assert d_ss == sorted(d_ss, reverse=True), (
+        "TVDSS display decreases with MD (engine accepts either direction)"
+    )
+    assert survey_depth_transform(traj, "md") == []
+    assert survey_depth_transform(traj, "horizon") == []
+    single = compute_trajectory([SurveyStation(0, 0, 0)])
+    assert survey_depth_transform(single, "tvd") == []
+
+
+def test_multi_track_payload_carries_depth_transform(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("WLWS_DISABLE_ENGINE", "1")
+    reset_engine_capability_cache()
+    ws = create_workspace(tmp_path / "xform")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    well_id = win.import_las_path(_write_las(tmp_path / "x.las"))
+    pres = win.apply_template_to_well(well_id, "std-gr-rt-den")
+    payload = presentation_to_multi_track_payload(pres)
+    assert "depth_transform" not in payload, "MD default adds no transform"
+    pts = [{"reference": 1000.0, "display": 10.0},
+           {"reference": 1003.0, "display": -5.0}]
+    payload = presentation_to_multi_track_payload(
+        pres, depth_transform=pts
+    )
+    assert payload["depth_transform"] == pts
+
+
+def test_multi_well_payload_carries_per_well_depth_transform(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("WLWS_DISABLE_ENGINE", "1")
+    reset_engine_capability_cache()
+    ws = create_workspace(tmp_path / "mw-xform")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    id1 = win.import_las_path(_write_las(tmp_path / "a.las", "A"))
+    id2 = win.import_las_path(_write_las(tmp_path / "b.las", "B"))
+    p1 = win.apply_template_to_well(id1, "std-gr-rt-den")
+    p2 = win.apply_template_to_well(id2, "std-gr-rt-den")
+    pts = [{"reference": 1000.0, "display": 10.0},
+           {"reference": 1003.0, "display": -5.0}]
+    payload = presentations_to_multi_well_payload(
+        [p1, p2],
+        shared_depth=(1000.0, 1003.0),
+        depth_transform_per_well={p1.well_name: pts},
+    )
+    by_name = {w["document_id"]: w for w in payload["wells"]}
+    # Only the well with a transform carries the key.
+    with_transform = [w for w in payload["wells"] if "depth_transform" in w]
+    assert len(with_transform) == 1
+    assert with_transform[0]["depth_transform"] == pts
+
+
+def test_tvdss_engine_submission_accepts_decreasing_transform(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    """End-to-end: TVDSS datum + deviated survey → per-well decreasing
+    transform submitted and accepted by the native engine."""
+    from dataclasses import replace  # noqa: PLC0415
+
+    from well_log_workstation.survey import SurveyStation  # noqa: PLC0415
+    from well_log_workstation.tops_model import save_survey_for_well  # noqa: PLC0415
+
+    monkeypatch.delenv("WLWS_DISABLE_ENGINE", raising=False)
+    monkeypatch.delenv("WLWS_FORCE_HOST_CANVAS", raising=False)
+    reset_engine_capability_cache()
+    if not engine_available():
+        pytest.skip(probe_engine().detail)
+    ws = create_workspace(tmp_path / "tvdss-eng")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    id1 = win.import_las_path(_write_las(tmp_path / "a.las", "A"))
+    id2 = win.import_las_path(_write_las(tmp_path / "b.las", "B"))
+    for wid in (id1, id2):
+        idx = next(i for i, w in enumerate(ws.wells) if w.id == wid)
+        ws.wells[idx] = replace(ws.wells[idx], kb_m=25.0)
+    # Deviated survey for A only; B has none (stays MD in the payload).
+    save_survey_for_well(
+        ws, id1, [SurveyStation(0, 0, 0), SurveyStation(1000, 45, 0)]
+    )
+    win.set_prefer_engine_canvas(True)
+    win.create_correlation_plot_document([id1, id2], "std-gr-rt-den")
+    win.corr_datum_mode.setCurrentIndex(
+        win.corr_datum_mode.findData("tvdss")
+    )
+    from well_log_workstation.plot_document import load_plot_document  # noqa: PLC0415
+
+    plot = load_plot_document(ws, win._active_plot_id)
+    assert plot.datum_mode == "tvdss", "datum combo applied to the plot"
+    report = win.open_engine_correlation_preview()
+    assert report.get("render_prepared") is True
+    assert int(report.get("well_count", 0)) == 2

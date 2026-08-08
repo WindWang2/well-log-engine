@@ -101,15 +101,29 @@ void depth_transform_identity_and_round_trip() {
 }
 
 void depth_transform_rejects_conflicts() {
-  // Non-monotonic display (fold).
+  // Display direction change (fold): decreasing then increasing is NOT a
+  // valid transform (a uniformly decreasing display IS valid — the TVDSS
+  // domain, covered by tvdss_projection_test).
   DepthTransform fold{
       .control_points =
           {
               {.reference_depth = 1000.0, .display_depth = 1000.0},
               {.reference_depth = 1100.0, .display_depth = 900.0},
+              {.reference_depth = 1200.0, .display_depth = 1000.0},
           },
   };
   require(validate_depth_transform(fold).has_value(), "fold rejected");
+
+  // Uniformly decreasing display (TVDSS) is accepted.
+  DepthTransform decreasing{
+      .control_points =
+          {
+              {.reference_depth = 1000.0, .display_depth = 10.0},
+              {.reference_depth = 1100.0, .display_depth = -300.0},
+          },
+  };
+  require(!validate_depth_transform(decreasing).has_value(),
+          "decreasing display (TVDSS) is valid");
 
   // Duplicate reference.
   DepthTransform dup{
@@ -138,11 +152,17 @@ void depth_transform_rejects_conflicts() {
   };
   require(validate_depth_transform(nan_pt).has_value(), "nan rejected");
 
-  // Aligning markers with non-monotonic target display fails.
-  const double src[] = {1000.0, 1100.0};
-  const double tgt[] = {1200.0, 1100.0};
+  // Aligning markers with a direction-changing target display fails.
+  // (A uniformly decreasing target — TVDSS — is valid; see below.)
+  const double src[] = {1000.0, 1100.0, 1200.0};
+  const double tgt[] = {1200.0, 1100.0, 1300.0};
   require(!depth_transform_aligning_markers(src, tgt).has_value(),
           "align conflict rejected");
+
+  // Uniformly decreasing target display (TVDSS-style) aligns fine.
+  const double tgt_decreasing[] = {1200.0, 1100.0, 1000.0};
+  require(depth_transform_aligning_markers(src, tgt_decreasing).has_value(),
+          "align decreasing display (TVDSS) succeeds");
 }
 
 void depth_transform_clamp_and_linear_extrapolate() {
@@ -357,6 +377,8 @@ void set_depth_transform_rebuilds_curves_with_display_depth() {
                                     .display_depth = 1000.0},
                                    {.reference_depth = 1100.0,
                                     .display_depth = 900.0},
+                                   {.reference_depth = 1200.0,
+                                    .display_depth = 1000.0},
                                },
                        },
                })

@@ -83,7 +83,8 @@
 ## 结论与后续
 
 **Goal 四个 Epic 全部验收通过**（+ 2026-08-08 环境治理 Goal 全项验收，见
-`docs/environment-binding-acceptance-report.md`）。后续可选方向（按推荐序）：
-1. Epic C 收尾：SDK marker 符号（casing_shoe）、TVD/TVDSS 域区间道投影
+`docs/environment-binding-acceptance-report.md`；+ Epic C 收尾 Goal 两个切片
+验收，见 `docs/epic-c-windup-acceptance-report.md`）。后续可选方向（按推荐序）：
+1. ~~Epic C 收尾：SDK marker 符号（casing_shoe）、TVD/TVDSS 域区间道投影~~ ✅ 已交付
 2. Epic D 终极扩展：三维曲面（非平面 mesh）bedding TST
 3. （可选）PySide6 升级后重验 Desktop 退出段 segfault 是否消失

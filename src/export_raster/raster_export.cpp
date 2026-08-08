@@ -241,6 +241,70 @@ void fill_rect(std::vector<std::uint8_t> &tile, std::uint32_t width,
   }
 }
 
+// Even-odd point-in-polygon test on a polygon centred at the origin (scene
+// millimetres, y-down).
+bool point_in_polygon(const std::vector<PhysicalPoint> &polygon, double px,
+                      double py) {
+  bool inside = false;
+  for (std::size_t i = 0, j = polygon.size() - 1; i < polygon.size();
+       j = i++) {
+    const auto &a = polygon[i];
+    const auto &b = polygon[j];
+    if ((a.top.value > py) != (b.top.value > py)) {
+      const auto x_intersect =
+          a.left.value +
+          (py - a.top.value) / (b.top.value - a.top.value) *
+              (b.left.value - a.left.value);
+      if (px < x_intersect) {
+        inside = !inside;
+      }
+    }
+  }
+  return inside;
+}
+
+// Fills a scene-mm polygon (centred at the origin) translated to
+// (center_x, center_y) — the raster path's shared symbol geometry consumer.
+void fill_polygon(std::vector<std::uint8_t> &tile, std::uint32_t width,
+                  std::uint32_t height, std::uint32_t channels,
+                  const std::vector<PhysicalPoint> &outline, double center_x,
+                  double center_y, double ppm, std::int64_t tile_origin_y,
+                  RgbaColor color) {
+  if (outline.size() < 3) {
+    return;
+  }
+  double min_x = std::numeric_limits<double>::infinity();
+  double max_x = -std::numeric_limits<double>::infinity();
+  double min_y = std::numeric_limits<double>::infinity();
+  double max_y = -std::numeric_limits<double>::infinity();
+  for (const auto &p : outline) {
+    min_x = std::min(min_x, p.left.value);
+    max_x = std::max(max_x, p.left.value);
+    min_y = std::min(min_y, p.top.value);
+    max_y = std::max(max_y, p.top.value);
+  }
+  const auto x0 = std::max(
+      0, static_cast<int>(std::floor((center_x + min_x) * ppm)));
+  const auto y0 = std::max(
+      0, static_cast<int>(std::floor((center_y + min_y) * ppm) -
+                          tile_origin_y));
+  const auto x1 = std::min(
+      static_cast<int>(width),
+      static_cast<int>(std::ceil((center_x + max_x) * ppm)));
+  const auto y1 = std::min(
+      static_cast<int>(height),
+      static_cast<int>(std::ceil((center_y + max_y) * ppm) - tile_origin_y));
+  for (int y = y0; y < y1; ++y) {
+    for (int x = x0; x < x1; ++x) {
+      const auto sx = (static_cast<double>(x) + 0.5) / ppm;
+      const auto sy = (static_cast<double>(y) + 0.5 + tile_origin_y) / ppm;
+      if (point_in_polygon(outline, sx - center_x, sy - center_y)) {
+        blend_pixel(tile, width, height, channels, x, y, color);
+      }
+    }
+  }
+}
+
 struct PixelPoint {
   int x{};
   int y{};
@@ -328,6 +392,30 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
           std::llround(marker.display_top.value * ppm) - tile_origin_y);
       draw_line(tile, geom.width, tile_rows, geom.channels, x0, y, x1, y,
                 layer.line_color, thickness);
+      if (layer.draw_symbols) {
+        // Marker-semantic symbol glyph at the line's left end (shared shape
+        // geometry from scene::symbol_glyph).
+        const auto kind = symbol_for_marker_semantic(marker.semantic);
+        const auto half = layer.symbol_size.value / 2.0;
+        const auto center_x = x0 / ppm + 1.0 + half;
+        const auto center_y = marker.display_top.value;
+        if (kind == SymbolKind::cross) {
+          const auto hpx = static_cast<int>(std::lround(half * ppm));
+          const auto cpx = static_cast<int>(std::lround(center_x * ppm));
+          const auto cpy = y;
+          const auto stroke =
+              std::max(1, static_cast<int>(std::lround(
+                              layer.symbol_size.value / 6.0 * ppm)));
+          draw_line(tile, geom.width, tile_rows, geom.channels, cpx - hpx,
+                    cpy - hpx, cpx + hpx, cpy + hpx, layer.line_color, stroke);
+          draw_line(tile, geom.width, tile_rows, geom.channels, cpx + hpx,
+                    cpy - hpx, cpx - hpx, cpy + hpx, layer.line_color, stroke);
+        } else {
+          fill_polygon(tile, geom.width, tile_rows, geom.channels,
+                       symbol_glyph(kind, layer.symbol_size).outline, center_x,
+                       center_y, ppm, tile_origin_y, layer.line_color);
+        }
+      }
     }
   }
 }

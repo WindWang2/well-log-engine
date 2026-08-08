@@ -460,6 +460,10 @@ enum class SymbolKind : std::uint8_t {
   triangle_up,
   diamond,
   cross,
+  // Marker-semantic glyphs (casing_shoe etc.). Append-only: numeric values
+  // are part of the manifest/table-export surface.
+  triangle_down,
+  shoe,
 };
 
 // A discrete symbol anchored at a depth; `track_fraction` is the horizontal

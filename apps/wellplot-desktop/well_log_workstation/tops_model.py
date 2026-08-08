@@ -35,6 +35,10 @@ class FormationTop:
     # a top may name a unified unit instead of free text. Empty = historic
     # free-text behaviour; old workspaces stay readable.
     unit_id: str = ""
+    # Optional marker semantic (SDK marker symbols): one of
+    # formation_top | fault | fluid_contact | casing_shoe | custom.
+    # Empty = legacy behaviour (submitted as formation_top).
+    semantic: str = ""
 
     def display_label(self) -> str:
         return f"{self.name}  {self.depth:g} {self.unit}".strip()

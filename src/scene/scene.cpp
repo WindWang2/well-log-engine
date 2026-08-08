@@ -41,6 +41,9 @@ validate_depth_transform(const DepthTransform &transform) noexcept {
                  .message = MessageKey::presentation_invalid,
                  .arguments = {}};
   }
+  // Display direction is fixed by the first pair and must hold for every
+  // subsequent step (strictly monotonic in ONE direction).
+  const auto increasing_display = pts[1].display_depth > pts[0].display_depth;
   for (std::size_t i = 0; i < pts.size(); ++i) {
     if (!std::isfinite(pts[i].reference_depth) ||
         !std::isfinite(pts[i].display_depth)) {
@@ -51,8 +54,14 @@ validate_depth_transform(const DepthTransform &transform) noexcept {
                    .arguments = {}};
     }
     if (i > 0) {
+      // Reference must be strictly increasing; display must be strictly
+      // monotonic in EITHER direction — a decreasing display is the TVDSS
+      // display domain (deeper MD → smaller subsea depth), which the scene
+      // mm layout maps to a deeper position on the page.
       if (!(pts[i].reference_depth > pts[i - 1].reference_depth) ||
-          !(pts[i].display_depth > pts[i - 1].display_depth)) {
+          pts[i].display_depth == pts[i - 1].display_depth ||
+          (pts[i].display_depth > pts[i - 1].display_depth) !=
+              increasing_display) {
         return Error{.code = ErrorCode::invalid_presentation,
                      .severity = Severity::error,
                      .entity_id = std::nullopt,
@@ -107,35 +116,40 @@ double map_display_to_reference(const DepthTransform &transform,
   if (pts.empty() || !std::isfinite(display_depth)) {
     return display_depth;
   }
-  if (display_depth <= pts.front().display_depth) {
-    if (transform.extrapolate == DepthExtrapolatePolicy::clamp ||
-        pts.size() < 2) {
+  const auto n = pts.size();
+  // Display is strictly monotonic in either direction (TVDSS display
+  // decreases with MD); bracket the value over consecutive control points.
+  for (std::size_t i = 1; i < n; ++i) {
+    const auto a = pts[i - 1].display_depth;
+    const auto b = pts[i].display_depth;
+    if ((display_depth >= a && display_depth <= b) ||
+        (display_depth <= a && display_depth >= b)) {
+      return interpolate_segment(display_depth, a, b,
+                                 pts[i - 1].reference_depth,
+                                 pts[i].reference_depth);
+    }
+  }
+  // Outside the control span: extrapolate from the endpoint segment (or
+  // clamp to the endpoint when requested).
+  const auto decreasing = pts.back().display_depth < pts.front().display_depth;
+  const auto beyond_top = decreasing
+                              ? display_depth > pts.front().display_depth
+                              : display_depth <= pts.front().display_depth;
+  if (beyond_top) {
+    if (transform.extrapolate == DepthExtrapolatePolicy::clamp || n < 2) {
       return pts.front().reference_depth;
     }
     return interpolate_segment(display_depth, pts[0].display_depth,
                                pts[1].display_depth, pts[0].reference_depth,
                                pts[1].reference_depth);
   }
-  if (display_depth >= pts.back().display_depth) {
-    if (transform.extrapolate == DepthExtrapolatePolicy::clamp ||
-        pts.size() < 2) {
-      return pts.back().reference_depth;
-    }
-    const auto n = pts.size();
-    return interpolate_segment(display_depth, pts[n - 2].display_depth,
-                               pts[n - 1].display_depth,
-                               pts[n - 2].reference_depth,
-                               pts[n - 1].reference_depth);
+  if (transform.extrapolate == DepthExtrapolatePolicy::clamp || n < 2) {
+    return pts.back().reference_depth;
   }
-  for (std::size_t i = 1; i < pts.size(); ++i) {
-    if (display_depth <= pts[i].display_depth) {
-      return interpolate_segment(display_depth, pts[i - 1].display_depth,
-                                 pts[i].display_depth,
-                                 pts[i - 1].reference_depth,
-                                 pts[i].reference_depth);
-    }
-  }
-  return pts.back().reference_depth;
+  return interpolate_segment(display_depth, pts[n - 2].display_depth,
+                             pts[n - 1].display_depth,
+                             pts[n - 2].reference_depth,
+                             pts[n - 1].reference_depth);
 }
 
 Result<DepthTransform> depth_transform_aligning_markers(
@@ -167,6 +181,70 @@ Result<DepthTransform> depth_transform_aligning_markers(
   }
   transform.version = 1;
   return transform;
+}
+
+SymbolKind symbol_for_marker_semantic(MarkerSemantic semantic) noexcept {
+  switch (semantic) {
+  case MarkerSemantic::formation_top:
+    return SymbolKind::triangle_down;
+  case MarkerSemantic::fault:
+    return SymbolKind::cross;
+  case MarkerSemantic::fluid_contact:
+    return SymbolKind::diamond;
+  case MarkerSemantic::casing_shoe:
+    return SymbolKind::shoe;
+  case MarkerSemantic::custom:
+    break;
+  }
+  return SymbolKind::circle;
+}
+
+SymbolGlyph symbol_glyph(SymbolKind kind, Millimetres size) noexcept {
+  const auto half = size.value / 2.0;
+  SymbolGlyph glyph;
+  glyph.kind = kind;
+  glyph.size = size;
+  glyph.stroke_width = size.value / 6.0;
+  const auto point = [](double x, double y) {
+    return PhysicalPoint{.left = Millimetres{x}, .top = Millimetres{y}};
+  };
+  switch (kind) {
+  case SymbolKind::circle:
+    // 16-gon approximation — vector backends still emit exact arcs via
+    // `kind`; this outline serves the raster path and geometry consumers.
+    for (int i = 0; i < 16; ++i) {
+      const double theta = 2.0 * 3.14159265358979323846 * i / 16.0;
+      glyph.outline.push_back(point(half * std::cos(theta),
+                                    half * std::sin(theta)));
+    }
+    break;
+  case SymbolKind::cross:
+    break;  // stroke-only; backends draw the two diagonals.
+  case SymbolKind::square:
+    glyph.outline = {point(-half, -half), point(half, -half),
+                     point(half, half), point(-half, half)};
+    break;
+  case SymbolKind::triangle_up:
+    glyph.outline = {point(0.0, -half), point(half, half), point(-half, half)};
+    break;
+  case SymbolKind::triangle_down:
+    glyph.outline = {point(0.0, half), point(half, -half), point(-half, -half)};
+    break;
+  case SymbolKind::diamond:
+    glyph.outline = {point(0.0, -half), point(half, 0.0), point(0.0, half),
+                     point(-half, 0.0)};
+    break;
+  case SymbolKind::shoe:
+    // Casing-shoe glyph: filled arch (flat side up, bulge down) — a
+    // horseshoe/shoe profile pointing down the well.
+    for (int i = 0; i <= 16; ++i) {
+      const double theta = 3.14159265358979323846 * i / 16.0;
+      glyph.outline.push_back(point(half * std::cos(theta),
+                                    half * std::sin(theta)));
+    }
+    break;
+  }
+  return glyph;
 }
 
 namespace {
@@ -1520,7 +1598,7 @@ std::optional<Error> detail::ScenePreparer::preflight(
         depth_range.domain == DepthDomain::source_index ||
         depth_range.unit.empty() || !std::isfinite(depth_range.top) ||
         !std::isfinite(depth_range.bottom) ||
-        depth_range.top >= depth_range.bottom ||
+        depth_range.top == depth_range.bottom ||
         !std::isfinite(depth_range.bottom - depth_range.top) ||
         !std::isfinite(presentation.physical_height().value) ||
         presentation.physical_height().value <= 0.0 ||
@@ -1909,7 +1987,7 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         depth_range.domain == DepthDomain::source_index ||
         depth_range.unit.empty() || !std::isfinite(depth_range.top) ||
         !std::isfinite(depth_range.bottom) ||
-        depth_range.top >= depth_range.bottom ||
+        depth_range.top == depth_range.bottom ||
         !std::isfinite(depth_range.bottom - depth_range.top) ||
         !std::isfinite(presentation.physical_height().value) ||
         presentation.physical_height().value <= 0.0 ||
@@ -2412,13 +2490,20 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
           return presentation_error(interval.id);
         }
         // Cull in Display Depth space (depth_range is display when a transform
-        // is active — #161).
+        // is active — #161). The window and the interval span are compared
+        // direction-agnostically: a decreasing display (TVDSS) must not cull
+        // interior intervals.
         const auto interval_display_top = map_reference_to_display(
             depth_xform, interval.top_reference_depth);
         const auto interval_display_bottom = map_reference_to_display(
             depth_xform, interval.bottom_reference_depth);
-        if (interval_display_bottom <= depth_range.top ||
-            interval_display_top >= depth_range.bottom) {
+        const auto span_lo =
+            std::min(interval_display_top, interval_display_bottom);
+        const auto span_hi =
+            std::max(interval_display_top, interval_display_bottom);
+        const auto win_lo = std::min(depth_range.top, depth_range.bottom);
+        const auto win_hi = std::max(depth_range.top, depth_range.bottom);
+        if (span_lo >= win_hi || span_hi <= win_lo) {
           continue;
         }
         const auto unclipped_top = depth_to_top(interval.top_reference_depth);
@@ -2665,13 +2750,14 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
             if (stop_token.stop_requested()) {
               return cancellation_error();
             }
-            // Clip the tile's depth span to the presentation range.
+            // Clip the tile's depth span to the presentation range. Sorted
+            // bounds keep std::clamp valid for decreasing windows (TVDSS).
+            const auto win_lo = std::min(depth_range.top, depth_range.bottom);
+            const auto win_hi = std::max(depth_range.top, depth_range.bottom);
             const auto top_depth = std::clamp(tile.top_reference_depth,
-                                              depth_range.top,
-                                              depth_range.bottom);
+                                              win_lo, win_hi);
             const auto bottom_depth = std::clamp(tile.bottom_reference_depth,
-                                                 depth_range.top,
-                                                 depth_range.bottom);
+                                                 win_lo, win_hi);
             if (bottom_depth <= top_depth) {
               continue;
             }
@@ -3061,7 +3147,10 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
           layer.line_width.value <= 0.0 ||
           (layer.draw_labels &&
            (!std::isfinite(layer.label_font_size.value) ||
-            layer.label_font_size.value <= 0.0))) {
+            layer.label_font_size.value <= 0.0)) ||
+          (layer.draw_symbols &&
+           (!std::isfinite(layer.symbol_size.value) ||
+            layer.symbol_size.value <= 0.0))) {
         return presentation_error(layer.id);
       }
       const auto first_marker =
@@ -3072,8 +3161,9 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         }
         const auto marker_display =
             map_reference_to_display(depth_xform, marker.reference_depth);
-        if (marker_display < depth_range.top ||
-            marker_display > depth_range.bottom) {
+        const auto win_lo = std::min(depth_range.top, depth_range.bottom);
+        const auto win_hi = std::max(depth_range.top, depth_range.bottom);
+        if (marker_display < win_lo || marker_display > win_hi) {
           continue;
         }
         const auto top = depth_to_top(marker.reference_depth);
@@ -3085,6 +3175,7 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
             .marker_id = marker.id,
             .display_top = Millimetres{top},
             .reference_depth = marker.reference_depth,
+            .semantic = marker.semantic,
             .label_run_index = no_text_run,
         });
       }
@@ -3094,6 +3185,8 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
           .z_order = layer.z_order,
           .line_color = layer.line_color,
           .line_width = layer.line_width,
+          .draw_symbols = layer.draw_symbols,
+          .symbol_size = layer.symbol_size,
           .first_marker = first_marker,
           .marker_count =
               static_cast<std::uint64_t>(scene->markers.size()) - first_marker,

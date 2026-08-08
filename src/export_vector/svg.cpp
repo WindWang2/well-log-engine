@@ -320,6 +320,8 @@ void append_symbol(std::string &output, const PreparedSymbol &symbol,
   case SymbolKind::square:
   case SymbolKind::triangle_up:
   case SymbolKind::diamond:
+  case SymbolKind::triangle_down:
+  case SymbolKind::shoe:
     break;
   }
   output += "\" fill=\"";
@@ -357,6 +359,35 @@ void append_symbol(std::string &output, const PreparedSymbol &symbol,
     output.push_back(' ');
     append_number(output, center_y + half);
     output += " Z\"/>";
+  } else if (symbol.kind == SymbolKind::triangle_down) {
+    output += "M ";
+    append_number(output, center_x);
+    output.push_back(' ');
+    append_number(output, center_y + half);
+    output += " L ";
+    append_number(output, center_x + half);
+    output.push_back(' ');
+    append_number(output, center_y - half);
+    output += " L ";
+    append_number(output, center_x - half);
+    output.push_back(' ');
+    append_number(output, center_y - half);
+    output += " Z\"/>";
+  } else if (symbol.kind == SymbolKind::shoe) {
+    // Casing-shoe arch (flat side up, bulge down) via one arc + close.
+    output += "M ";
+    append_number(output, center_x - half);
+    output.push_back(' ');
+    append_number(output, center_y);
+    output += " A ";
+    append_number(output, half);
+    output.push_back(' ');
+    append_number(output, half);
+    output += " 0 0 1 ";
+    append_number(output, center_x + half);
+    output.push_back(' ');
+    append_number(output, center_y);
+    output += " Z\"/>";
   } else {
     output += "M ";
     append_number(output, center_x);
@@ -372,6 +403,173 @@ void append_symbol(std::string &output, const PreparedSymbol &symbol,
     append_number(output, center_y + half);
     output += " L ";
     append_number(output, center_x - half);
+    output.push_back(' ');
+    append_number(output, center_y);
+    output += " Z\"/>";
+  }
+}
+
+// Emits the marker-semantic symbol glyph at the left end of a marker line
+// (single source of shape semantics: scene::symbol_for_marker_semantic).
+void append_marker_symbol(std::string &output, const PreparedMarker &marker,
+                          const PreparedMarkerLayer &layer, double left) {
+  const auto kind = symbol_for_marker_semantic(marker.semantic);
+  const auto half = layer.symbol_size.value / 2.0;
+  const auto center_x = left + 1.0 + half;
+  const auto center_y = marker.display_top.value;
+  output += "<path id=\"marker-symbol-";
+  output += marker.marker_id.to_string();
+  output += "\" data-layer-id=\"";
+  output += layer.id.to_string();
+  output += "\" data-semantic=\"";
+  switch (marker.semantic) {
+  case MarkerSemantic::formation_top:
+    output += "formation_top";
+    break;
+  case MarkerSemantic::fault:
+    output += "fault";
+    break;
+  case MarkerSemantic::fluid_contact:
+    output += "fluid_contact";
+    break;
+  case MarkerSemantic::casing_shoe:
+    output += "casing_shoe";
+    break;
+  case MarkerSemantic::custom:
+    output += "custom";
+    break;
+  }
+  switch (kind) {
+  case SymbolKind::cross:
+    output += "\" fill=\"none\" stroke=\"";
+    append_color(output, layer.line_color);
+    output += "\" stroke-width=\"";
+    append_number(output, layer.symbol_size.value / 6.0);
+    output += "\" d=\"M ";
+    append_number(output, center_x - half);
+    output.push_back(' ');
+    append_number(output, center_y - half);
+    output += " L ";
+    append_number(output, center_x + half);
+    output.push_back(' ');
+    append_number(output, center_y + half);
+    output += " M ";
+    append_number(output, center_x + half);
+    output.push_back(' ');
+    append_number(output, center_y - half);
+    output += " L ";
+    append_number(output, center_x - half);
+    output.push_back(' ');
+    append_number(output, center_y + half);
+    output += "\"/>";
+    return;
+  case SymbolKind::circle:
+    output += "\" fill=\"";
+    append_color(output, layer.line_color);
+    output += "\" d=\"M ";
+    append_number(output, center_x + half);
+    output.push_back(' ');
+    append_number(output, center_y);
+    output += " A ";
+    append_number(output, half);
+    output.push_back(' ');
+    append_number(output, half);
+    output += " 0 1 0 ";
+    append_number(output, center_x - half);
+    output.push_back(' ');
+    append_number(output, center_y);
+    output += " A ";
+    append_number(output, half);
+    output.push_back(' ');
+    append_number(output, half);
+    output += " 0 1 0 ";
+    append_number(output, center_x + half);
+    output.push_back(' ');
+    append_number(output, center_y);
+    output += " Z\"/>";
+    return;
+  default:
+    break;
+  }
+  output += "\" fill=\"";
+  append_color(output, layer.line_color);
+  output += "\" d=\"";
+  if (kind == SymbolKind::square) {
+    output += "M ";
+    append_number(output, center_x - half);
+    output.push_back(' ');
+    append_number(output, center_y - half);
+    output += " L ";
+    append_number(output, center_x + half);
+    output.push_back(' ');
+    append_number(output, center_y - half);
+    output += " L ";
+    append_number(output, center_x + half);
+    output.push_back(' ');
+    append_number(output, center_y + half);
+    output += " L ";
+    append_number(output, center_x - half);
+    output.push_back(' ');
+    append_number(output, center_y + half);
+    output += " Z\"/>";
+  } else if (kind == SymbolKind::triangle_up) {
+    output += "M ";
+    append_number(output, center_x);
+    output.push_back(' ');
+    append_number(output, center_y - half);
+    output += " L ";
+    append_number(output, center_x + half);
+    output.push_back(' ');
+    append_number(output, center_y + half);
+    output += " L ";
+    append_number(output, center_x - half);
+    output.push_back(' ');
+    append_number(output, center_y + half);
+    output += " Z\"/>";
+  } else if (kind == SymbolKind::triangle_down) {
+    output += "M ";
+    append_number(output, center_x);
+    output.push_back(' ');
+    append_number(output, center_y + half);
+    output += " L ";
+    append_number(output, center_x + half);
+    output.push_back(' ');
+    append_number(output, center_y - half);
+    output += " L ";
+    append_number(output, center_x - half);
+    output.push_back(' ');
+    append_number(output, center_y - half);
+    output += " Z\"/>";
+  } else if (kind == SymbolKind::diamond) {
+    output += "M ";
+    append_number(output, center_x);
+    output.push_back(' ');
+    append_number(output, center_y - half);
+    output += " L ";
+    append_number(output, center_x + half);
+    output.push_back(' ');
+    append_number(output, center_y);
+    output += " L ";
+    append_number(output, center_x);
+    output.push_back(' ');
+    append_number(output, center_y + half);
+    output += " L ";
+    append_number(output, center_x - half);
+    output.push_back(' ');
+    append_number(output, center_y);
+    output += " Z\"/>";
+  } else {
+    // shoe: arch path (bulge down), matching scene::symbol_glyph.
+    output += "M ";
+    append_number(output, center_x - half);
+    output.push_back(' ');
+    append_number(output, center_y);
+    output += " A ";
+    append_number(output, half);
+    output.push_back(' ');
+    append_number(output, half);
+    output += " 0 0 1 ";
+    append_number(output, center_x + half);
     output.push_back(' ');
     append_number(output, center_y);
     output += " Z\"/>";
@@ -549,6 +747,9 @@ void append_layer_body(std::string &output, const PreparedScene &scene) {
         output += "\" stroke-width=\"";
         append_number(output, layer.line_width.value);
         output += "\"/>";
+        if (layer.draw_symbols) {
+          append_marker_symbol(output, marker, layer, track.clip.left.value);
+        }
       }
     }
     for (const auto &layer : scene.symbol_layers()) {

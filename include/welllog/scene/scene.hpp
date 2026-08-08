@@ -75,8 +75,9 @@ struct DepthTransform {
                          const DepthTransform &) = default;
 };
 
-// Validates strict ordering of reference_depth and same-direction monotonic
-// display_depth. Empty transforms are valid (identity). Returns nullopt on
+// Validates strict ordering of reference_depth and strictly-monotonic
+// display_depth (increasing OR decreasing — a decreasing display is the
+// TVDSS domain). Empty transforms are valid (identity). Returns nullopt on
 // success, or an Error diagnostic on conflict/non-monotonic control points.
 [[nodiscard]] WELLLOG_SCENE_API std::optional<Error>
 validate_depth_transform(const DepthTransform &transform) noexcept;
@@ -98,6 +99,28 @@ map_display_to_reference(const DepthTransform &transform,
 depth_transform_aligning_markers(
     std::span<const double> source_reference_depths,
     std::span<const double> target_display_depths) noexcept;
+
+// Authoritative MarkerSemantic → symbol glyph mapping (single source of
+// truth for the export backends and the Desktop resolver):
+//   formation_top → triangle_down, fault → cross, fluid_contact → diamond,
+//   casing_shoe → shoe, custom → circle.
+[[nodiscard]] WELLLOG_SCENE_API SymbolKind
+symbol_for_marker_semantic(MarkerSemantic semantic) noexcept;
+
+// Shared glyph geometry for a SymbolKind: a closed outline polygon in scene
+// millimetres centred at the origin with full extent `size` (used by the
+// raster backend and any polygon-based consumer). `kind` is carried through
+// so vector backends can still emit exact shapes (circle arcs, cross
+// strokes) instead of the polygon approximation.
+struct SymbolGlyph {
+  SymbolKind kind{SymbolKind::circle};
+  Millimetres size{};
+  std::vector<PhysicalPoint> outline;
+  double stroke_width{};
+};
+
+[[nodiscard]] WELLLOG_SCENE_API SymbolGlyph
+symbol_glyph(SymbolKind kind, Millimetres size) noexcept;
 
 struct DeviceIndependentPixels {
   double value{};
@@ -254,7 +277,10 @@ struct ImageLayerSpec {
 };
 
 // Displays document Markers as zero-thickness horizontal lines across the
-// track with optional labels.
+// track with optional labels. When `draw_symbols` is set, each marker also
+// renders its MarkerSemantic's symbol glyph (authoritative mapping in
+// `symbol_for_marker_semantic`) at the line's left end — e.g. casing_shoe
+// renders the shoe glyph.
 struct MarkerLayerSpec {
   EntityId id;
   EntityId track_id;
@@ -264,6 +290,8 @@ struct MarkerLayerSpec {
   bool draw_labels{true};
   Millimetres label_font_size{3.0};
   RgbaColor label_color{0, 0, 0, 255};
+  bool draw_symbols{false};
+  Millimetres symbol_size{3.0};
 };
 
 // Displays document SymbolOccurrences at their depth and track fraction.
@@ -543,17 +571,21 @@ struct PreparedMarkerLayer {
   std::int32_t z_order{};
   RgbaColor line_color{};
   Millimetres line_width{};
+  bool draw_symbols{false};
+  Millimetres symbol_size{3.0};
   std::uint64_t first_marker{};
   std::uint64_t marker_count{};
 };
 
 // A zero-thickness marker line spanning the full track width at
-// `display_top` (scene millimetres).
+// `display_top` (scene millimetres). `semantic` is the document Marker's
+// semantic, carried through so export backends can render its symbol glyph.
 struct PreparedMarker {
   EntityId layer_id;
   EntityId marker_id;
   Millimetres display_top{};
   double reference_depth{};
+  MarkerSemantic semantic{MarkerSemantic::custom};
   std::uint64_t label_run_index{no_text_run};
 };
 
