@@ -298,6 +298,19 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_stratigraphy.setObjectName("Action_EditStratigraphy")
         self._act_stratigraphy.triggered.connect(self._on_open_stratigraphy_dialog)
         self._act_stratigraphy.setEnabled(False)
+        # Epic C (C2/C3/C4): per-well engineering data editors.
+        self._act_core = file_menu.addAction("岩心数据编辑…")
+        self._act_core.setObjectName("Action_EditCore")
+        self._act_core.triggered.connect(self._on_edit_core_data)
+        self._act_core.setEnabled(False)
+        self._act_well_test = file_menu.addAction("试油数据编辑…")
+        self._act_well_test.setObjectName("Action_EditWellTest")
+        self._act_well_test.triggered.connect(self._on_edit_well_test)
+        self._act_well_test.setEnabled(False)
+        self._act_perforation = file_menu.addAction("射孔数据编辑…")
+        self._act_perforation.setObjectName("Action_EditPerforation")
+        self._act_perforation.triggered.connect(self._on_edit_perforation)
+        self._act_perforation.setEnabled(False)
         # Multi-rate (Epic A): explicit resampling → derived curve version
         # with its own sampling axis.
         self._act_curve_resample = file_menu.addAction("曲线重采样…")
@@ -1625,6 +1638,9 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_survey.setEnabled(ws is not None)
         self._act_well_header.setEnabled(ws is not None)
         self._act_stratigraphy.setEnabled(ws is not None)
+        self._act_core.setEnabled(ws is not None)
+        self._act_well_test.setEnabled(ws is not None)
+        self._act_perforation.setEnabled(ws is not None)
         self._act_curve_resample.setEnabled(ws is not None)
         self._act_formula.setEnabled(ws is not None)
         self._act_curve_edit.setEnabled(ws is not None)
@@ -5442,6 +5458,96 @@ class WellLogWorkstationWindow(QMainWindow):
                 i.formation_unit_id for i in tests.intervals if i.formation_unit_id
             )
         return referenced
+
+    def _edit_engineering_domain(self, kind: str) -> None:
+        """Shared per-well editor flow for core / well-test / perforation."""
+        if self._workspace is None or not self._workspace.wells:
+            titles = {
+                "core": ("岩心数据编辑", "请先打开含井的工区。"),
+                "well_test": ("试油数据编辑", "请先打开含井的工区。"),
+                "perforation": ("射孔数据编辑", "请先打开含井的工区。"),
+            }
+            title, message = titles.get(kind, ("编辑", "请先打开含井的工区。"))
+            QMessageBox.information(self, title, message)
+            return
+        from well_log_workstation.stratigraphy import load_stratigraphy
+
+        well_ids = self._pick_wells_for_correlation()
+        if not well_ids:
+            return
+        well_id = well_ids[0]
+        entry = next((w for w in self._workspace.wells if w.id == well_id), None)
+        if entry is None:
+            return
+        dictionary, _diags = load_stratigraphy(self._workspace)
+        if kind == "core":
+            from well_log_workstation.core_dialog import CoreDialog
+            from well_log_workstation.core_model import (
+                load_core_for_well,
+                save_core_for_well,
+            )
+
+            current, _diags = load_core_for_well(self._workspace, well_id)
+            dlg = CoreDialog(current, dictionary=dictionary, parent=self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            model = dlg.value()
+            try:
+                save_core_for_well(self._workspace, well_id, model)
+            except (WorkspaceError, OSError) as exc:
+                QMessageBox.warning(self, "保存岩心数据失败", str(exc))
+                return
+            note = f"已保存 {entry.name} 岩心（{len(model.runs)} 筒）"
+        elif kind == "well_test":
+            from well_log_workstation.well_test_dialog import WellTestDialog
+            from well_log_workstation.well_test_model import (
+                load_well_test_for_well,
+                save_well_test_for_well,
+            )
+
+            current, _diags = load_well_test_for_well(self._workspace, well_id)
+            dlg = WellTestDialog(current, dictionary=dictionary, parent=self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            model = dlg.value()
+            try:
+                save_well_test_for_well(self._workspace, well_id, model)
+            except (WorkspaceError, OSError) as exc:
+                QMessageBox.warning(self, "保存试油数据失败", str(exc))
+                return
+            note = f"已保存 {entry.name} 试油（{len(model.intervals)} 层段）"
+        else:  # perforation
+            from well_log_workstation.perforation_dialog import PerforationDialog
+            from well_log_workstation.perforation_model import (
+                load_perforation_for_well,
+                save_perforation_for_well,
+            )
+
+            current, _diags = load_perforation_for_well(self._workspace, well_id)
+            dlg = PerforationDialog(current, dictionary=dictionary, parent=self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            model = dlg.value()
+            try:
+                save_perforation_for_well(self._workspace, well_id, model)
+            except (WorkspaceError, OSError) as exc:
+                QMessageBox.warning(self, "保存射孔数据失败", str(exc))
+                return
+            note = f"已保存 {entry.name} 射孔（{len(model.intervals)} 层段）"
+        self._selected_well_id = well_id
+        self.statusBar().showMessage(note, 4000)
+
+    def _on_edit_core_data(self) -> None:
+        """Edit the selected well's core runs + samples (Epic C / C2)."""
+        self._edit_engineering_domain("core")
+
+    def _on_edit_well_test(self) -> None:
+        """Edit the selected well's tested intervals (Epic C / C3)."""
+        self._edit_engineering_domain("well_test")
+
+    def _on_edit_perforation(self) -> None:
+        """Edit the selected well's perforation intervals (Epic C / C4)."""
+        self._edit_engineering_domain("perforation")
 
     def _on_edit_survey(self) -> None:
         """Edit the deviation survey for a well (FRS §1.1 / P1-C)."""
