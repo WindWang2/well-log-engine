@@ -254,25 +254,38 @@ def _engine_export(
             # args — fall back via TypeError like the searchable branch.
             crop_marks = bool(kwargs.get("crop_marks", False))
             layered_pdf = bool(kwargs.get("layered_pdf", False))
+            # Epic B (B4): engine single-well PDFs carry the depth ruler
+            # (SDK-authoritative ticks) unless explicitly disabled.
+            show_ruler = bool(kwargs.get("show_depth_ruler", True))
             if searchable:
                 try:
                     data = view.export_scene_pdf(
-                        document_id, 0, True, crop_marks, layered_pdf
+                        document_id, 0, True, crop_marks, layered_pdf, show_ruler
                     )
                 except TypeError:
-                    # Binding built before B1.PDF.2 — signal caller to use Qt.
-                    raise ExportError(
-                        "engine searchable PDF 需要重建 Python 绑定"
-                        "（export_scene_pdf searchable_text）；请改用 Qt 可搜索路径"
-                    ) from None
+                    try:
+                        data = view.export_scene_pdf(
+                            document_id, 0, True, crop_marks, layered_pdf
+                        )
+                    except TypeError:
+                        # Binding built before B1.PDF.2 — signal caller to use Qt.
+                        raise ExportError(
+                            "engine searchable PDF 需要重建 Python 绑定"
+                            "（export_scene_pdf searchable_text）；请改用 Qt 可搜索路径"
+                        ) from None
             else:
                 try:
                     data = view.export_scene_pdf(
-                        document_id, 0, False, crop_marks, layered_pdf
+                        document_id, 0, False, crop_marks, layered_pdf, show_ruler
                     )
                 except TypeError:
-                    # Binding without crop_marks/layered_pdf (pre-FRS §5).
-                    data = view.export_scene_pdf(document_id)
+                    try:
+                        data = view.export_scene_pdf(
+                            document_id, 0, False, crop_marks, layered_pdf
+                        )
+                    except TypeError:
+                        # Binding without crop_marks/layered_pdf (pre-FRS §5).
+                        data = view.export_scene_pdf(document_id)
     except ExportError:
         raise
     except Exception as exc:  # typed WellLogError surfaces here

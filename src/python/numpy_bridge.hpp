@@ -71,7 +71,7 @@ export_scene_svg(WellLogView *view, const QString &document_id,
 export_scene_pdf(WellLogView *view, const QString &document_id,
                  std::uint64_t export_pixel_height = 0,
                  bool searchable_text = false, bool crop_marks = false,
-                 bool layered_pdf = false) noexcept;
+                 bool layered_pdf = false, bool show_depth_ruler = false) noexcept;
 
 // CGM Version 3 Binary export (B1.CGM.2–3 / ADR 0054). Returns metafile bytes.
 // ``page_height_mm > 0`` enables multi-PICTURE pagination (B1.CGM.3).
