@@ -73,8 +73,9 @@ void append_command(std::string &out, std::uint8_t element_class,
     append_u16_be(out, header);
     out.append(params.data(), params.size());
   } else {
-    const auto header =
-        static_cast<std::uint16_t>((cls << 12) | (eid << 5) | 31U);
+    const auto header = static_cast<std::uint16_t>(
+        (static_cast<std::uint32_t>(cls) << 12U) |
+        (static_cast<std::uint32_t>(eid) << 5U) | 31U);
     append_u16_be(out, header);
     // Partition flag 0 + 15-bit length (we stay under 32767 for B1.CGM.1).
     const auto long_len = static_cast<std::uint16_t>(
