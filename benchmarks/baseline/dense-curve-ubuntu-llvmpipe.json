@@ -1,0 +1,44 @@
+{
+  "schema": "welllog.dense-curve-benchmark.v1",
+  "scenario": "single-curve-500k-4k",
+  "frame_scope": "budgeted-upload-draw-finish-swap",
+  "sample_count": 500000,
+  "viewport_pixels": {
+    "width": 3840,
+    "height": 2160
+  },
+  "measured_frames": 120,
+  "frame_ms": {
+    "p50": 8.0,
+    "p95": 25.0,
+    "p99": 40.0
+  },
+  "frame_plan_ms": {
+    "p50": 4.0,
+    "p95": 15.0,
+    "p99": 20.0
+  },
+  "upload_queue_ms": {
+    "p50": 1.0,
+    "p95": 5.0,
+    "p99": 10.0
+  },
+  "prepared_points": 8500,
+  "memory_bytes": {
+    "cpu_source": 6000000,
+    "cpu_derived": 1167048,
+    "cpu_budget": 8388608,
+    "gpu_planned": 1236384,
+    "gpu_budget": 67108864
+  },
+  "upload": {
+    "chunks": 5,
+    "maximum_chunk_bytes": 262080,
+    "per_frame_budget_bytes": 262144
+  },
+  "tasks": {
+    "completed": 122,
+    "cancelled": 0,
+    "discarded": 0
+  }
+}
