@@ -133,7 +133,9 @@
       "configurePreset": "dev",
       "displayName": "Raster export focused tests (E5)",
       "filter": {
-        "include": ["welllog.raster-export", "welllog.render-raster"]
+        "include": {
+          "tests": ["welllog\\.(raster-export|render-raster)"]
+        }
       },
       "output": {
         "outputOnFailure": true
