@@ -128,8 +128,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         help="proportional tolerance over baseline (default: 1.5)",
     )
     parser.add_argument(
-        "--slack-ms", type=float, default=5.0,
-        help="absolute tolerance in ms (default: 5.0)",
+        "--slack-ms", type=float, default=3.0,
+        help="absolute tolerance in ms (default: 3.0)",
     )
     parser.add_argument(
         "--update-baseline", action="store_true",
