@@ -618,6 +618,29 @@ void append_symbol_geometry(std::vector<PrimitiveVertex> &vertices,
     append_triangle(vertices, cx, cy - half_size, cx + half_size,
                     cy + half_size, cx - half_size, cy + half_size);
     return;
+  case SymbolKind::triangle_down:
+    // Inverted triangle: apex at the bottom, base at the top (matches
+    // scene::symbol_glyph for MarkerSemantic::formation_top).
+    append_triangle(vertices, cx, cy + half_size, cx + half_size,
+                    cy - half_size, cx - half_size, cy - half_size);
+    return;
+  case SymbolKind::shoe: {
+    // Casing-shoe arch: flat side up, bulge down (scene y-down), matching the
+    // scene::symbol_glyph half-circle outline.
+    constexpr auto segments = 16;
+    for (auto index = 0; index < segments; ++index) {
+      const auto first_angle =
+          3.14159265358979323846 * static_cast<double>(index) / segments;
+      const auto second_angle =
+          3.14159265358979323846 * static_cast<double>(index + 1) / segments;
+      append_triangle(vertices, cx, cy,
+                      cx + half_size * std::cos(first_angle),
+                      cy + half_size * std::sin(first_angle),
+                      cx + half_size * std::cos(second_angle),
+                      cy + half_size * std::sin(second_angle));
+    }
+    return;
+  }
   case SymbolKind::diamond:
     append_triangle(vertices, cx, cy - half_size, cx + half_size, cy, cx,
                     cy + half_size);

@@ -285,19 +285,24 @@ void fill_polygon(std::vector<std::uint8_t> &tile, std::uint32_t width,
   }
   const auto x0 = std::max(
       0, static_cast<int>(std::floor((center_x + min_x) * ppm)));
+  // tile_origin_y is a tile offset (uint32 source), so it fits exactly in
+  // double; cast explicitly to keep the mixed int64/double arithmetic honest.
   const auto y0 = std::max(
       0, static_cast<int>(std::floor((center_y + min_y) * ppm) -
-                          tile_origin_y));
+                          static_cast<double>(tile_origin_y)));
   const auto x1 = std::min(
       static_cast<int>(width),
       static_cast<int>(std::ceil((center_x + max_x) * ppm)));
   const auto y1 = std::min(
       static_cast<int>(height),
-      static_cast<int>(std::ceil((center_y + max_y) * ppm) - tile_origin_y));
+      static_cast<int>(std::ceil((center_y + max_y) * ppm) -
+                      static_cast<double>(tile_origin_y)));
   for (int y = y0; y < y1; ++y) {
     for (int x = x0; x < x1; ++x) {
       const auto sx = (static_cast<double>(x) + 0.5) / ppm;
-      const auto sy = (static_cast<double>(y) + 0.5 + tile_origin_y) / ppm;
+      const auto sy = (static_cast<double>(y) + 0.5 +
+                       static_cast<double>(tile_origin_y)) /
+                      ppm;
       if (point_in_polygon(outline, sx - center_x, sy - center_y)) {
         blend_pixel(tile, width, height, channels, x, y, color);
       }

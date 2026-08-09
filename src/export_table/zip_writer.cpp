@@ -146,7 +146,10 @@ void ZipWriter::serialize(std::string &out) const {
   std::vector<DirEntry> central;
   central.reserve(entries_.size());
   for (const auto &e : entries_) {
-    DirEntry d;
+    // Value-initialize so the struct's padding bytes are zeroed; GCC's
+    // maybe-uninitialized analysis otherwise flags the whole-object copy in
+    // central.push_back(d) (uninitialized padding, benign but real).
+    DirEntry d{};
     d.name = e.name;
     d.crc32 = e.crc32;
     d.uncompressed_size = e.uncompressed_size;

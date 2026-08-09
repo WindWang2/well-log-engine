@@ -64,6 +64,27 @@ struct TableProjection::Impl {
 
 namespace {
 
+#if defined(_MSC_VER)
+#define WELLLOG_NOINLINE __declspec(noinline)
+#else
+#define WELLLOG_NOINLINE __attribute__((noinline))
+#endif
+
+// Copies the document so the projections keep it alive, and returns it as a
+// shared owner. Kept in a separate, non-inlined function: GCC 16 -Warray-bounds
+// misfires at -O3 when this shared_ptr control-block allocation is inlined into
+// the same function that destroys TableProjection::Impl (a shared_ptr-holding
+// PIMPL), fusing the 24-byte control block with Impl member accesses and
+// reporting bogus out-of-bounds reads. Debug/-O2 and Clang are unaffected.
+// (Not a real bounds bug — the false positive is the optimizer's, not the
+// code's.)
+WELLLOG_NOINLINE std::shared_ptr<WellLogDocument>
+copy_document(const WellLogDocument &document) {
+  return std::shared_ptr<WellLogDocument>(new WellLogDocument(document));
+}
+
+#undef WELLLOG_NOINLINE
+
 // Reads a curve/axis cell straight from the raw buffer (zero copy). The curve
 // values arrive as a CurveBuffer (single-block OR composite, #197); both
 // expose value_as_double(index). Null when the index is out of range, the null
@@ -229,7 +250,7 @@ TableProjectionBuilder::from_document(const WellLogDocument &document,
   // Hold the document alive for the projections' lifetime via a shared copy.
   // WellLogDocument is an immutable PIMPL value type (shared_ptr<const Impl>),
   // so copying is cheap and shares state.
-  auto holder = std::make_shared<WellLogDocument>(document);
+  auto holder = copy_document(document);
   const auto doc_id = document.id();
   const auto revision = document.revision();
 

@@ -99,7 +99,9 @@ inline std::optional<DecodedPng> decode_png(const std::filesystem::path &path) {
       return std::nullopt;
     }
     inflated.insert(inflated.end(), block.begin(),
-                    block.begin() + (block.size() - stream.avail_out));
+                    block.begin() +
+                        static_cast<std::ptrdiff_t>(block.size() -
+                                                    stream.avail_out));
   } while (ret != Z_STREAM_END);
   inflateEnd(&stream);
 
@@ -111,9 +113,14 @@ inline std::optional<DecodedPng> decode_png(const std::filesystem::path &path) {
       return std::nullopt;  // production writer emits filter 0 on every row
     }
     ++src;
-    const auto copy = std::min<std::size_t>(stride, inflated.end() - src);
-    std::copy_n(src, copy, png.samples.begin() + stride * row);
-    src += copy;
+    // Iterator distances are ptrdiff_t; cast explicitly where sizes are
+    // size_t so the sign of the result is intentional (-Wsign-conversion).
+    const auto copy = std::min<std::size_t>(
+        stride, static_cast<std::size_t>(inflated.end() - src));
+    std::copy_n(src, copy,
+                png.samples.begin() +
+                    static_cast<std::ptrdiff_t>(stride * row));
+    src += static_cast<std::ptrdiff_t>(copy);
   }
   return png;
 }
