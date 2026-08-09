@@ -503,8 +503,10 @@ void append_escaped(std::string &output, std::string_view text) {
   case SymbolKind::circle:      return "circle";
   case SymbolKind::square:      return "square";
   case SymbolKind::triangle_up: return "triangleUp";
+  case SymbolKind::triangle_down: return "triangleDown";
   case SymbolKind::diamond:     return "diamond";
   case SymbolKind::cross:       return "cross";
+  case SymbolKind::shoe:        return "shoe";
   }
   return "";
 }
@@ -513,8 +515,10 @@ void append_escaped(std::string &output, std::string_view text) {
   if (name == "circle")      return SymbolKind::circle;
   if (name == "square")      return SymbolKind::square;
   if (name == "triangleUp")  return SymbolKind::triangle_up;
+  if (name == "triangleDown") return SymbolKind::triangle_down;
   if (name == "diamond")     return SymbolKind::diamond;
   if (name == "cross")       return SymbolKind::cross;
+  if (name == "shoe")        return SymbolKind::shoe;
   throw ParseFailure{"unknown symbol kind"};
 }
 
