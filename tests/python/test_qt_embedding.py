@@ -527,6 +527,95 @@ class WellLogViewEmbeddingTest(unittest.TestCase):
         self.app.processEvents()
         gc.collect()
 
+    def test_retained_multitrack_append_and_interval_patch(self) -> None:
+        """Workbench-facing Session calls retain curve buffers and viewport state.
+
+        The test deliberately gives the curve a stable private axis so a
+        multi-track document can append atomically without re-submitting its
+        original samples.  Lithology and facies use separate interval-only
+        tracks and must retain their semantic document meaning.
+        """
+        view = WellLogView()
+        depth = np.asarray([1000.0, 1001.0, 1002.0, 1003.0])
+        values = np.asarray([20.0, 30.0, 40.0, 50.0], dtype=np.float32)
+        tail_depth = np.asarray([1004.0, 1005.0])
+        tail_values = np.asarray([60.0, 70.0], dtype=np.float32)
+        for array in (depth, values, tail_depth, tail_values):
+            array.flags.writeable = False
+        doc_id = "40000000-0000-4000-8000-000000000001"
+        shared_axis_id = "40000000-0000-4000-8000-000000000002"
+        curve_axis_id = "40000000-0000-4000-8000-000000000003"
+        curve_id = "40000000-0000-4000-8000-000000000004"
+        lithology_id = "40000000-0000-4000-8000-000000000005"
+        facies_id = "40000000-0000-4000-8000-000000000006"
+        payload = {
+            "document_id": doc_id,
+            "axis_id": shared_axis_id,
+            "depth": depth,
+            "depth_unit": "m",
+            "curves": [{
+                "curve_id": curve_id,
+                "axis_id": curve_axis_id,
+                "mnemonic": "GR",
+                "values": values,
+                "value_unit": "API",
+                "depth": depth,
+            }],
+            "tracks": [
+                {"width_mm": 24.0, "layers": [],
+                 "interval_semantic": "lithology"},
+                {"width_mm": 24.0, "layers": [],
+                 "interval_semantic": "facies"},
+                {"width_mm": 40.0, "scale_min": 0.0, "scale_max": 150.0,
+                 "layers": [{"curve_id": curve_id, "color": "#15803d"}]},
+            ],
+            "intervals": [
+                {"id": lithology_id, "top_depth": 1000.0,
+                 "bottom_depth": 1002.0, "semantic": "lithology",
+                 "label": "Sand", "fill_color": "#d4e6f1"},
+                {"id": facies_id, "top_depth": 1002.0,
+                 "bottom_depth": 1004.0, "semantic": "facies",
+                 "label": "Delta", "fill_color": "#d5f5e3"},
+            ],
+        }
+        initial = view.submit_multi_track(payload)
+        self.assertEqual(initial["curve_count"], 1)
+        self.assertEqual(initial["track_count"], 3)
+        self.assertEqual(initial["interval_track_count"], 2)
+        self.assertIsNone(view.poll_session())
+        svg = view.export_scene_svg(doc_id).decode("utf-8", errors="replace")
+        self.assertIn(f"interval-{lithology_id}", svg)
+        self.assertIn(f"interval-{facies_id}", svg)
+
+        appended = view.append_curves({
+            "document_id": doc_id,
+            "viewport_mode": "fixed",
+            "tails": [{"curve_id": curve_id, "axis_id": curve_axis_id,
+                       "depth": tail_depth, "values": tail_values}],
+        })
+        self.assertIs(appended["incremental"], True)
+        metrics = view.document_metrics(doc_id)
+        self.assertEqual(metrics["curve_lengths"], [6])
+        self.assertGreaterEqual(metrics["revision"], 2)
+
+        patched = view.patch_document({
+            "document_id": doc_id,
+            "axis_id": shared_axis_id,
+            "tracks": payload["tracks"],
+            "intervals": [{
+                "id": lithology_id, "top_depth": 1000.0,
+                "bottom_depth": 1003.0, "semantic": "lithology",
+                "label": "Updated sand", "fill_color": "#cfe2f3",
+            }],
+        })
+        self.assertIs(patched["patched"], True)
+        self.assertGreaterEqual(view.document_metrics(doc_id)["revision"], 3)
+
+        view.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.app.processEvents()
+        gc.collect()
+
 
 if __name__ == "__main__":
     unittest.main()

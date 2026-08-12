@@ -237,6 +237,12 @@ struct IntervalLayerSpec {
   bool draw_labels{true};
   Millimetres label_font_size{3.0};
   RgbaColor label_color{0, 0, 0, 255};
+  // An unset filter retains the historical behaviour: draw every document
+  // interval.  A semantic filter lets hosts place lithology and facies in
+  // separate retained interval tracks without duplicating the document.
+  // It remains last so existing positional aggregate initializers retain
+  // their source compatibility.
+  std::optional<IntervalSemantic> semantic_filter{};
 };
 
 // Which enclosed side of a crossover to fill (rendering.md section 6).
