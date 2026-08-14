@@ -17,7 +17,14 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from welllog import WellLogView  # noqa: E402
+try:
+    from welllog import WellLogView  # noqa: E402
+except ImportError:
+    # Module-level guard: the wheel job installs the binding; hosts without
+    # it must skip at COLLECTION time, not die at import (K-F3).
+    import pytest
+
+    pytest.skip("welllog engine wheel not installed", allow_module_level=True)
 
 from well_log_workstation.engine_bridge import (  # noqa: E402
     engine_available,

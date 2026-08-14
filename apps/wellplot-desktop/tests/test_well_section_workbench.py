@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import QApplication
-from geoviz import DatumTransformer, WellLogData, WellSectionCanvas
+try:
+    from geoviz import DatumTransformer, WellLogData, WellSectionCanvas
+except ImportError:
+    # geoviz comes from the geo-viz-engine packages; the workstation host job
+    # does not put them on PYTHONPATH (K-F3). Skip at collection with a clear
+    # reason instead of failing the whole directory run.
+    import pytest
+
+    pytest.skip("geoviz not importable in this environment", allow_module_level=True)
 from paleo_workbench.ui.pages.composite_visualization_panel import CompositeVisualizationPanel
 from paleo_workbench.viz.hosts.well_section_host import WellSectionHost
 from paleo_workbench.viz.models import VizPayload
