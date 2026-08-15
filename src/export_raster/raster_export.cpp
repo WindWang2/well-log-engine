@@ -241,27 +241,6 @@ void fill_rect(std::vector<std::uint8_t> &tile, std::uint32_t width,
   }
 }
 
-// Even-odd point-in-polygon test on a polygon centred at the origin (scene
-// millimetres, y-down).
-bool point_in_polygon(const std::vector<PhysicalPoint> &polygon, double px,
-                      double py) {
-  bool inside = false;
-  for (std::size_t i = 0, j = polygon.size() - 1; i < polygon.size();
-       j = i++) {
-    const auto &a = polygon[i];
-    const auto &b = polygon[j];
-    if ((a.top.value > py) != (b.top.value > py)) {
-      const auto x_intersect =
-          a.left.value +
-          (py - a.top.value) / (b.top.value - a.top.value) *
-              (b.left.value - a.left.value);
-      if (px < x_intersect) {
-        inside = !inside;
-      }
-    }
-  }
-  return inside;
-}
 
 // Fills a scene-mm polygon (centred at the origin) translated to
 // (center_x, center_y) — the raster path's shared symbol geometry consumer.
@@ -666,6 +645,32 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
             current_y = ty;
             break;
           }
+          case OutlineVerb::cubic_to: {
+            const auto c1x = command.coordinates[0];
+            const auto c1y = command.coordinates[1];
+            const auto c2x = command.coordinates[2];
+            const auto c2y = command.coordinates[3];
+            const auto tx = command.coordinates[4];
+            const auto ty = command.coordinates[5];
+            // Flatten the cubic to 12 segments.
+            for (int step = 1; step <= 12; ++step) {
+              const auto t = static_cast<double>(step) / 12.0;
+              const auto u = 1.0 - t;
+              const auto px = u * u * u * current_x +
+                              3 * u * u * t * c1x + 3 * u * t * t * c2x +
+                              t * t * t * tx;
+              const auto py = u * u * u * current_y +
+                              3 * u * u * t * c1y + 3 * u * t * t * c2y +
+                              t * t * t * ty;
+              subpath.push_back(to_scene_mm(px, py));
+            }
+            current_x = tx;
+            current_y = ty;
+            break;
+          }
+          case OutlineVerb::close:
+            flush_subpath();
+            break;
           }
         }
         flush_subpath();
@@ -1122,6 +1127,7 @@ render_export(const PreparedScene &scene, const ExportSnapshot &snapshot,
         .presentation_version = snapshot.presentation_version,
         .document_id = snapshot.document_id,
         .peak_tile_bytes = peak_tile_bytes,
+        .notes = {},
     };
     // Image layers carry only source references — the raster path has no
     // synchronous pixel resolver, so those tiles cannot be drawn here. Say

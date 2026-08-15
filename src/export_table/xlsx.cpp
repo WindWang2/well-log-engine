@@ -354,9 +354,10 @@ XlsxTableExporter::write_to_file(const WellLogDocument &document,
           part_name += ".xml";
           std::string body;
           if (sheet_plans[i].projection != nullptr) {
-            build_worksheet_body(body, *sheet_plans[i].projection,
-                                 sheet_plans[i].start, sheet_plans[i].end,
-                                 sheet_plans[i].start);
+            const auto rows_written = build_worksheet_body(
+                body, *sheet_plans[i].projection, sheet_plans[i].start,
+                sheet_plans[i].end, sheet_plans[i].start);
+            (void)rows_written;  // start/end are precomputed by the planner
           } else {
             build_metadata_sheet(body, document, projections, sheet_names,
                                  sheet_starts);
