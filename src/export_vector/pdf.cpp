@@ -712,33 +712,38 @@ Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
           }
           if (any_image) {
             out += " /XObject << ";
-            std::size_t oi = 0;
+            // Running object number, matching the emission loop below: each
+            // caller object occupies 1 + its extra_bodies count (an RGBA
+            // image's /SMask child follows it), so a plain index overcounts
+            // every object after the first RGBA image and aliases the wrong
+            // indirect object (its /SMask child).
+            std::size_t number = page_object_base[p];
             for (const auto &obj : pages[p].objects) {
               if (obj.kind == PdfObjectKind::image) {
                 out += '/';
                 out += obj.local_name;
                 out.push_back(' ');
-                append_integer(out, static_cast<std::int64_t>(
-                                        page_object_base[p] + oi));
+                append_integer(out, static_cast<std::int64_t>(number));
                 out += " 0 R ";
               }
-              ++oi;
+              number += 1 + obj.extra_bodies.size();
             }
             out += ">>";
           }
           if (any_pattern) {
             out += " /Pattern << ";
-            std::size_t oi = 0;
+            // Same running-number scheme as the /XObject dict: children follow
+            // their parent, so advance by 1 + extra_bodies.size() per object.
+            std::size_t number = page_object_base[p];
             for (const auto &obj : pages[p].objects) {
               if (obj.kind == PdfObjectKind::pattern) {
                 out += '/';
                 out += obj.local_name;
                 out.push_back(' ');
-                append_integer(out, static_cast<std::int64_t>(
-                                        page_object_base[p] + oi));
+                append_integer(out, static_cast<std::int64_t>(number));
                 out += " 0 R ";
               }
-              ++oi;
+              number += 1 + obj.extra_bodies.size();
             }
             out += ">>";
           }

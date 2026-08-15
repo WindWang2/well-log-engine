@@ -1205,6 +1205,7 @@ materialize_objects(const PreparedScene &scene,
         .body = std::move(*body),
         .kind = PdfObjectKind::pattern,
         .local_name = resources.pattern_names.at(pattern_id),
+        .extra_bodies = {},
     });
   }
   for (const auto &key : resources.image_order) {

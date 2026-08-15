@@ -30,6 +30,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 #include <zlib.h>
 
@@ -120,6 +121,11 @@ const auto image_source_id = id("80000000-0000-4000-8000-000000000009");
 const auto image_layer_id = id("80000000-0000-4000-8000-00000000000a");
 const auto custom_source_id = id("80000000-0000-4000-8000-00000000000b");
 const auto custom_layer_id = id("80000000-0000-4000-8000-00000000000c");
+// Two-image-page regression ids (RGBA image first, RGB image second).
+const auto rgba_image_source_id = id("80000000-0000-4000-8000-00000000000e");
+const auto rgb_image_source_id = id("80000000-0000-4000-8000-00000000000f");
+const auto rgba_image_layer_id = id("80000000-0000-4000-8000-000000000010");
+const auto rgb_image_layer_id = id("80000000-0000-4000-8000-000000000011");
 
 // A scene with a patterned interval, a curve, an image layer, and a custom
 // layer — exercising every #188 capability. Built via the session for the
@@ -370,6 +376,50 @@ struct RgbaStubResolver {
         .data = pixels->data(),
     };
     return raster;
+  }
+};
+
+// A two-source resolver: returns an RGBA tile for the configured source id and
+// an RGB tile for every other source, so a page can carry one RGBA image (with
+// a /SMask child) followed by a plain RGB image.
+struct TwoImageResolver {
+  std::shared_ptr<std::vector<std::uint8_t>> rgba_pixels;
+  std::shared_ptr<std::vector<std::uint8_t>> rgb_pixels;
+  EntityId rgba_source_id{};
+  TwoImageResolver()
+      : rgba_pixels(std::make_shared<std::vector<std::uint8_t>>(256 * 256 * 4)),
+        rgb_pixels(std::make_shared<std::vector<std::uint8_t>>(256 * 256 * 3)) {
+    auto &p = *rgba_pixels;
+    for (std::size_t i = 0; i < 256 * 256; ++i) {
+      p[i * 4 + 0] = 0x11;
+      p[i * 4 + 1] = 0x22;
+      p[i * 4 + 2] = 0x33;
+      p[i * 4 + 3] = static_cast<std::uint8_t>(i & 0xFF); // varying alpha
+    }
+    auto &q = *rgb_pixels;
+    for (std::size_t i = 0; i < 256 * 256; ++i) {
+      q[i * 3 + 0] = 0x44;
+      q[i * 3 + 1] = 0x55;
+      q[i * 3 + 2] = 0x66;
+    }
+  }
+  Result<RasterTile> operator()(const ImageTileRequest &request) const {
+    if (request.image_source_id == rgba_source_id) {
+      return RasterTile{
+          .width_px = 256,
+          .height_px = 256,
+          .pixel_format = PixelFormat::rgba8,
+          .owner = SharedOwner{rgba_pixels},
+          .data = rgba_pixels->data(),
+      };
+    }
+    return RasterTile{
+        .width_px = 256,
+        .height_px = 256,
+        .pixel_format = PixelFormat::rgb8,
+        .owner = SharedOwner{rgb_pixels},
+        .data = rgb_pixels->data(),
+    };
   }
 };
 
@@ -958,6 +1008,154 @@ void rgba_image_embeds_with_smask() {
   std::filesystem::remove(path, ec);
 }
 
+// Regression (PR #3 review): a page carrying two image XObjects whose first is
+// an RGBA image — its /SMask alpha child occupies the object number right
+// after it. The /XObject resource dict must reference each image by the same
+// running object numbers the writer emits them under; numbering by plain index
+// aliases the second image to the first one's DeviceGray /SMask child (wrong
+// pixels, /SMask applied to the wrong image). Asserts the second image's dict
+// entry is numbered past the RGBA child and resolves to a DeviceRGB image.
+void two_images_rgba_first_resource_dict_numbers_align() {
+  // Document: two image sources on the same track; the RGBA layer is first in
+  // z-order, and scene tiles are stable-sorted by layer z_order, so the RGBA
+  // tile is the page's first image XObject — the failing arrangement.
+  auto depths = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{1000.0, 1050.0, 1100.0});
+  auto values = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{10.0, 50.0, 90.0});
+  WellLogDocumentBuilder builder(document_id, DocumentRevision{5});
+  builder.add_sampling_axis(SamplingAxis{
+      .id = axis_id, .coordinates = BufferView::from_vector(depths),
+      .domain = DepthDomain::measured_depth, .unit = "m",
+      .direction = AxisDirection::increasing});
+  builder.add_curve(Curve{.id = curve_id, .mnemonic = "GR",
+                          .display_name = "Gamma Ray", .unit = "API",
+                          .sampling_axis_id = axis_id,
+                          .values = BufferView::from_vector(values), .nulls = {}});
+  builder.add_image_source(ImageSource{
+      .id = rgba_image_source_id, .width_px = 256, .height_px = 256,
+      .pixel_format = PixelFormat::rgba8,
+      .reference_depth_top = 1000.0, .reference_depth_bottom = 1100.0,
+      .dpi = 300,
+      .source = BufferSourceReference{.uri = "image://core-photo/rgba",
+                                      .checksum = {}, .byte_offset = 0}});
+  builder.add_image_source(ImageSource{
+      .id = rgb_image_source_id, .width_px = 256, .height_px = 256,
+      .pixel_format = PixelFormat::rgb8,
+      .reference_depth_top = 1000.0, .reference_depth_bottom = 1100.0,
+      .dpi = 300,
+      .source = BufferSourceReference{.uri = "image://core-photo/rgb",
+                                      .checksum = {}, .byte_offset = 0}});
+  const auto document = builder.build();
+
+  ScenePresentationBuilder pres(
+      document_id,
+      ReferenceDepthRange{.domain = DepthDomain::measured_depth, .unit = "m",
+                          .top = 1000.0, .bottom = 1100.0},
+      Millimetres{100.0}, "font-fixture-v1");
+  pres.add_track(TrackSpec{.id = track_id, .width = Millimetres{40.0}, .z_order = 0});
+  pres.add_image_layer(ImageLayerSpec{
+      .id = rgba_image_layer_id, .track_id = track_id,
+      .image_source_id = rgba_image_source_id, .z_order = 0, .visible = true});
+  pres.add_image_layer(ImageLayerSpec{
+      .id = rgb_image_layer_id, .track_id = track_id,
+      .image_source_id = rgb_image_source_id, .z_order = 1, .visible = true});
+  const auto presentation = pres.build();
+
+  detail::ScenePreparer::CurveLodMap curve_lods;
+  detail::ScenePreparer::ImagePyramidMap image_pyramids;
+  for (const auto &source : document.image_sources()) {
+    const auto pyramid = ImagePyramid::build(
+        source, ImagePyramidOptions{.tile_size = 256,
+                                    .maximum_derived_bytes = 1024 * 1024});
+    require(pyramid.has_value(), "image pyramid must build");
+    image_pyramids.emplace(source.id, pyramid.value());
+  }
+  const auto scene = detail::ScenePreparer::prepare(
+      document, presentation, curve_lods, {}, image_pyramids,
+      ImagePyramidQuery{.viewport_top = 1000.0, .viewport_bottom = 1100.0,
+                        .pixel_height = 1000.0, .prefetch_viewports = 0.0});
+  require(scene.has_value(), "scene must prepare");
+
+  TwoImageResolver resolver;
+  resolver.rgba_source_id = rgba_image_source_id;
+  auto engine = make_engine();
+  const auto result =
+      PdfSceneExporter::write(scene.value(),
+                              make_snapshot(PaginationMode::continuous),
+                              [&resolver](const ImageTileRequest &req) {
+                                return resolver(req);
+                              },
+                              engine.get());
+  require(result.has_value(), "two-image PDF must build");
+  const auto bytes = std::string{result.value().bytes()};
+
+  // Parse the page Resources /XObject dict: "/Im<n> <number> 0 R" pairs.
+  const auto xobject_at = bytes.find("/XObject <<");
+  require(xobject_at != std::string::npos,
+          "the page Resources must carry an /XObject dict");
+  const auto dict_end = bytes.find(">>", xobject_at);
+  require(dict_end != std::string::npos, "the /XObject dict must terminate");
+  const auto dict = bytes.substr(xobject_at + 11, dict_end - xobject_at - 11);
+  std::vector<std::string> tokens;
+  std::string token;
+  for (const char ch : dict) {
+    if (ch == ' ') {
+      if (!token.empty()) {
+        tokens.push_back(token);
+        token.clear();
+      }
+    } else {
+      token.push_back(ch);
+    }
+  }
+  if (!token.empty()) {
+    tokens.push_back(token);
+  }
+  std::vector<std::pair<std::string, std::size_t>> entries;
+  for (std::size_t i = 0; i + 3 < tokens.size(); i += 4) {
+    std::size_t number = 0;
+    const auto parsed =
+        std::from_chars(tokens[i + 1].data(),
+                        tokens[i + 1].data() + tokens[i + 1].size(), number);
+    if (parsed.ec == std::errc{} && tokens[i + 2] == "0" &&
+        tokens[i + 3] == "R") {
+      entries.emplace_back(tokens[i], number);
+    }
+  }
+  require(entries.size() == 2,
+          "the page must name exactly two image XObjects");
+  require(entries[0].first == "/Im0" && entries[1].first == "/Im1",
+          "the images must be named Im0 then Im1");
+  // The first (RGBA) image's /SMask child occupies the number right after it,
+  // so the second image must be numbered first + 2 — matching the emission
+  // loop's running offset (a raw index would say first + 1 and alias the
+  // DeviceGray child).
+  require(entries[1].second == entries[0].second + 2,
+          "the second image must be numbered past the first image's /SMask "
+          "child (running offset, not index)");
+
+  // Every dict entry must resolve to the image XObject it names — never to a
+  // DeviceGray object (the first image's /SMask child). Anchored on the
+  // newline the writer puts before each "N 0 obj" header so a longer object
+  // number cannot contain a shorter one's needle.
+  for (const auto &entry : entries) {
+    const auto needle = "\n" + std::to_string(entry.second) + " 0 obj";
+    const auto obj_at = bytes.find(needle, dict_end);
+    require(obj_at != std::string::npos,
+            "the referenced image object must be emitted");
+    const auto body_end = bytes.find("endobj", obj_at);
+    require(body_end != std::string::npos,
+            "the referenced object must terminate");
+    const auto body =
+        bytes.substr(obj_at + needle.size(), body_end - obj_at - needle.size());
+    require(body.find("/Subtype /Image") != std::string::npos,
+            "the referenced object must be an image XObject");
+    require(body.find("/ColorSpace /DeviceGray") == std::string::npos,
+            "no image entry may resolve to a DeviceGray /SMask child");
+  }
+}
+
 // Byte determinism: identical input yields identical output (no timestamps/IDs).
 void output_is_byte_deterministic() {
   const auto first =
@@ -1015,6 +1213,7 @@ int main() {
   depth_range_bands_are_emitted_and_continuous();
   custom_layer_primitives_are_emitted();
   rgba_image_embeds_with_smask();
+  two_images_rgba_first_resource_dict_numbers_align();
   output_is_byte_deterministic();
   depth_ruler_emits_and_changes_output();
   std::cout << "welllog.pdf-scene-full: all cases passed\n";
