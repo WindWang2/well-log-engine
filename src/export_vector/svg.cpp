@@ -259,19 +259,22 @@ void append_outline_path_data(std::string &output,
   }
 }
 
-void append_symbol(std::string &output, const PreparedSymbol &symbol,
-                   const PreparedSymbolLayer &layer) {
-  const auto half = layer.symbol_size.value / 2.0;
-  const auto center_x = symbol.center.left.value;
-  const auto center_y = symbol.center.top.value;
-  output += "<path id=\"symbol-";
-  output += symbol.symbol_id.to_string();
-  output += "\" data-layer-id=\"";
-  output += layer.id.to_string();
-  switch (symbol.kind) {
+// Emits the kind-specific attributes + path data for a symbol shape centred
+// at (center_x, center_y) with half-extent `half`: fill=…[ fill-opacity=…]
+// d="…"/> (cross additionally uses stroke). Shared by the symbol-layer and
+// custom-layer emitters so every SymbolKind renders the same geometry in
+// both (issue #485: custom-layer symbols used to degrade to circles).
+void append_symbol_shape(std::string &output, SymbolKind kind,
+                         double center_x, double center_y, double half,
+                         const RgbaColor &color, const char *fill_opacity) {
+  switch (kind) {
   case SymbolKind::circle:
     output += "\" fill=\"";
-    append_color(output, layer.color);
+    append_color(output, color);
+    if (fill_opacity != nullptr) {
+      output += "\" fill-opacity=\"";
+      output += fill_opacity;
+    }
     output += "\" d=\"M ";
     append_number(output, center_x + half);
     output.push_back(' ');
@@ -296,9 +299,9 @@ void append_symbol(std::string &output, const PreparedSymbol &symbol,
     return;
   case SymbolKind::cross:
     output += "\" fill=\"none\" stroke=\"";
-    append_color(output, layer.color);
+    append_color(output, color);
     output += "\" stroke-width=\"";
-    append_number(output, layer.symbol_size.value / 6.0);
+    append_number(output, half / 3.0);
     output += "\" d=\"M ";
     append_number(output, center_x - half);
     output.push_back(' ');
@@ -325,9 +328,13 @@ void append_symbol(std::string &output, const PreparedSymbol &symbol,
     break;
   }
   output += "\" fill=\"";
-  append_color(output, layer.color);
+  append_color(output, color);
+  if (fill_opacity != nullptr) {
+    output += "\" fill-opacity=\"";
+    output += fill_opacity;
+  }
   output += "\" d=\"";
-  if (symbol.kind == SymbolKind::square) {
+  if (kind == SymbolKind::square) {
     output += "M ";
     append_number(output, center_x - half);
     output.push_back(' ');
@@ -345,24 +352,24 @@ void append_symbol(std::string &output, const PreparedSymbol &symbol,
     output.push_back(' ');
     append_number(output, center_y + half);
     output += " Z\"/>";
-  } else if (symbol.kind == SymbolKind::triangle_up) {
-    output += "M ";
-    append_number(output, center_x);
-    output.push_back(' ');
-    append_number(output, center_y - half);
-    output += " L ";
-    append_number(output, center_x + half);
-    output.push_back(' ');
-    append_number(output, center_y + half);
-    output += " L ";
-    append_number(output, center_x - half);
-    output.push_back(' ');
-    append_number(output, center_y + half);
-    output += " Z\"/>";
-  } else if (symbol.kind == SymbolKind::triangle_down) {
+  } else if (kind == SymbolKind::triangle_up) {
     output += "M ";
     append_number(output, center_x);
     output.push_back(' ');
+    append_number(output, center_y - half);
+    output += " L ";
+    append_number(output, center_x + half);
+    output.push_back(' ');
+    append_number(output, center_y + half);
+    output += " L ";
+    append_number(output, center_x - half);
+    output.push_back(' ');
+    append_number(output, center_y + half);
+    output += " Z\"/>";
+  } else if (kind == SymbolKind::triangle_down) {
+    output += "M ";
+    append_number(output, center_x);
+    output.push_back(' ');
     append_number(output, center_y + half);
     output += " L ";
     append_number(output, center_x + half);
@@ -373,7 +380,7 @@ void append_symbol(std::string &output, const PreparedSymbol &symbol,
     output.push_back(' ');
     append_number(output, center_y - half);
     output += " Z\"/>";
-  } else if (symbol.kind == SymbolKind::shoe) {
+  } else if (kind == SymbolKind::shoe) {
     // Casing-shoe arch (flat side up, bulge down) via one arc + close.
     output += "M ";
     append_number(output, center_x - half);
@@ -409,6 +416,17 @@ void append_symbol(std::string &output, const PreparedSymbol &symbol,
   }
 }
 
+
+void append_symbol(std::string &output, const PreparedSymbol &symbol,
+                   const PreparedSymbolLayer &layer) {
+  output += "<path id=\"symbol-";
+  output += symbol.symbol_id.to_string();
+  output += "\" data-layer-id=\"";
+  output += layer.id.to_string();
+  append_symbol_shape(output, symbol.kind, symbol.center.left.value,
+                      symbol.center.top.value, layer.symbol_size.value / 2.0,
+                      layer.color, nullptr);
+}
 // Emits the marker-semantic symbol glyph at the left end of a marker line
 // (single source of shape semantics: scene::symbol_for_marker_semantic).
 void append_marker_symbol(std::string &output, const PreparedMarker &marker,
@@ -957,41 +975,18 @@ void append_layer_body(std::string &output, const PreparedScene &scene) {
           }
           output += "\"/>";
         } else {
-          // Symbol: emitted as an SVG circle at the center vertex. This
-          // matches the default circle kind; non-circle symbol kinds
-          // (square/diamond/...) currently export as a circle in SVG while
-          // the GL backend renders their true geometry via
-          // append_symbol_geometry. Full SVG parity for every symbol kind is
-          // deferred (the custom-layer parity test uses circles).
+          // Symbol: the kind's real geometry — the SAME shape the
+          // symbol-layer emitter and the GL backend render (issue #485:
+          // non-circle kinds used to degrade to a circle in SVG only).
           const auto &center = custom_vertices[static_cast<std::size_t>(
               primitive.first_vertex)];
-          output += "\" fill=\"";
-          append_color(output, primitive.color);
-          output += "\" fill-opacity=\"";
-          append_number(output,
+          char fill_opacity[32];
+          std::snprintf(fill_opacity, sizeof(fill_opacity), "%.6g",
                         static_cast<double>(primitive.color.alpha) / 255.0);
-          output += "\" d=\"M ";
-          const auto radius = primitive.bounds.width.value * 0.5;
-          append_number(output, center.left.value + radius);
-          output.push_back(' ');
-          append_number(output, center.top.value);
-          output += " A ";
-          append_number(output, radius);
-          output.push_back(' ');
-          append_number(output, radius);
-          output += " 0 1 0 ";
-          append_number(output, center.left.value - radius);
-          output.push_back(' ');
-          append_number(output, center.top.value);
-          output += " A ";
-          append_number(output, radius);
-          output.push_back(' ');
-          append_number(output, radius);
-          output += " 0 1 0 ";
-          append_number(output, center.left.value + radius);
-          output.push_back(' ');
-          append_number(output, center.top.value);
-          output += " Z\"/>";
+          append_symbol_shape(output, primitive.symbol_kind,
+                              center.left.value, center.top.value,
+                              primitive.bounds.width.value * 0.5,
+                              primitive.color, fill_opacity);
         }
       }
     }

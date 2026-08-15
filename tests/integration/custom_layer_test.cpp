@@ -452,6 +452,46 @@ void example_symbol_layer_renders() {
           "SVG must emit the symbol fill colour");
 }
 
+// Issue #485 (paleo-workbench audit): a non-circle custom symbol must export
+// its REAL geometry in SVG — square/diamond/etc. used to degrade to a circle
+// (arc commands), diverging from the GL/PDF backends.
+void non_circle_symbol_exports_real_geometry() {
+  CustomLayerSource source{.id = custom_source_id,
+                           .content_revision = DocumentRevision{1},
+                           .primitives = {},
+                           .clip = std::nullopt};
+  source.primitives.push_back(CustomPrimitive{CustomSymbolOccurrence{
+      .center = PhysicalPoint{.left = Millimetres{40.0}, .top = Millimetres{100.0}},
+      .kind = SymbolKind::diamond,
+      .color = RgbaColor{0, 0, 200, 255},
+      .size = Millimetres{8.0},
+  }});
+  auto builder = custom_presentation();
+  builder.add_custom_layer(CustomLayerSpec{
+      .id = custom_layer_id, .track_id = track_id,
+      .custom_source_id = custom_source_id, .z_order = 0, .visible = true});
+  const auto scene = prepare_custom(custom_document(source), builder);
+  const auto exported = SvgExporter::write(scene);
+  require(exported.has_value(), "diamond SVG export must succeed");
+  const auto text = std::string(exported.value().text());
+  const auto at = text.find("fill=\"#0000c8\"");
+  require(at != std::string::npos, "SVG must emit the diamond fill colour");
+  // The diamond path is 4 line segments (M + 4 L + Z): an arc command (" A ")
+  // anywhere after the diamond fill would mean the circle degradation.
+  const auto path_end = text.find("/>", at);
+  require(path_end != std::string::npos, "diamond path element must close");
+  const auto path = text.substr(at, path_end - at);
+  require(path.find(" A ") == std::string::npos,
+          "a diamond must not export as a circle arc");
+  std::size_t lines = 0;
+  for (auto pos = path.find(" L "); pos != std::string::npos;
+       pos = path.find(" L ", pos + 1)) {
+    ++lines;
+  }
+  require(lines == 3,
+          "the diamond path must be M + three line segments + Z");
+}
+
 } // namespace
 
 int main() {
@@ -466,6 +506,7 @@ int main() {
   clip_path_masks_primitives();
   opengl_and_svg_consume_identical_custom_geometry();
   example_symbol_layer_renders();
+  non_circle_symbol_exports_real_geometry();
   std::cout << "welllog.custom-layer: all cases passed\n";
   return 0;
 }
