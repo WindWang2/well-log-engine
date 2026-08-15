@@ -329,10 +329,52 @@ void vdc_geometry_within_half_mm() {
   require(std::abs(actual - expected) <= 50, "0.5 mm VDC entry golden");
 }
 
+// Issue #468: a polyline longer than the 15-bit long-form parameter length
+// (8191 points at 4 bytes) must chunk into multiple POLYLINE commands that
+// keep coordinate pairs intact and repeat the previous chunk's last point —
+// the old writer clamped the parameter list to 0x7FFF bytes and silently
+// dropped the tail (potentially between a point's x and y).
+void oversize_polyline_chunks_without_truncation() {
+  CgmBinaryWriter w;
+  w.begin_metafile("spike");
+  w.metafile_version(3);
+  w.metafile_description("B1.CGM.1 spike");
+  w.vdc_type_integer();
+  w.integer_precision(16);
+  w.colour_precision(8);
+  w.colour_value_extent();
+  w.metafile_element_list_drawing_plus();
+  w.begin_picture("p1");
+  w.colour_selection_mode_direct();
+  w.vdc_extent(0, 0, 32767, 32767);
+  w.background_colour(255, 255, 255);
+  w.begin_picture_body();
+  w.line_colour(0, 0, 0);
+  w.line_width(1);
+  // 20000 points = 3 chunks (8191 + 8191 + 3618) + 2 repeated join points.
+  std::vector<std::pair<std::int16_t, std::int16_t>> pts;
+  pts.reserve(20000);
+  for (std::size_t i = 0; i < 20000; ++i) {
+    pts.emplace_back(static_cast<std::int16_t>(i % 32000),
+                     static_cast<std::int16_t>((i * 7) % 32000));
+  }
+  w.polyline(pts);
+  w.end_picture();
+  w.end_metafile();
+  const auto doc = w.finish();
+  require(doc.has_value(), "finish() must succeed");
+  const auto bytes = doc.value().bytes();
+  require(cgm_count_polylines(bytes) == 3,
+          "a 20000-point polyline must chunk into exactly three commands");
+  require(cgm_polyline_total_points(bytes) == 20000 + 2,
+          "all points must survive chunking (plus 2 repeated join points)");
+}
+
 } // namespace
 
 int main() {
   low_level_writer_emits_delimiters_and_polyline();
+  oversize_polyline_chunks_without_truncation();
   scene_exporter_emits_curve_polylines();
   diagnostics_report_pattern_flattening();
   multi_picture_pagination();

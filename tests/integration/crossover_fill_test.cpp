@@ -1,6 +1,12 @@
 #include <welllog/render_gl/upload.hpp>
 #include <welllog/export/svg.hpp>
 #include <welllog/session/session.hpp>
+#include <welllog/export/raster.hpp>
+#include <array>
+#include <filesystem>
+#include <fstream>
+#include <optional>
+#include "png_decode.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -759,10 +765,85 @@ void pattern_fill_resolves_in_both_backends() {
           "SVG must reference the pattern fill");
 }
 
+// Issue #477 (paleo-workbench audit): the raster backend must draw crossover
+// fill regions — the raster path previously handled only interval, symbol,
+// curve and marker layers, so PNG/TIFF exports silently lacked the fills.
+void raster_export_draws_crossover_fill() {
+  auto depths = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{1000.0, 1002.0, 1004.0, 1006.0, 1008.0,
+                                    1010.0});
+  auto upper = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{10.0, 30.0, 50.0, 70.0, 80.0, 90.0});
+  auto lower = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{60.0, 55.0, 50.0, 45.0, 30.0, 10.0});
+  WellLogSession session;
+  auto builder = fill_presentation(upper_curve_id, upper_layer_id);
+  const auto scene = prepare(session, two_curve_document(depths, upper, lower),
+                             builder);
+  const auto &region = single_region(*scene);
+  const auto fill = region.fill_color;
+
+  ExportSnapshot snapshot{
+      .document_id = document_id,
+      .document_revision = DocumentRevision{1},
+      .presentation_version = PresentationVersion{1},
+      .depth_transform =
+          DepthTransformDescriptor{.domain = DepthDomain::measured_depth,
+                                   .unit = "m",
+                                   .reference_top = 1000.0,
+                                   .reference_bottom = 1010.0,
+                                   .version = 1},
+      .font_asset_fingerprint = "font-fixture-v1",
+      .page = ExportPageSpec{.mode = PaginationMode::continuous,
+                             .page_width = Millimetres{100.0},
+                             .page_height = Millimetres{150.0},
+                             .dpi = 100,
+                             .well_name = "Crossover-Raster"},
+  };
+  const auto path = std::filesystem::temp_directory_path() /
+                    "welllog-crossover-raster.png";
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+  const auto report = export_raster_sync(
+      *scene, snapshot,
+      RasterExportRequest{.path = path,
+                          .format = RasterImageFormat::png,
+                          .width_px = 200,
+                          .height_px = 300,
+                          .background = RgbaColor{255, 255, 255, 255},
+                          .color_space = RasterColorSpace::srgb,
+                          .tile_height_px = 64});
+  require(report.has_value(), "crossover raster export must succeed");
+
+  const auto png = welllog::test::decode_png(path);
+  std::filesystem::remove(path, ec);
+  require(png.has_value(), "crossover PNG must decode");
+  const auto stride = static_cast<std::size_t>(png->width) * 4;
+  const auto pixel = [&](std::uint32_t x, std::uint32_t y) {
+    const auto at = stride * y + static_cast<std::size_t>(x) * 4;
+    return std::array<std::uint8_t, 4>{png->samples[at], png->samples[at + 1],
+                                       png->samples[at + 2],
+                                       png->samples[at + 3]};
+  };
+  const auto expected = std::array<std::uint8_t, 4>{fill.red, fill.green,
+                                                   fill.blue, fill.alpha};
+  std::size_t fill_pixels = 0;
+  for (std::uint32_t y = 0; y < png->height; ++y) {
+    for (std::uint32_t x = 0; x < png->width; ++x) {
+      if (pixel(x, y) == expected) {
+        ++fill_pixels;
+      }
+    }
+  }
+  require(fill_pixels > 0,
+          "the raster export must contain crossover fill pixels");
+}
+
 } // namespace
 
 int main() {
   linear_curves_cross_and_fill_one_region();
+  raster_export_draws_crossover_fill();
   reversed_scale_crosses_on_mapped_coordinates();
   fully_missing_curve_produces_no_fill();
   multiple_intersections_produce_multiple_regions();
