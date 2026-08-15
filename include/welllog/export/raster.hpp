@@ -104,6 +104,10 @@ struct RasterExportReport {
   PresentationVersion presentation_version{};
   EntityId document_id{};
   std::uint64_t peak_tile_bytes{};
+  // Human-readable export notes (e.g. layers the raster backend cannot
+  // render synchronously — image tiles need a pixel resolver; dash patterns
+  // approximate solid). Empty when nothing was skipped.
+  std::vector<std::string> notes;
 };
 
 // Owns a captured scene + snapshot and a worker thread. The host keeps the
