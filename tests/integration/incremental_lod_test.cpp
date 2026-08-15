@@ -245,6 +245,11 @@ void edited_prefix_rejected() {
 }
 
 // A shorter or equal-length extended curve is rejected (extend_tail only grows).
+// An equal-length curve whose buffer is a DIFFERENT physical block (identity
+// mismatch) is still rejected: extend_tail only ever grows a pyramid, and
+// without pointer identity there is no cheap way to prove the equal-length
+// curve is byte-identical to the one already summarized (the caller must
+// full-build).
 void non_growing_curve_rejected() {
   std::vector<double> d, v;
   for (int i = 0; i < 16; ++i) {
@@ -256,12 +261,46 @@ void non_growing_curve_rejected() {
       CurveLodPyramid::build(built.axis, built.curve, opts());
   require(previous.has_value(), "previous build must succeed");
 
-  // Equal length (no growth).
+  // Equal length (no growth), rebuilt owners → distinct buffer identity.
+  const auto rebuilt = make_built(d, v);
   const auto equal = CurveLodPyramid::extend_tail(previous.value(),
-                                                  built.axis, built.curve, opts());
+                                                  rebuilt.axis, rebuilt.curve, opts());
   require(!equal.has_value(), "extend_tail must reject an equal-length curve");
   require(equal.error().code == ErrorCode::invalid_document,
           "non-growing curve must return the document-structure code");
+}
+
+// Issue #471: an UNCHANGED curve (same curve/axis objects carried into a new
+// document revision — same physical buffer identity) must reuse the previous
+// pyramid with zero derived work instead of full-rebuilding. Before the
+// unchanged-input fast path, the length-growth precondition rejected this
+// input and every unchanged curve in an AppendBatch was full-rebuilt.
+void unchanged_curve_reuses_previous() {
+  std::vector<double> d, v;
+  for (int i = 0; i < 24; ++i) {
+    d.push_back(4500.0 + i);
+    v.push_back(std::sin(static_cast<double>(i)) * 30.0 + 30.0);
+  }
+  const auto built = make_built(d, v);
+  const auto previous =
+      CurveLodPyramid::build(built.axis, built.curve, opts());
+  require(previous.has_value(), "previous build must succeed");
+
+  // The same curve object (identical segment identity, equal length).
+  const auto reused = CurveLodPyramid::extend_tail(previous.value(),
+                                                   built.axis, built.curve, opts());
+  require(reused.has_value(),
+          "extend_tail must reuse the pyramid for an unchanged curve");
+  require_queries_equal(previous.value(), reused.value(),
+                        "unchanged-curve reuse must keep the envelope");
+  require(previous.value().statistics().derived_bytes ==
+              reused.value().statistics().derived_bytes,
+          "unchanged-curve reuse must keep derived accounting");
+
+  // A copy of the curve value vector under a NEW owner also reuses via the
+  // value-parity fast path only when lengths grow; for equal length with a
+  // different owner it must NOT silently return the old pyramid (covered by
+  // non_growing_curve_rejected above).
 }
 
 // A null gap in the appended tail (which splits the last region into two runs)
@@ -441,6 +480,7 @@ int main() {
   chained_extend_matches_full_rebuild();
   edited_prefix_rejected();
   non_growing_curve_rejected();
+  unchanged_curve_reuses_previous();
   null_gap_in_tail_matches_full_rebuild();
   extend_tail_matches_full_rebuild_under_tight_budget();
   mismatched_budget_rejected();

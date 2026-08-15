@@ -7,11 +7,12 @@ multi-track fully.
 
 from __future__ import annotations
 
+import bisect
 import math
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QWheelEvent
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
 from well_log_workstation.template_model import HostPresentation, ScaleSpec
@@ -1574,21 +1575,58 @@ class MultiTrackCanvas(QWidget):
 
         pen = QPen(color, 1.5)
         p.setPen(pen)
-        prev = None
+        # Peak-preserving decimation: uniform stride sampling skipped spikes
+        # between stride points; per stride-block min/max pairs keep them, and
+        # a single QPainterPath strokes the whole curve instead of thousands of
+        # drawLine calls (engine summarize parity).
         step = max(1, n // 2000)
-        for i in range(0, n, step):
-            if null_mask is not None and bool(null_mask[i]):
+        path = QPainterPath()
+        prev = None
+        prev_idx = None
+        filtered_idx: list[int] = []  # ascending; indices of dropped samples
+
+        def _has_filtered_between(a: int, b: int) -> bool:
+            # A dropped null/out-of-range/NaN sample strictly between the two
+            # emitted indices means the pre-decimation painter reset its
+            # segment (prev=None); the stroke must break here too instead of
+            # bridging the data gap with a line.
+            return (
+                bisect.bisect_left(filtered_idx, b)
+                > bisect.bisect_right(filtered_idx, a)
+            )
+
+        def _block_points(i0: int, i1: int):
+            pts = []
+            for i in range(i0, i1):
+                if null_mask is not None and bool(null_mask[i]):
+                    filtered_idx.append(i)
+                    continue
+                d = float(depth[i])
+                if d < d0 or d > d1:
+                    filtered_idx.append(i)
+                    continue
+                v = float(vals[i])
+                xx, yy = x_map(v), y_map(d)
+                if not math.isfinite(xx) or not math.isfinite(yy):
+                    filtered_idx.append(i)
+                    continue
+                pts.append((xx, yy, v, i))
+            return pts
+
+        for start in range(0, n, step):
+            pts = _block_points(start, min(start + step, n))
+            if not pts:
                 prev = None
+                prev_idx = None
                 continue
-            d = float(depth[i])
-            if d < d0 or d > d1:
-                prev = None
-                continue
-            v = float(vals[i])
-            xx, yy = x_map(v), y_map(d)
-            if not math.isfinite(xx) or not math.isfinite(yy):
-                prev = None
-                continue
-            if prev is not None:
-                p.drawLine(int(prev[0]), int(prev[1]), int(xx), int(yy))
-            prev = (xx, yy)
+            lo = min(pts, key=lambda t: t[2])
+            hi = max(pts, key=lambda t: t[2])
+            pair = [lo, hi] if lo[3] != hi[3] else [lo]
+            for xx, yy, _v, i in sorted(pair, key=lambda t: t[3]):
+                if prev is None or _has_filtered_between(prev_idx, i):
+                    path.moveTo(xx, yy)
+                else:
+                    path.lineTo(xx, yy)
+                prev = (xx, yy)
+                prev_idx = i
+        p.drawPath(path)

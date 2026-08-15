@@ -430,7 +430,9 @@ void WellLogView::paintGL() {
       frame.worker_discarded = snapshot->discarded_tasks;
       if (snapshot->preparation_state == PreparationState::pending ||
           snapshot->frame_preparation_pending) {
-        QTimer::singleShot(1, this, [this]() { update(); });
+        // Throttled repaint poll (~one frame): a 1ms timer re-ran the full
+        // paintGL (poll_async + GL clear) every millisecond while waiting.
+        QTimer::singleShot(16, this, [this]() { update(); });
       }
     }
     frame.diagnostics_count =
@@ -542,7 +544,9 @@ void WellLogView::paintGL() {
       if (progress.completed) {
         impl_->uploaded_scene = std::move(impl_->queued_scene);
       } else if (progress.pending) {
-        QTimer::singleShot(1, this, [this]() { update(); });
+        // Throttled repaint poll (~one frame): a 1ms timer re-ran the full
+        // paintGL (poll_async + GL clear) every millisecond while waiting.
+        QTimer::singleShot(16, this, [this]() { update(); });
       } else {
         publish_fatal_error();
         return;
@@ -589,7 +593,6 @@ void WellLogView::paintGL() {
   const auto frame_t1 = clock::now();
   frame.present_ms = 0.0; // swap is outside paintGL; residual accounted in total
   frame.total_ms = phase_ms(frame_t0, frame_t1);
-  frame.cache_hits = frame.cache_hits ? frame.cache_hits : 0;
   impl_->frame_stats.push(frame);
   if (impl_->chrome_trace.enabled()) {
     const auto dur_us = frame.total_ms * 1000.0;
