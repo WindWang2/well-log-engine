@@ -3220,8 +3220,12 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         }
         const auto symbol_display =
             map_reference_to_display(depth_xform, symbol.reference_depth);
-        if (symbol_display < depth_range.top ||
-            symbol_display > depth_range.bottom) {
+        // Normalize the window: a decreasing display domain (TVDSS maps
+        // 1000->2000, 1003->1997, so top > bottom) must not cull every
+        // in-window symbol — same as the marker/interval paths (issue #462).
+        const auto symbol_win_lo = std::min(depth_range.top, depth_range.bottom);
+        const auto symbol_win_hi = std::max(depth_range.top, depth_range.bottom);
+        if (symbol_display < symbol_win_lo || symbol_display > symbol_win_hi) {
           continue;
         }
         const auto symbol_top = depth_to_top(symbol.reference_depth);
@@ -3414,8 +3418,14 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         case AnnotationAnchor::reference_depth: {
           const auto annotation_display = map_reference_to_display(
               depth_xform, annotation.reference_depth);
-          if (annotation_display < depth_range.top ||
-              annotation_display > depth_range.bottom) {
+          // Decreasing display domain (TVDSS): compare against the
+          // normalized window like markers/symbols (issue #462).
+          const auto annotation_win_lo =
+              std::min(depth_range.top, depth_range.bottom);
+          const auto annotation_win_hi =
+              std::max(depth_range.top, depth_range.bottom);
+          if (annotation_display < annotation_win_lo ||
+              annotation_display > annotation_win_hi) {
             continue;
           }
           const auto bounds = track_bounds.at(layer.track_id);
@@ -3846,6 +3856,101 @@ compose_multi_well_scene(std::span<const WellScenePlacement> wells,
         layer.first_marker += static_cast<std::uint64_t>(marker_base);
         out->marker_layers.push_back(layer);
       }
+      // Crossover fill / symbol / image / text / custom layers (issue #472):
+      // shift_scene_impl already translates their geometry; append them with
+      // index remapping so multi-well composites stop losing fills, text,
+      // images and custom layers (the shifts used to be dead code).
+      const auto symbol_base = out->symbols.size();
+      for (const auto &symbol : local.symbols) {
+        out->symbols.push_back(symbol);
+      }
+      for (auto layer : local.symbol_layers) {
+        layer.first_symbol += static_cast<std::uint64_t>(symbol_base);
+        out->symbol_layers.push_back(layer);
+      }
+      const auto fill_vertex_base = out->fill_vertices.size();
+      const auto fill_triangle_base = out->fill_triangles.size();
+      for (const auto &vertex : local.fill_vertices) {
+        out->fill_vertices.push_back(vertex);
+      }
+      for (auto triangle : local.fill_triangles) {
+        triangle.a = static_cast<std::uint32_t>(
+            triangle.a + static_cast<std::uint64_t>(fill_vertex_base));
+        triangle.b = static_cast<std::uint32_t>(
+            triangle.b + static_cast<std::uint64_t>(fill_vertex_base));
+        triangle.c = static_cast<std::uint32_t>(
+            triangle.c + static_cast<std::uint64_t>(fill_vertex_base));
+        out->fill_triangles.push_back(triangle);
+      }
+      const auto fill_region_base = out->fill_regions.size();
+      for (auto region : local.fill_regions) {
+        region.first_vertex += static_cast<std::uint64_t>(fill_vertex_base);
+        region.first_triangle += static_cast<std::uint64_t>(fill_triangle_base);
+        out->fill_regions.push_back(region);
+      }
+      for (auto layer : local.fill_layers) {
+        layer.first_region += static_cast<std::uint64_t>(fill_region_base);
+        out->fill_layers.push_back(layer);
+      }
+      const auto tile_base = out->image_tiles.size();
+      for (const auto &tile : local.image_tiles) {
+        out->image_tiles.push_back(tile);
+      }
+      for (auto layer : local.image_layers) {
+        layer.first_tile += static_cast<std::uint64_t>(tile_base);
+        out->image_layers.push_back(layer);
+      }
+      const auto glyph_base = out->glyphs.size();
+      for (const auto &glyph : local.glyphs) {
+        out->glyphs.push_back(glyph);
+      }
+      const auto run_base = out->text_runs.size();
+      for (auto run : local.text_runs) {
+        run.first_glyph += static_cast<std::uint64_t>(glyph_base);
+        out->text_runs.push_back(run);
+      }
+      for (auto layer : local.text_layers) {
+        layer.first_run += static_cast<std::uint64_t>(run_base);
+        out->text_layers.push_back(layer);
+      }
+      // Glyph outlines/commands are keyed (font_index, glyph_id); skip
+      // outlines the composite already carries so SVG defs stay unique.
+      for (const auto &outline : local.glyph_outlines) {
+        const auto already = std::any_of(
+            out->glyph_outlines.begin(), out->glyph_outlines.end(),
+            [&](const PreparedGlyphOutline &existing) {
+              return existing.font_index == outline.font_index &&
+                     existing.glyph_id == outline.glyph_id;
+            });
+        if (already) {
+          continue;
+        }
+        out->glyph_outlines.push_back(outline);
+      }
+      const auto custom_vertex_base = out->custom_vertices.size();
+      for (const auto &vertex : local.custom_vertices) {
+        out->custom_vertices.push_back(vertex);
+      }
+      const auto custom_primitive_base = out->custom_primitives.size();
+      for (auto primitive : local.custom_primitives) {
+        primitive.first_vertex += static_cast<std::uint64_t>(custom_vertex_base);
+        out->custom_primitives.push_back(primitive);
+      }
+      for (auto layer : local.custom_layers) {
+        layer.first_primitive +=
+            static_cast<std::uint64_t>(custom_primitive_base);
+        out->custom_layers.push_back(layer);
+      }
+      for (const auto &pattern : local.patterns) {
+        const auto already = std::any_of(
+            out->patterns.begin(), out->patterns.end(),
+            [&](const PatternDefinition &existing) {
+              return existing.id == pattern.id;
+            });
+        if (!already) {
+          out->patterns.push_back(pattern);
+        }
+      }
       // Remap pick indices for this well's layers.
       for (auto pick : local.curve_pick_indices) {
         pick.layer_index += static_cast<std::uint64_t>(layer_base);
@@ -4030,6 +4135,12 @@ Result<PreparedScene> append_surface_overlay_geometry(
     }
 
     if (primitive_count == 0) {
+      // No overlay geometry survived: roll back the synthetic overlay track
+      // pushed above so the scene carries no empty extra track (SVG emits a
+      // stray group, picking walks one extra track — issue #480).
+      if (!out->tracks.empty() && out->tracks.back().id == k_overlay_track) {
+        out->tracks.pop_back();
+      }
       return PreparedScene{std::move(out)};
     }
     out->custom_layers.push_back(PreparedCustomLayer{
