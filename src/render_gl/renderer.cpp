@@ -1027,7 +1027,11 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
     // Interval, marker, symbol and text passes consume the same prepared
     // scene. Pattern tiles and glyph outlines rasterize into atlases once
     // per upload; tiling repeats in the shader around the scene anchor.
-    constexpr std::uint32_t atlas_extent = 1024;
+    // 2048^2 at 128 px/em holds ~256 full-resolution CJK glyphs (the old
+    // 1024^2 atlas held ~64 and silently dropped every glyph past that —
+    // issue #464); glyphs that still do not fit re-rasterize at half
+    // resolution before giving up.
+    constexpr std::uint32_t atlas_extent = 2048;
     constexpr double pattern_pixels_per_millimetre = 16.0;
     constexpr double glyph_pixels_per_em = 128.0;
     std::vector<PrimitiveVertex> primitive_vertices;
@@ -1105,8 +1109,20 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
               static_cast<std::size_t>(outline.command_count)),
           outline.left, outline.bottom, outline.right, outline.top,
           glyph_pixels_per_em);
-      const auto rect =
-          glyph_packer.allocate(raster.width, raster.height);
+      auto rect = glyph_packer.allocate(raster.width, raster.height);
+      if (!rect.has_value()) {
+        // Atlas exhausted at full resolution: retry the glyph at half
+        // resolution instead of silently dropping it (issue #464) — CJK
+        // annotation sets of a few hundred distinct glyphs fit entirely at
+        // 64 px/em even after the full-resolution region fills.
+        raster = rasterize_glyph_outline(
+            scene.outline_commands().subspan(
+                static_cast<std::size_t>(outline.first_command),
+                static_cast<std::size_t>(outline.command_count)),
+            outline.left, outline.bottom, outline.right, outline.top,
+            glyph_pixels_per_em / 2.0);
+        rect = glyph_packer.allocate(raster.width, raster.height);
+      }
       if (!rect.has_value()) {
         continue;
       }
