@@ -82,6 +82,13 @@ Fixture make_fixture(std::vector<DepthControlPoint> control_points,
       .semantic = MarkerSemantic::casing_shoe,
       .label = "Shoe",
   });
+  builder.add_symbol(SymbolOccurrence{
+      .id = id("15900000-0000-4000-8000-000000000012"),
+      .reference_depth = 1500.0,
+      .track_fraction = 0.5,
+      .kind = SymbolKind::diamond,
+      .label = "Sym",
+  });
   builder.add_interval(Interval{
       .id = id("15900000-0000-4000-8000-000000000011"),
       .top_reference_depth = 1200.0,
@@ -149,6 +156,13 @@ Fixture make_fixture(std::vector<DepthControlPoint> control_points,
       .track_id = track_id,
       .z_order = 0,
       .draw_labels = false,
+  });
+  presentation.add_symbol_layer(SymbolLayerSpec{
+      .id = id("15900000-0000-4000-8000-000000000025"),
+      .track_id = track_id,
+      .z_order = 3,
+      .color = RgbaColor{.red = 10, .green = 200, .blue = 30, .alpha = 255},
+      .symbol_size = Millimetres{4.0},
   });
   require(session.execute(SetPresentationCommand{presentation.build()}).has_value(),
           "fixture presentation must load");
@@ -259,11 +273,31 @@ void decreasing_window_is_rejected_when_degenerate() {
   require(non_monotonic.has_value(), "direction change is rejected");
 }
 
+// Issue #462: symbols (and reference-depth-anchored annotations) compared
+// against depth_range.top/bottom directly, so a decreasing display domain
+// (TVDSS: window top > bottom) culled EVERY symbol even though markers and
+// intervals normalize the window. The fixture's symbol at 1500 m (display
+// -145, inside +10..-300) must survive.
+void tvdss_decreasing_domain_keeps_symbols() {
+  auto fixture = make_fixture(
+      std::vector<DepthControlPoint>{
+          {.reference_depth = 1000.0, .display_depth = 10.0},
+          {.reference_depth = 2000.0, .display_depth = -300.0},
+      },
+      10.0, -300.0);
+  const auto &scene = fixture.scene;
+  require(scene.symbols().size() == 1,
+          "the in-window symbol must survive decreasing-domain culling");
+  require_near(scene.symbols().front().center.top.value, 50.0, 1e-6,
+               "TVDSS symbol projects to the same page row as the marker");
+}
+
 } // namespace
 
 int main() {
   tvd_increasing_domain_projects_intervals_and_markers();
   tvdss_decreasing_domain_projects_intervals_and_markers();
+  tvdss_decreasing_domain_keeps_symbols();
   decreasing_window_is_rejected_when_degenerate();
   return EXIT_SUCCESS;
 }

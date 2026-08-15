@@ -3220,8 +3220,12 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         }
         const auto symbol_display =
             map_reference_to_display(depth_xform, symbol.reference_depth);
-        if (symbol_display < depth_range.top ||
-            symbol_display > depth_range.bottom) {
+        // Normalize the window: a decreasing display domain (TVDSS maps
+        // 1000->2000, 1003->1997, so top > bottom) must not cull every
+        // in-window symbol — same as the marker/interval paths (issue #462).
+        const auto symbol_win_lo = std::min(depth_range.top, depth_range.bottom);
+        const auto symbol_win_hi = std::max(depth_range.top, depth_range.bottom);
+        if (symbol_display < symbol_win_lo || symbol_display > symbol_win_hi) {
           continue;
         }
         const auto symbol_top = depth_to_top(symbol.reference_depth);
@@ -3414,8 +3418,14 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         case AnnotationAnchor::reference_depth: {
           const auto annotation_display = map_reference_to_display(
               depth_xform, annotation.reference_depth);
-          if (annotation_display < depth_range.top ||
-              annotation_display > depth_range.bottom) {
+          // Decreasing display domain (TVDSS): compare against the
+          // normalized window like markers/symbols (issue #462).
+          const auto annotation_win_lo =
+              std::min(depth_range.top, depth_range.bottom);
+          const auto annotation_win_hi =
+              std::max(depth_range.top, depth_range.bottom);
+          if (annotation_display < annotation_win_lo ||
+              annotation_display > annotation_win_hi) {
             continue;
           }
           const auto bounds = track_bounds.at(layer.track_id);
@@ -4030,6 +4040,12 @@ Result<PreparedScene> append_surface_overlay_geometry(
     }
 
     if (primitive_count == 0) {
+      // No overlay geometry survived: roll back the synthetic overlay track
+      // pushed above so the scene carries no empty extra track (SVG emits a
+      // stray group, picking walks one extra track — issue #480).
+      if (!out->tracks.empty() && out->tracks.back().id == k_overlay_track) {
+        out->tracks.pop_back();
+      }
       return PreparedScene{std::move(out)};
     }
     out->custom_layers.push_back(PreparedCustomLayer{
