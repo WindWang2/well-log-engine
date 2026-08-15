@@ -6,7 +6,13 @@ import numpy as np
 import pytest
 from paleo_workbench.env_bootstrap import ensure_geoviz_on_path
 
-ensure_geoviz_on_path()
+if not ensure_geoviz_on_path():
+    # Importing paleo_workbench.viz executes its package __init__ chain
+    # (viz.adapter -> viz.prediction_helpers), which imports geoviz at module
+    # level. The workstation host job does not put the geo-viz-engine packages
+    # on PYTHONPATH (K-F3); skip at collection with a clear reason instead of
+    # failing the whole directory run.
+    pytest.skip("geoviz not importable in this environment", allow_module_level=True)
 
 from paleo_workbench.viz.well_section_datum import WellSectionDatum
 
