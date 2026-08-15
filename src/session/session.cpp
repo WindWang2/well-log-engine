@@ -986,6 +986,23 @@ struct WellLogSession::Impl {
   std::optional<DepthViewport> shared_depth_viewport;
   std::optional<std::uint32_t> shared_pixel_height;
   std::optional<std::pair<double, double>> surface_horizontal_view;
+  // Composed-surface cache (issue #465): prepared_surface_scene() used to
+  // deep-compose every call, so multi-well paintGL/update_pointer re-copied
+  // ALL well geometry per frame (and the fresh shared_ptr forced a full GPU
+  // re-upload per frame). Keyed on placements (document id, left offset,
+  // scene pointer identity), height, horizontal view and a generation bumped
+  // by every layout/overlay mutation; per-well prepared-scene changes fail
+  // the key naturally via the scene pointers.
+  struct SurfaceCacheKey {
+    std::vector<std::tuple<EntityId, double, const void *>> placements;
+    double height{};
+    std::optional<std::pair<double, double>> view;
+    std::uint64_t generation{};
+    bool operator==(const SurfaceCacheKey &other) const = default;
+  };
+  SurfaceCacheKey surface_cache_key{};
+  std::shared_ptr<const PreparedScene> surface_cache_scene;
+  std::uint64_t surface_generation{1};
   // Per-document Depth Transform (#161). Applied via presentation rebuild.
   std::unordered_map<EntityId, DepthTransform, EntityIdHash> depth_transforms;
   std::vector<CrossWellOverlay> cross_well_overlays;
@@ -2063,6 +2080,7 @@ WellLogSession::execute(const SetWellLayoutCommand &command) {
       packed.push_back(next);
     }
     impl_->well_layout = std::move(packed);
+    ++impl_->surface_generation;
     impl_->well_layout_gap = command.gap;
     if (impl_->state_version == std::numeric_limits<std::uint64_t>::max()) {
       return Error{.code = ErrorCode::internal_error,
@@ -2099,9 +2117,11 @@ WellLogSession::execute(const SetWellLayoutCommand &command) {
 Result<CommandReceipt>
 WellLogSession::execute(const ClearWellLayoutCommand &) {
   impl_->well_layout.clear();
+    ++impl_->surface_generation;
   impl_->shared_depth_viewport.reset();
   impl_->shared_pixel_height.reset();
   impl_->surface_horizontal_view.reset();
+  ++impl_->surface_generation;
   if (impl_->state_version != std::numeric_limits<std::uint64_t>::max()) {
     ++impl_->state_version;
   }
@@ -2162,6 +2182,7 @@ WellLogSession::execute(const SetSurfaceHorizontalViewCommand &command) {
                  .message = MessageKey::presentation_invalid,
                  .arguments = {}};
   }
+  ++impl_->surface_generation;
   impl_->surface_horizontal_view =
       std::pair<double, double>{command.left_mm, command.right_mm};
   if (impl_->state_version != std::numeric_limits<std::uint64_t>::max()) {
@@ -2477,6 +2498,7 @@ WellLogSession::execute(const SetCrossWellOverlaysCommand &command) {
       }
     }
     impl_->cross_well_overlays = command.overlays;
+    ++impl_->surface_generation;
     if (impl_->state_version != std::numeric_limits<std::uint64_t>::max()) {
       ++impl_->state_version;
     }
@@ -4779,12 +4801,33 @@ WellLogSession::prepared_surface_scene() const noexcept {
         height = placement.scene->physical_height();
       }
     }
+    // Cache hit short-circuits the deep compose (issue #465): the key pins
+    // every input — placement ids/offsets/scene-pointer identity, height,
+    // horizontal view, and a generation bumped by each layout/overlay/view
+    // mutation.
+    Impl::SurfaceCacheKey key;
+    key.placements.reserve(placements.size());
+    for (const auto &placement : placements) {
+      key.placements.emplace_back(placement.document_id,
+                                  placement.left.value,
+                                  placement.scene.get());
+    }
+    key.height = height.value;
+    key.view = impl_->surface_horizontal_view;
+    key.generation = impl_->surface_generation;
+    if (impl_->surface_cache_scene != nullptr &&
+        impl_->surface_cache_key == key) {
+      return impl_->surface_cache_scene;
+    }
     auto composed = compose_multi_well_scene(placements, height);
     if (!composed.has_value()) {
       return nullptr;
     }
     if (impl_->cross_well_overlays.empty()) {
-      return std::make_shared<const PreparedScene>(std::move(composed.value()));
+      impl_->surface_cache_key = std::move(key);
+      impl_->surface_cache_scene =
+          std::make_shared<const PreparedScene>(std::move(composed.value()));
+      return impl_->surface_cache_scene;
     }
 
     // Resolve Marker EntityIds → Display Depth → surface millimetres, then
@@ -4883,14 +4926,20 @@ WellLogSession::prepared_surface_scene() const noexcept {
     }
 
     if (geometry.empty()) {
-      return std::make_shared<const PreparedScene>(std::move(composed.value()));
+      impl_->surface_cache_key = std::move(key);
+      impl_->surface_cache_scene =
+          std::make_shared<const PreparedScene>(std::move(composed.value()));
+      return impl_->surface_cache_scene;
     }
     auto decorated =
         append_surface_overlay_geometry(std::move(composed.value()), geometry);
     if (!decorated.has_value()) {
       return nullptr;
     }
-    return std::make_shared<const PreparedScene>(std::move(decorated.value()));
+    impl_->surface_cache_key = std::move(key);
+    impl_->surface_cache_scene =
+        std::make_shared<const PreparedScene>(std::move(decorated.value()));
+    return impl_->surface_cache_scene;
   } catch (...) {
     return nullptr;
   }
