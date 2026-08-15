@@ -674,8 +674,12 @@ render_export(const PreparedScene &scene, const ExportSnapshot &snapshot,
           return true;
         };
 
-        std::vector<unsigned char> filtered(
-            1U + static_cast<std::size_t>(geom.width) * geom.channels);
+        const std::size_t row_bytes =
+            static_cast<std::size_t>(geom.width) * geom.channels;
+        std::vector<unsigned char> filtered(1U + row_bytes);
+        // Previous row's RAW bytes for the Up filter (zero for the first
+        // image row, per the PNG spec).
+        std::vector<unsigned char> prev_row(row_bytes, 0U);
         for (std::uint32_t t = 0; t < tile_count; ++t) {
           if (stop.stop_requested()) {
             deflateEnd(&stream);
@@ -689,12 +693,43 @@ render_export(const PreparedScene &scene, const ExportSnapshot &snapshot,
           peak_tile_bytes =
               std::max<std::uint64_t>(peak_tile_bytes, tile.size());
           for (std::uint32_t row = 0; row < rows; ++row) {
-            filtered[0] = 0;
-            std::memcpy(
-                filtered.data() + 1,
-                tile.data() + static_cast<std::size_t>(row) * geom.width *
-                                  geom.channels,
-                static_cast<std::size_t>(geom.width) * geom.channels);
+            const unsigned char *raw =
+                tile.data() + static_cast<std::size_t>(row) * row_bytes;
+            // Per-row filter selection among None/Sub/Up (minimum sum of
+            // absolute filtered bytes — the spec's recommended heuristic).
+            // Well-log rasters have large constant-colour regions where Sub
+            // and Up collapse rows to zeros; filter type 0 for every row
+            // inflated PNGs well beyond necessary size (#489).
+            unsigned long sum_none = 0, sum_sub = 0, sum_up = 0;
+            for (std::size_t i = 0; i < row_bytes; ++i) {
+              const auto left = i >= geom.channels ? raw[i - geom.channels] : 0U;
+              sum_none += raw[i];
+              sum_sub += static_cast<unsigned char>(raw[i] - left);
+              sum_up += static_cast<unsigned char>(raw[i] - prev_row[i]);
+            }
+            unsigned char filter_type = 0;
+            if (sum_sub < sum_none && sum_sub <= sum_up) {
+              filter_type = 1;
+            } else if (sum_up < sum_none) {
+              filter_type = 2;
+            }
+            filtered[0] = filter_type;
+            for (std::size_t i = 0; i < row_bytes; ++i) {
+              const auto left = i >= geom.channels ? raw[i - geom.channels] : 0U;
+              switch (filter_type) {
+              case 1:
+                filtered[1U + i] = static_cast<unsigned char>(raw[i] - left);
+                break;
+              case 2:
+                filtered[1U + i] =
+                    static_cast<unsigned char>(raw[i] - prev_row[i]);
+                break;
+              default:
+                filtered[1U + i] = raw[i];
+                break;
+              }
+            }
+            std::memcpy(prev_row.data(), raw, row_bytes);
             stream.next_in = filtered.data();
             stream.avail_in = static_cast<uInt>(filtered.size());
             if (!flush_deflate(Z_NO_FLUSH)) {
@@ -793,7 +828,8 @@ render_export(const PreparedScene &scene, const ExportSnapshot &snapshot,
       write_le32(out, 1);
 
       const auto ifd_off = static_cast<std::uint32_t>(out.tellp());
-      write_le16(out, 12);
+      // 12 base entries; 4-channel files add ExtraSamples(338) (#488).
+      write_le16(out, geom.channels == 4 ? 13 : 12);
       auto entry = [&](std::uint16_t tag, std::uint16_t type, std::uint32_t count,
                        std::uint32_t value) {
         write_le16(out, tag);
@@ -824,6 +860,12 @@ render_export(const PreparedScene &scene, const ExportSnapshot &snapshot,
       entry(282, 5, 1, xres_off);
       entry(283, 5, 1, yres_off);
       entry(296, 3, 1, 2); // ResolutionUnit = inch
+      if (geom.channels == 4) {
+        // ExtraSamples = 2 (unassociated alpha): without tag 338 viewers
+        // treat the 4th sample as another colour channel and misrender
+        // (#488).
+        entry(338, 3, 1, 2);
+      }
       write_le32(out, 0);
 
       const auto end = out.tellp();

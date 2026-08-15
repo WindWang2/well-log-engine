@@ -2,7 +2,7 @@
 
 // Shared test-side minimal PNG reader (E5 content-level verification). The
 // production writer emits 8-bit RGBA (color type 6) or gray (color type 0)
-// with filter 0 on every row; this decoder inflates IDAT via zlib and
+// with per-row None/Sub/Up filters; this decoder inflates IDAT via zlib and
 // reconstructs the raw samples.
 
 #include <algorithm>
@@ -109,17 +109,48 @@ inline std::optional<DecodedPng> decode_png(const std::filesystem::path &path) {
   png.samples.resize(stride * png.height);
   auto src = inflated.begin();
   for (std::uint32_t row = 0; row < png.height; ++row) {
-    if (src == inflated.end() || *src != 0) {
-      return std::nullopt;  // production writer emits filter 0 on every row
+    if (src == inflated.end()) {
+      return std::nullopt;
     }
+    const auto filter_type = *src;
     ++src;
-    // Iterator distances are ptrdiff_t; cast explicitly where sizes are
-    // size_t so the sign of the result is intentional (-Wsign-conversion).
+    // The writer selects per-row among None/Sub/Up (#489); this decoder
+    // reverses exactly that set. Iterator distances are ptrdiff_t; cast
+    // explicitly where sizes are size_t so the sign of the result is
+    // intentional (-Wsign-conversion).
     const auto copy = std::min<std::size_t>(
         stride, static_cast<std::size_t>(inflated.end() - src));
-    std::copy_n(src, copy,
-                png.samples.begin() +
-                    static_cast<std::ptrdiff_t>(stride * row));
+    const auto row_begin =
+        png.samples.begin() + static_cast<std::ptrdiff_t>(stride * row);
+    const auto prev_begin = png.samples.begin() +
+                            static_cast<std::ptrdiff_t>(
+                                stride * (row == 0 ? 0 : row - 1));
+    for (std::size_t i = 0; i < copy; ++i) {
+      const auto filtered_byte =
+          static_cast<std::uint8_t>(*(src + static_cast<std::ptrdiff_t>(i)));
+      std::uint8_t raw = filtered_byte;
+      switch (filter_type) {
+      case 1: // Sub
+        raw = static_cast<std::uint8_t>(
+            filtered_byte +
+            (i >= channels
+                 ? static_cast<std::uint8_t>(*(row_begin +
+                                               static_cast<std::ptrdiff_t>(
+                                                   i - channels)))
+                 : 0U));
+        break;
+      case 2: // Up
+        raw = static_cast<std::uint8_t>(
+            filtered_byte +
+            (row == 0 ? 0U
+                      : static_cast<std::uint8_t>(
+                            *(prev_begin + static_cast<std::ptrdiff_t>(i)))));
+        break;
+      default: // None
+        break;
+      }
+      *(row_begin + static_cast<std::ptrdiff_t>(i)) = raw;
+    }
     src += static_cast<std::ptrdiff_t>(copy);
   }
   return png;
