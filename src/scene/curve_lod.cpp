@@ -555,6 +555,42 @@ CurveLodPyramid::build(const SamplingAxis &axis, const Curve &curve,
   }
 }
 
+// True when two CurveBuffers wrap the same physical memory segment-for-
+// segment (data pointer, element count, stride, scalar type). Copying a
+// CurveBuffer copies the shared-ownership views, not the samples, so an
+// unchanged curve carried into a new document revision still compares
+// equal here — this is the input identity the unchanged-curve fast path
+// below keys on (issue #471 / audit: unchanged curves were full-rebuilt
+// because the append-parity length precondition rejected same-length
+// inputs).
+[[nodiscard]] static bool
+same_buffer_identity(const CurveBuffer &a, const CurveBuffer &b) noexcept {
+  if (a.is_composite() != b.is_composite()) {
+    return false;
+  }
+  if (a.is_composite()) {
+    const auto as = a.segments();
+    const auto bs = b.segments();
+    if (as.size() != bs.size()) {
+      return false;
+    }
+    for (std::size_t index = 0; index < as.size(); ++index) {
+      if (as[index].data() != bs[index].data() ||
+          as[index].length() != bs[index].length() ||
+          as[index].stride_bytes() != bs[index].stride_bytes() ||
+          as[index].scalar_type() != bs[index].scalar_type()) {
+        return false;
+      }
+    }
+    return true;
+  }
+  const auto &x = a.as_single();
+  const auto &y = b.as_single();
+  return x.data() == y.data() && x.length() == y.length() &&
+         x.stride_bytes() == y.stride_bytes() &&
+         x.scalar_type() == y.scalar_type();
+}
+
 Result<CurveLodPyramid>
 CurveLodPyramid::extend_tail(const CurveLodPyramid &previous,
                              const SamplingAxis &extended_axis,
@@ -580,6 +616,26 @@ CurveLodPyramid::extend_tail(const CurveLodPyramid &previous,
     if (options.maximum_derived_bytes == 0) {
       options.maximum_derived_bytes =
           default_budget(extended_axis, extended_curve);
+    }
+    // Unchanged-input fast path: when the extended curve and axis wrap the
+    // same physical segments the previous pyramid was built over (and the
+    // build options match), `previous` already IS the pyramid of this exact
+    // input — return it with zero derived work. Without this branch the
+    // length-growth precondition below rejected same-length curves and the
+    // caller full-rebuilt every unchanged curve, contradicting the staging
+    // comment's "unchanged curves reuse the previous pyramid directly".
+    if (same_buffer_identity(extended_curve.values, prev.curve.values) &&
+        same_buffer_identity(extended_axis.coordinates,
+                             prev.axis.coordinates) &&
+        extended_curve.id == prev.curve.id &&
+        extended_axis.id == prev.axis.id &&
+        options.algorithm == prev.options.algorithm &&
+        options.base_bucket_samples == prev.options.base_bucket_samples &&
+        options.maximum_derived_bytes ==
+            (prev.options.maximum_derived_bytes != 0
+                 ? prev.options.maximum_derived_bytes
+                 : options.maximum_derived_bytes)) {
+      return previous;
     }
     const auto prev_resolved_budget =
         prev.options.maximum_derived_bytes != 0
