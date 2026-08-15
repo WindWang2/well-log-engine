@@ -206,5 +206,105 @@ void ZipWriter::serialize(std::string &out) const {
   put_u16(out, 0);             // comment length
 }
 
+bool StreamingZipSink::add_entry(const std::string &name,
+                                const std::string &content, bool store) {
+  if (failed_ || !safe_entry_name(name)) {
+    failed_ = true;
+    return false;
+  }
+  constexpr std::size_t max_entries = 4096;
+  constexpr std::size_t max_entry_bytes = 256ULL * 1024ULL * 1024ULL;
+  if (central_.size() >= max_entries || content.size() > max_entry_bytes) {
+    failed_ = true;
+    return false;
+  }
+  const auto crc = compute_crc32(content);
+  std::vector<unsigned char> payload;
+  std::uint16_t method = 0;
+  if (store) {
+    payload.assign(content.begin(), content.end());
+  } else {
+    auto [deflated, used_method] = deflate_or_store(content);
+    payload = std::move(deflated);
+    method = used_method;
+  }
+  DirEntry entry{};
+  entry.name = name;
+  entry.crc32 = crc;
+  entry.uncompressed_size = content.size();
+  entry.compressed_size = payload.size();
+  entry.method = method;
+  entry.local_header_offset = archive_offset_;
+  std::string header;
+  header.reserve(30 + name.size());
+  put_u32(header, 0x04034b50);
+  put_u16(header, 20);          // version needed to extract (2.0)
+  put_u16(header, 0);           // flags
+  put_u16(header, entry.method);
+  put_u16(header, 0);           // mod time (deterministic)
+  put_u16(header, 0);           // mod date (deterministic)
+  put_u32(header, entry.crc32);
+  put_u32(header, static_cast<std::uint32_t>(entry.compressed_size));
+  put_u32(header, static_cast<std::uint32_t>(entry.uncompressed_size));
+  put_u16(header, static_cast<std::uint16_t>(entry.name.size()));
+  put_u16(header, 0);           // extra field length
+  header.append(entry.name);
+  out_.write(header.data(), static_cast<std::streamsize>(header.size()));
+  out_.write(reinterpret_cast<const char *>(payload.data()),
+             static_cast<std::streamsize>(payload.size()));
+  if (!out_) {
+    failed_ = true;
+    return false;
+  }
+  archive_offset_ += header.size() + payload.size();
+  central_.push_back(std::move(entry));
+  return true;
+}
+
+bool StreamingZipSink::finalize() {
+  if (failed_) {
+    return false;
+  }
+  std::string directory;
+  directory.reserve(64 * central_.size());
+  const auto central_start = archive_offset_;
+  for (const auto &d : central_) {
+    put_u32(directory, 0x02014b50);
+    put_u16(directory, 20);      // version made by
+    put_u16(directory, 20);      // version needed to extract
+    put_u16(directory, 0);       // flags
+    put_u16(directory, d.method);
+    put_u16(directory, 0);       // mod time (deterministic)
+    put_u16(directory, 0);       // mod date (deterministic)
+    put_u32(directory, d.crc32);
+    put_u32(directory, static_cast<std::uint32_t>(d.compressed_size));
+    put_u32(directory, static_cast<std::uint32_t>(d.uncompressed_size));
+    put_u16(directory, static_cast<std::uint16_t>(d.name.size()));
+    put_u16(directory, 0);       // extra length
+    put_u16(directory, 0);       // comment length
+    put_u16(directory, 0);       // disk number start
+    put_u16(directory, 0);       // internal attributes
+    put_u32(directory, 0);       // external attributes
+    put_u32(directory, static_cast<std::uint32_t>(d.local_header_offset));
+    directory.append(d.name);
+  }
+  // EOCD.
+  put_u32(directory, 0x06054b50);
+  put_u16(directory, 0);         // disk number
+  put_u16(directory, 0);         // disk with central dir
+  put_u16(directory, static_cast<std::uint16_t>(central_.size()));
+  put_u16(directory, static_cast<std::uint16_t>(central_.size()));
+  put_u32(directory, static_cast<std::uint32_t>(directory.size() - 22));
+  put_u32(directory, static_cast<std::uint32_t>(central_start));
+  put_u16(directory, 0);         // comment length
+  out_.write(directory.data(), static_cast<std::streamsize>(directory.size()));
+  if (!out_) {
+    failed_ = true;
+    return false;
+  }
+  archive_offset_ += directory.size();
+  return true;
+}
+
 } // namespace export_table
 } // namespace welllog

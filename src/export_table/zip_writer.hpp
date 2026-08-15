@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <ostream>
 #include <string>
 #include <vector>
 
@@ -61,6 +62,40 @@ public:
 
 private:
   std::vector<ZipEntry> entries_;
+};
+
+// Streams a classic zip archive into an ostream as entries are added: each
+// entry's local header + deflated payload is written immediately and the
+// central directory + EOCD at finalize(). Peak memory holds ONE entry's
+// content plus its compressed copy, instead of the whole workbook plus a
+// full serialized archive copy (issue #467 — the KNOWN LIMIT above).
+class StreamingZipSink {
+public:
+  explicit StreamingZipSink(std::ostream &out) : out_(out) {}
+
+  // Same policy as ZipWriter::add_entry (safe entry name, 4096-entry cap,
+  // 256 MiB per entry). Writes the local header + payload immediately;
+  // returns false (and latches failure) on a policy violation, zlib error
+  // or stream failure.
+  bool add_entry(const std::string &name, const std::string &content,
+                 bool store = false);
+
+  // Writes the central directory + EOCD. Returns false on failure.
+  bool finalize();
+
+private:
+  struct DirEntry {
+    std::string name;
+    std::uint32_t crc32{};
+    std::uint64_t uncompressed_size{};
+    std::uint64_t compressed_size{};
+    std::uint16_t method{};
+    std::uint64_t local_header_offset{};
+  };
+  std::ostream &out_;
+  std::vector<DirEntry> central_;
+  std::uint64_t archive_offset_{}; // bytes written so far (tellp-safe)
+  bool failed_{};
 };
 
 } // namespace export_table

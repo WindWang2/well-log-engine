@@ -128,7 +128,7 @@ def paint_litho_bands(
     if span <= 0:
         return
     segments = getattr(track, "litho_segments", None) or []
-    brush_cache: dict[str, QBrush] = {}
+    brush_cache = _LITHO_BRUSH_CACHE
     for seg in segments:
         if not math.isfinite(seg.top) or not math.isfinite(seg.bottom):
             continue
@@ -180,8 +180,9 @@ def paint_core_photos(
     is scaled to fill its depth band (aspect-ratio ignored - core photos
     are columnar). ``resolve_path(seg.image_path)`` returns the absolute
     path to the image file (or None if unresolvable). Segments whose image
-    cannot be loaded fall back to a gray tint. Images are cached per paint
-    by absolute path.
+    cannot be loaded fall back to a gray tint. Images are cached in a
+    module-level bounded LRU by absolute path (issue #469), so repeated
+    paints reuse decoded images instead of re-reading them from disk.
     """
     if tw < 4 or th < 4:
         return
@@ -189,7 +190,6 @@ def paint_core_photos(
     if span <= 0:
         return
     segments = getattr(track, "core_photo_segments", None) or []
-    img_cache: dict[str, QImage | None] = {}
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
     for seg in segments:
@@ -202,10 +202,7 @@ def paint_core_photos(
         if y1 - y0 < 0.5:
             continue
         abs_path = resolve_path(seg.image_path)
-        if abs_path and abs_path not in img_cache:
-            img = QImage(abs_path)
-            img_cache[abs_path] = img if not img.isNull() else None
-        img = img_cache.get(abs_path) if abs_path else None
+        img = _cached_core_photo(abs_path) if abs_path else None
         rect = QRectF(x, y0, tw, y1 - y0)
         if img is not None:
             painter.drawImage(rect, img)
@@ -374,6 +371,27 @@ def paint_perforation_track(
                 Qt.AlignmentFlag.AlignCenter,
                 label,
             )
+
+
+# Cross-paint caches for the litho/core-photo tracks (issue #469): both
+# painters used function-local dicts, so every paintEvent re-ran QImage(path)
+# disk loads + decodes and rebuilt texture brushes — per-frame stalls during
+# pan/zoom. Photos keep a bounded LRU (large photo sets must not grow forever).
+_CORE_PHOTO_CACHE: dict[str, QImage | None] = {}
+_CORE_PHOTO_CACHE_LIMIT = 24
+_LITHO_BRUSH_CACHE: dict[str, QBrush] = {}
+
+
+def _cached_core_photo(abs_path: str) -> QImage | None:
+    if abs_path in _CORE_PHOTO_CACHE:
+        _CORE_PHOTO_CACHE[abs_path] = _CORE_PHOTO_CACHE.pop(abs_path)
+        return _CORE_PHOTO_CACHE[abs_path]
+    img = QImage(abs_path)
+    entry = None if img.isNull() else img
+    while len(_CORE_PHOTO_CACHE) >= _CORE_PHOTO_CACHE_LIMIT:
+        _CORE_PHOTO_CACHE.pop(next(iter(_CORE_PHOTO_CACHE)))
+    _CORE_PHOTO_CACHE[abs_path] = entry
+    return entry
 
 
 class MultiTrackCanvas(QWidget):

@@ -1224,6 +1224,13 @@ struct WellLogSession::Impl {
       EntityId document_id, DocumentRevision revision, EntityId entity_id,
       std::uint32_t occurrence_count, DiagnosticCode code, MessageKey message,
       ErrorCode error_code, std::vector<ViewEvent> &notifications) noexcept {
+    // Same wrap guard as publish_async_failure (issue #481): an exhausted
+    // id/version space publishes nothing rather than wrapping. Returns 0
+    // (never a valid diagnostic id) — callers treat it as "not published".
+    if (state_version == std::numeric_limits<std::uint64_t>::max() ||
+        next_diagnostic_id == std::numeric_limits<std::uint64_t>::max()) {
+      return 0;
+    }
     const auto diagnostic_id = next_diagnostic_id;
     diagnostics.reserve(diagnostics.size() + 1);
     diagnostic_errors.reserve(diagnostic_errors.size() + 1);

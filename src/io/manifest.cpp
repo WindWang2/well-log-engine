@@ -370,16 +370,46 @@ void require_exact_fields(const JsonObject &value,
   return result;
 }
 
+[[nodiscard]] std::string number_text(double value) {
+  // Locale-independent writer (issue #473): std::to_string(double) emits a
+  // locale-dependent decimal separator (",") under comma locales, corrupting
+  // the JSON round-trip; from_chars/to_chars are locale-free. Non-finite
+  // values degrade to 0 (JSON has no NaN/Infinity).
+  if (!std::isfinite(value)) {
+    return "0";
+  }
+  char buffer[48]{};
+  const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value,
+                                    std::chars_format::general);
+  if (result.ec != std::errc{}) {
+    return "0";
+  }
+  return std::string(buffer, result.ptr);
+}
+
 [[nodiscard]] double number(const JsonValue &value) {
   const auto *num = std::get_if<JsonNumber>(&value.value);
   if (num == nullptr) {
     throw ParseFailure{"expected JSON number"};
   }
-  try {
-    return std::stod(num->text);
-  } catch (...) {
+  // Locale-independent parse (issue #473): std::stod honours the C locale —
+  // under a comma-decimal locale "0.5" silently parsed as 0 and stopped at
+  // '.', corrupting geometry. from_chars is locale-free and requires the
+  // ENTIRE token to be consumed.
+  // Strictness tradeoff: from_chars only matches finite patterns, so a
+  // manifest written before the issue-#473 NaN-free writer whose JSON held
+  // nan/inf can no longer be loaded ("number is out of range"). New
+  // manifests never contain them — number_text() degrades non-finite values
+  // to 0.
+  double parsed = 0.0;
+  const auto *begin = num->text.data();
+  const auto *end = begin + num->text.size();
+  const auto result =
+      std::from_chars(begin, end, parsed, std::chars_format::general);
+  if (result.ec != std::errc{} || result.ptr != end) {
     throw ParseFailure{"number is out of range"};
   }
+  return parsed;
 }
 
 [[nodiscard]] bool boolean(const JsonValue &value) {
@@ -568,19 +598,31 @@ void write_color(std::string &output, const RgbaColor &color) {
   output += ",\"a\":" + std::to_string(color.alpha) + '}';
 }
 
+[[nodiscard]] std::uint8_t color_component(const JsonObject &color,
+                                         const char *name) {
+  // A manifest is untrusted input; every other numeric domain in this file
+  // rejects out-of-range values, but colours silently truncated through
+  // uint8_t (g:300 became 44) — reject instead (issue #470).
+  const auto raw = unsigned_integer(field(color, name));
+  if (raw > 255U) {
+    throw ParseFailure{"colour component out of range"};
+  }
+  return static_cast<std::uint8_t>(raw);
+}
+
 [[nodiscard]] RgbaColor parse_color(const JsonValue &value) {
   const auto &color = object(value);
   return RgbaColor{
-      .red = static_cast<std::uint8_t>(unsigned_integer(field(color, "r"))),
-      .green = static_cast<std::uint8_t>(unsigned_integer(field(color, "g"))),
-      .blue = static_cast<std::uint8_t>(unsigned_integer(field(color, "b"))),
-      .alpha = static_cast<std::uint8_t>(unsigned_integer(field(color, "a"))),
+      .red = color_component(color, "r"),
+      .green = color_component(color, "g"),
+      .blue = color_component(color, "b"),
+      .alpha = color_component(color, "a"),
   };
 }
 
 void write_point(std::string &output, const PhysicalPoint &point) {
-  output += "{\"left\":" + std::to_string(point.left.value);
-  output += ",\"top\":" + std::to_string(point.top.value) + '}';
+  output += "{\"left\":" + number_text(point.left.value);
+  output += ",\"top\":" + number_text(point.top.value) + '}';
 }
 
 [[nodiscard]] PhysicalPoint parse_point(const JsonValue &value) {
@@ -666,7 +708,7 @@ void write_primitive(std::string &output, const CustomPrimitive &primitive) {
           output += (p.closed ? "true" : "false");
           output += ",\"color\":";
           write_color(output, p.color);
-          output += ",\"width\":" + std::to_string(p.width.value);
+          output += ",\"width\":" + number_text(p.width.value);
           output += ",\"points\":[";
           bool first = true;
           for (const auto &pt : p.points) {
@@ -681,10 +723,10 @@ void write_primitive(std::string &output, const CustomPrimitive &primitive) {
             for (const auto &seg : p.dash_pattern.segments) {
               if (!seg_first) output.push_back(',');
               seg_first = false;
-              output += std::to_string(seg.value);
+              output += number_text(seg.value);
             }
             output += "],\"offset\":";
-            output += std::to_string(p.dash_pattern.offset);
+            output += number_text(p.dash_pattern.offset);
             output += "}";
           }
           output += "}";
@@ -700,10 +742,10 @@ void write_primitive(std::string &output, const CustomPrimitive &primitive) {
           output += "}";
         } else if constexpr (std::is_same_v<T, CustomQuad>) {
           output += "{\"kind\":\"quad\",\"rect\":{\"left\":";
-          output += std::to_string(p.rect.left.value);
-          output += ",\"top\":" + std::to_string(p.rect.top.value);
-          output += ",\"width\":" + std::to_string(p.rect.width.value);
-          output += ",\"height\":" + std::to_string(p.rect.height.value);
+          output += number_text(p.rect.left.value);
+          output += ",\"top\":" + number_text(p.rect.top.value);
+          output += ",\"width\":" + number_text(p.rect.width.value);
+          output += ",\"height\":" + number_text(p.rect.height.value);
           output += "},\"fillColor\":";
           write_color(output, p.fill_color);
           if (!p.pattern_id.is_nil()) {
@@ -719,7 +761,7 @@ void write_primitive(std::string &output, const CustomPrimitive &primitive) {
           append_escaped(output, symbol_kind_name(p.kind));
           output += ",\"color\":";
           write_color(output, p.color);
-          output += ",\"size\":" + std::to_string(p.size.value);
+          output += ",\"size\":" + number_text(p.size.value);
           output += "}";
         }
       },
@@ -1018,7 +1060,7 @@ Result<ManifestText> ManifestCodec::write(const WellLogDocument &document) {
       append_escaped(output, direction_name(axis.direction));
       if (axis.nominal_interval.has_value()) {
         output += ",\"nominalInterval\":";
-        output += std::to_string(*axis.nominal_interval);
+        output += number_text(*axis.nominal_interval);
       }
       output += ",\"coordinates\":";
       write_buffer(output, axis.coordinates.as_single());
@@ -1076,9 +1118,9 @@ Result<ManifestText> ManifestCodec::write(const WellLogDocument &document) {
         output += ",\"pixelFormat\":";
         append_escaped(output, pixel_format_name(image.pixel_format));
         output += ",\"referenceDepthTop\":" +
-                  std::to_string(image.reference_depth_top);
+                  number_text(image.reference_depth_top);
         output += ",\"referenceDepthBottom\":" +
-                  std::to_string(image.reference_depth_bottom);
+                  number_text(image.reference_depth_bottom);
         output += ",\"dpi\":" + std::to_string(image.dpi);
         output += ",\"source\":";
         write_source(output, image.source);
