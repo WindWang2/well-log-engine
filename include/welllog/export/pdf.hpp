@@ -165,6 +165,13 @@ struct PdfIndirectObject {
   std::string body;
   PdfObjectKind kind{PdfObjectKind::image};
   std::string local_name;
+  // Child indirect objects the writer numbers immediately AFTER this one and
+  // emits right after its body. The parent body references a child by the
+  // placeholder "@@CHILD<n>@@" (n = 0-based index into extra_bodies): the
+  // writer assigns object numbers at write time, so a body built before
+  // writing cannot know them — build_image_body uses this to point an image
+  // XObject's /SMask at its alpha XObject (issue #476).
+  std::vector<std::string> extra_bodies;
 };
 
 // One page's worth of content-stream operators plus the extra indirect objects

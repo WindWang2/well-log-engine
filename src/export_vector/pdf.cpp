@@ -35,9 +35,12 @@ void append_number(std::string &out, double value) {
     return;
   }
   std::array<char, 48> buffer{};
-  const auto res = std::to_chars(buffer.data(), buffer.data() + buffer.size(),
-                                 value, std::chars_format::general,
-                                 std::numeric_limits<double>::max_digits10);
+  // No explicit precision: to_chars then emits the SHORTEST round-trip
+  // representation (max_digits10 digits is never shortest — it padded every
+  // coordinate with numeric noise and 2-5x'd export file sizes).
+  const auto res =
+      std::to_chars(buffer.data(), buffer.data() + buffer.size(), value,
+                    std::chars_format::general);
   if (res.ec != std::errc{}) {
     out.push_back('0');
     return;
@@ -554,8 +557,11 @@ Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
     std::vector<std::size_t> page_object_base(pages.size() + 1);
     page_object_base[0] = object_base;
     for (std::size_t p = 0; p < pages.size(); ++p) {
-      page_object_base[p + 1] =
-          page_object_base[p] + pages[p].objects.size();
+      std::size_t page_objects = 0;
+      for (const auto &object : pages[p].objects) {
+        page_objects += 1 + object.extra_bodies.size();
+      }
+      page_object_base[p + 1] = page_object_base[p] + page_objects;
     }
     const std::size_t total_caller_objects =
         page_object_base[pages.size()] - object_base;
@@ -776,10 +782,42 @@ Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
     // body is already a complete dict (+ optional stream); the writer only adds
     // the "N 0 obj\n" header and "endobj\n" trailer.
     for (std::size_t p = 0; p < pages.size(); ++p) {
+      // Running object number: each caller object occupies 1 + its child
+      // count numbers (children immediately follow their parent).
+      std::size_t next_number = page_object_base[p];
       for (std::size_t oi = 0; oi < pages[p].objects.size(); ++oi) {
-        emit_object_header(page_object_base[p] + oi);
-        out += pages[p].objects[oi].body;
+        const auto &object = pages[p].objects[oi];
+        const std::size_t parent_number = next_number;
+        const std::size_t child_base = parent_number + 1;
+        next_number = child_base + object.extra_bodies.size();
+        emit_object_header(parent_number);
+        if (object.extra_bodies.empty()) {
+          out += object.body;
+        } else {
+          // Substitute each "@@CHILD<n>@@" placeholder with the child's
+          // assigned number (numbers exist only at write time — see the
+          // PdfIndirectObject::extra_bodies contract).
+          auto body = object.body;
+          for (std::size_t child = 0; child < object.extra_bodies.size();
+               ++child) {
+            const auto marker = "@@CHILD" + std::to_string(child) + "@@";
+            const auto replacement =
+                std::to_string(child_base + child) + " 0 R";
+            auto at = body.find(marker);
+            while (at != std::string::npos) {
+              body.replace(at, marker.size(), replacement);
+              at = body.find(marker, at + replacement.size());
+            }
+          }
+          out += body;
+        }
         out += "\nendobj\n";
+        for (std::size_t child = 0; child < object.extra_bodies.size();
+             ++child) {
+          emit_object_header(child_base + child);
+          out += object.extra_bodies[child];
+          out += "\nendobj\n";
+        }
       }
     }
 
@@ -792,11 +830,26 @@ Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
       out += ") >>\nendobj\n";
     }
 
-    // xref table.
+    // xref table. Classic xref entries are fixed-width 10-digit decimals;
+    // an offset of 10^10 or more cannot be represented and would silently
+    // wrap (modulo) into a corrupted table. Refuse loudly instead — callers
+    // exporting beyond this size need an xref-stream writer (PDF 1.5+).
+    constexpr std::size_t classic_xref_offset_limit = 10000000000ULL;
     const auto xref_offset = out.size();
     const auto object_count = static_cast<std::size_t>(
         2 + 2 * pages.size() + total_alpha_objects + total_caller_objects +
         total_ocg_objects + 1);
+    for (std::size_t obj = 1; obj < object_count; ++obj) {
+      if (offsets[obj] >= classic_xref_offset_limit) {
+        return Error{
+            .code = ErrorCode::resource_exhausted,
+            .severity = Severity::error,
+            .entity_id = std::nullopt,
+            .message = MessageKey::resource_exhausted,
+            .arguments = {},
+        };
+      }
+    }
     out += "xref\n0 ";
     append_integer(out, static_cast<std::int64_t>(object_count));
     out += "\n0000000000 65535 f \n";

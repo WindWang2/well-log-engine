@@ -56,7 +56,7 @@ void require_near(double actual, double expected, std::string_view message) {
 
 // Builds the exact normalized-colour operator string the writer emits for an
 // sRGB triple + operator (rg = fill, RG = stroke), reproducing its append_number
-// (to_chars general, max_digits10) so the assertion is robust to digit count.
+// (to_chars general, shortest round-trip) so the assertion is robust to digit count.
 // Used to assert the custom-layer primitives by their unique colours (which no
 // other layer emits) rather than generic S/f operators.
 [[nodiscard]] std::string color_operator(std::uint8_t r, std::uint8_t g,
@@ -67,9 +67,9 @@ void require_near(double actual, double expected, std::string_view message) {
       return std::string{"0"};
     }
     std::array<char, 48> buffer{};
-    const auto res = std::to_chars(buffer.data(), buffer.data() + buffer.size(),
-                                   v, std::chars_format::general,
-                                   std::numeric_limits<double>::max_digits10);
+    const auto res =
+        std::to_chars(buffer.data(), buffer.data() + buffer.size(), v,
+                      std::chars_format::general);
     return res.ec == std::errc{} ? std::string(buffer.data(), res.ptr)
                                  : std::string{"0"};
   };
@@ -883,11 +883,12 @@ void custom_layer_primitives_are_emitted() {
           "the custom triangle must fill");
 }
 
-// RGBA images embed as DeviceRGB (the alpha channel is dropped in this phase —
-// a separate /SMask indirect XObject needs writer support for owned sub-objects
-// and is a documented follow-up). Asserts the RGBA→DeviceRGB path is taken and
-// the result is qpdf-clean (no malformed stream).
-void rgba_image_embeds_as_device_rgb_alpha_dropped() {
+// RGBA images embed as DeviceRGB plus a DeviceGray /SMask child XObject
+// (issue #476): the alpha plane is preserved, so transparent pixels composite
+// in the PDF exactly like on screen. Asserts the RGBA→DeviceRGB+SMask path is
+// taken, the /SMask reference is a real indirect object (not a leftover
+// @@CHILDn@@ placeholder), and the result is qpdf-clean.
+void rgba_image_embeds_with_smask() {
   // A document whose image source is rgba8.
   auto depths = std::make_shared<const std::vector<double>>(
       std::initializer_list<double>{1000.0, 1050.0, 1100.0});
@@ -934,9 +935,16 @@ void rgba_image_embeds_as_device_rgb_alpha_dropped() {
   const auto bytes = std::string{result.value().bytes()};
   require(bytes.find("/ColorSpace /DeviceRGB") != std::string::npos,
           "the rgba image must embed as DeviceRGB colour");
-  // Alpha is dropped (no /SMask yet) — document the current behaviour.
-  require(bytes.find("/SMask") == std::string::npos,
-          "alpha /SMask is a documented follow-up, not yet emitted");
+  // Alpha ships as a /SMask child XObject (#476): the image dict references
+  // it indirectly, the child carries a DeviceGray stream, and no @@CHILDn@@
+  // placeholder may survive substitution.
+  const auto smask_at = bytes.find("/SMask ");
+  require(smask_at != std::string::npos,
+          "the rgba image must reference a /SMask alpha XObject");
+  require(bytes.find("/ColorSpace /DeviceGray") != std::string::npos,
+          "the /SMask child must be a DeviceGray image");
+  require(bytes.find("@@CHILD") == std::string::npos,
+          "no @@CHILDn@@ placeholder may survive writer substitution");
   // qpdf --check must accept the structure.
   const auto path = write_temp(bytes);
   bool qpdf_available = std::filesystem::exists("/usr/sbin/qpdf") ||
@@ -1006,7 +1014,7 @@ int main() {
   fixed_mode_paginates_into_multiple_pages();
   depth_range_bands_are_emitted_and_continuous();
   custom_layer_primitives_are_emitted();
-  rgba_image_embeds_as_device_rgb_alpha_dropped();
+  rgba_image_embeds_with_smask();
   output_is_byte_deterministic();
   depth_ruler_emits_and_changes_output();
   std::cout << "welllog.pdf-scene-full: all cases passed\n";
