@@ -212,8 +212,9 @@ bool StreamingZipSink::add_entry(const std::string &name,
     failed_ = true;
     return false;
   }
+  constexpr std::size_t max_entries = 4096;
   constexpr std::size_t max_entry_bytes = 256ULL * 1024ULL * 1024ULL;
-  if (content.size() > max_entry_bytes) {
+  if (central_.size() >= max_entries || content.size() > max_entry_bytes) {
     failed_ = true;
     return false;
   }

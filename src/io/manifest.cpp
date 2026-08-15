@@ -396,6 +396,11 @@ void require_exact_fields(const JsonObject &value,
   // under a comma-decimal locale "0.5" silently parsed as 0 and stopped at
   // '.', corrupting geometry. from_chars is locale-free and requires the
   // ENTIRE token to be consumed.
+  // Strictness tradeoff: from_chars only matches finite patterns, so a
+  // manifest written before the issue-#473 NaN-free writer whose JSON held
+  // nan/inf can no longer be loaded ("number is out of range"). New
+  // manifests never contain them — number_text() degrades non-finite values
+  // to 0.
   double parsed = 0.0;
   const auto *begin = num->text.data();
   const auto *end = begin + num->text.size();

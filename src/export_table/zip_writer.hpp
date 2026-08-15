@@ -73,9 +73,10 @@ class StreamingZipSink {
 public:
   explicit StreamingZipSink(std::ostream &out) : out_(out) {}
 
-  // Same name/size policy as ZipWriter::add_entry. Writes the local header
-  // + payload immediately; returns false (and latches failure) on a policy
-  // violation, zlib error or stream failure.
+  // Same policy as ZipWriter::add_entry (safe entry name, 4096-entry cap,
+  // 256 MiB per entry). Writes the local header + payload immediately;
+  // returns false (and latches failure) on a policy violation, zlib error
+  // or stream failure.
   bool add_entry(const std::string &name, const std::string &content,
                  bool store = false);
 

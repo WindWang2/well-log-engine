@@ -179,8 +179,9 @@ def paint_core_photos(
     is scaled to fill its depth band (aspect-ratio ignored - core photos
     are columnar). ``resolve_path(seg.image_path)`` returns the absolute
     path to the image file (or None if unresolvable). Segments whose image
-    cannot be loaded fall back to a gray tint. Images are cached per paint
-    by absolute path.
+    cannot be loaded fall back to a gray tint. Images are cached in a
+    module-level bounded LRU by absolute path (issue #469), so repeated
+    paints reuse decoded images instead of re-reading them from disk.
     """
     if tw < 4 or th < 4:
         return
