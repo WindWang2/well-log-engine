@@ -621,7 +621,15 @@ PyObject *nice_axis_ticks(double d0, double d1,
       Py_DECREF(list);
       return nullptr;
     }
-    PyTuple_SetItem(tuple, 0, PyFloat_FromDouble(ticks.step));
+    // PyTuple_SetItem(NULL) would build a tuple with a null slot that later
+    // crashes the interpreter instead of raising (issue #482).
+    PyObject *step_value = PyFloat_FromDouble(ticks.step);
+    if (step_value == nullptr) {
+      Py_DECREF(tuple);
+      Py_DECREF(list);
+      return nullptr;
+    }
+    PyTuple_SetItem(tuple, 0, step_value);
     PyTuple_SetItem(tuple, 1, list);
     return tuple;
   } catch (const std::bad_alloc &) {
@@ -697,7 +705,15 @@ PyObject *ticks_for_secondary_axis(PyObject *points, double display_top,
       Py_DECREF(list);
       return nullptr;
     }
-    PyTuple_SetItem(tuple, 0, PyFloat_FromDouble(ticks.step));
+    // PyTuple_SetItem(NULL) would build a tuple with a null slot that later
+    // crashes the interpreter instead of raising (issue #482).
+    PyObject *step_value = PyFloat_FromDouble(ticks.step);
+    if (step_value == nullptr) {
+      Py_DECREF(tuple);
+      Py_DECREF(list);
+      return nullptr;
+    }
+    PyTuple_SetItem(tuple, 0, step_value);
     PyTuple_SetItem(tuple, 1, list);
     return tuple;
   } catch (const std::bad_alloc &) {

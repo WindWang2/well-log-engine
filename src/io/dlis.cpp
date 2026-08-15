@@ -981,6 +981,39 @@ monotonic_segments(const std::vector<double> &coordinates) {
     curves.push_back(CurveAccumulator{.channel = channel, .values = {}, .nulls = {}});
   }
 
+  // Pre-resolve the frame's channel references ONCE (issue #466): the row
+  // loop below used to linear-scan the channel list per (row x channel
+  // reference) and then linear-match every channel against every selected
+  // curve — O(rows x C^2) with per-row vector allocation, which hung imports
+  // of million-row 100-channel frames.
+  struct FrameSlot {
+    const InternalChannel *channel;
+    std::ptrdiff_t curve_index; // -1 = reference is not a selected curve
+    bool is_axis;
+  };
+  std::vector<FrameSlot> frame_slots;
+  frame_slots.reserve(frame->channel_references.size());
+  for (const auto &channel_reference : frame->channel_references) {
+    const auto *channel = find_channel(logical_file, channel_reference);
+    if (channel == nullptr) {
+      malformed();
+    }
+    auto curve_index = static_cast<std::ptrdiff_t>(-1);
+    for (std::size_t index{}; index < curves.size(); ++index) {
+      if (curves[index].channel->descriptor.reference ==
+          channel->descriptor.reference) {
+        curve_index = static_cast<std::ptrdiff_t>(index);
+        break;
+      }
+    }
+    frame_slots.push_back(FrameSlot{
+        .channel = channel,
+        .curve_index = curve_index,
+        .is_axis = channel->descriptor.reference ==
+                   axis_channel->descriptor.reference});
+  }
+  std::vector<std::optional<double>> row_values(curves.size());
+
   std::vector<double> coordinates;
   std::uint64_t decoded_rows{};
   for (const auto &record : physical.records) {
@@ -1000,27 +1033,21 @@ monotonic_segments(const std::vector<double> &coordinates) {
         ++decoded_rows;
         static_cast<void>(read_uvari(cursor));
         std::optional<double> axis_value;
-        std::vector<std::optional<double>> row_values(curves.size());
-        for (const auto &channel_reference : frame->channel_references) {
-          const auto *channel = find_channel(logical_file, channel_reference);
-          if (channel == nullptr) {
-            malformed();
-          }
-          const auto elements = channel->element_count;
+        std::fill(row_values.begin(), row_values.end(), std::nullopt);
+        for (const auto &slot : frame_slots) {
+          const auto elements = slot.channel->element_count;
           std::optional<double> scalar;
           for (std::uint32_t element{}; element < elements; ++element) {
-            const auto value = read_value(cursor, channel->representation);
+            const auto value = read_value(cursor, slot.channel->representation);
             if (element == 0U) {
               scalar = numeric_value(value);
             }
           }
-          if (channel->descriptor.reference == axis_channel->descriptor.reference) {
+          if (slot.is_axis) {
             axis_value = scalar;
           }
-          for (std::size_t curve_index{}; curve_index < curves.size(); ++curve_index) {
-            if (curves[curve_index].channel->descriptor.reference == channel->descriptor.reference) {
-              row_values[curve_index] = scalar;
-            }
+          if (slot.curve_index >= 0) {
+            row_values[static_cast<std::size_t>(slot.curve_index)] = scalar;
           }
         }
         if (!axis_value.has_value() || !std::isfinite(*axis_value)) {

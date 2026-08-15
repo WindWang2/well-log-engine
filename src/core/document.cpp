@@ -406,7 +406,11 @@ bool NullBitmapView::empty() const noexcept {
 }
 
 bool NullBitmapView::is_null(std::uint64_t index) const noexcept {
-  return impl_ != nullptr && index < impl_->bit_length &&
+  // data may legally be null when bit_length is 0, but from_raw (public API)
+  // does not reject bit_length > 0 with a null data pointer — guard so the
+  // accessor returns false instead of dereferencing null (issue #478).
+  return impl_ != nullptr && impl_->data != nullptr &&
+         index < impl_->bit_length &&
          (impl_->data[index / 8] & (std::uint8_t{1} << (index % 8))) != 0;
 }
 
