@@ -786,6 +786,27 @@ struct GlRenderer::Impl {
   std::vector<PrimitiveBatch> pending_primitive_batches;
   RasterImage pending_pattern_atlas;
   RasterImage pending_glyph_atlas;
+  // Atlas reuse cache (issue #463): every queue_upload rebuilt both atlases
+  // from scratch although the pattern/glyph sets barely change between
+  // viewport moves. A fingerprint over the scene's pattern ids and glyph
+  // outline keys reuses the previous bitmaps and uv tables on a hit.
+  struct GlyphAtlasEntry {
+    float u0{};
+    float v0{};
+    float u1{};
+    float v1{};
+    double left_em{};
+    double top_em{};
+    double pixels_per_em{1.0};
+    std::uint32_t pixel_width{};
+    std::uint32_t pixel_height{};
+  };
+  std::string atlas_fingerprint;
+  RasterImage cached_pattern_atlas;
+  RasterImage cached_glyph_atlas;
+  std::unordered_map<EntityId, std::array<float, 4>, EntityIdHash>
+      cached_pattern_uvs;
+  std::unordered_map<std::uint64_t, GlyphAtlasEntry> cached_glyph_entries;
   double pending_scene_height{};
   double pending_depth_top{};
   double pending_depth_span{1.0};
@@ -1050,18 +1071,32 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
     ShelfAtlasPacker glyph_packer(atlas_extent, atlas_extent);
     std::unordered_map<EntityId, std::array<float, 4>, EntityIdHash>
         pattern_uvs;
-    struct GlyphAtlasEntry {
-      float u0{};
-      float v0{};
-      float u1{};
-      float v1{};
-      double left_em{};
-      double top_em{};
-      double pixels_per_em{1.0};
-      std::uint32_t pixel_width{};
-      std::uint32_t pixel_height{};
-    };
-    std::unordered_map<std::uint64_t, GlyphAtlasEntry> glyph_atlas_entries;
+    std::unordered_map<std::uint64_t, Impl::GlyphAtlasEntry> glyph_atlas_entries;
+    // Fingerprint the atlas INPUTS: same pattern set and same glyph outline
+    // set (in the same order the packer sees) produce identical atlases, so
+    // a hit skips both rasterization passes and reuses the uv tables
+    // (issue #463).
+    std::string fingerprint;
+    fingerprint.reserve(16 * (scene.patterns().size() + 1));
+    for (const auto &pattern : scene.patterns()) {
+      fingerprint += "p:";
+      fingerprint += pattern.id.to_string();
+    }
+    for (const auto &outline : scene.glyph_outlines()) {
+      fingerprint += "g:";
+      fingerprint += std::to_string(outline.font_index);
+      fingerprint += ":";
+      fingerprint += std::to_string(outline.glyph_id);
+    }
+    const bool atlas_cache_hit =
+        !impl_->cached_pattern_atlas.pixels.empty() &&
+        impl_->atlas_fingerprint == fingerprint;
+    if (atlas_cache_hit) {
+      pattern_atlas = impl_->cached_pattern_atlas;
+      glyph_atlas = impl_->cached_glyph_atlas;
+      pattern_uvs = impl_->cached_pattern_uvs;
+      glyph_atlas_entries = impl_->cached_glyph_entries;
+    }
 
     const auto clip_for_track = [&](EntityId track_id) {
       const auto track =
@@ -1073,6 +1108,9 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
     };
 
     for (const auto &pattern : scene.patterns()) {
+      if (atlas_cache_hit) {
+        break;
+      }
       auto tile =
           rasterize_pattern_tile(pattern, pattern_pixels_per_millimetre);
       const auto rect = pattern_packer.allocate(tile.width, tile.height);
@@ -1099,6 +1137,9 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
           });
     }
     for (const auto &outline : scene.glyph_outlines()) {
+      if (atlas_cache_hit) {
+        break;
+      }
       auto raster = rasterize_glyph_outline(
           scene.outline_commands().subspan(
               static_cast<std::size_t>(outline.first_command),
@@ -1121,7 +1162,7 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
       }
       glyph_atlas_entries.emplace(
           glyph_atlas_key(outline.font_index, outline.glyph_id),
-          GlyphAtlasEntry{
+          Impl::GlyphAtlasEntry{
                    .u0 = static_cast<float>(rect->left) / atlas_extent,
                    .v0 = static_cast<float>(rect->top) / atlas_extent,
                    .u1 = static_cast<float>(rect->left + rect->width) /
@@ -1731,6 +1772,16 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
     impl_->pending_batches = std::move(batches);
     impl_->pending_primitive_vertices = std::move(primitive_vertices);
     impl_->pending_primitive_batches = std::move(primitive_batches);
+    if (atlas_cache_hit) {
+      // Cache stays authoritative; pending needs its own copy because the
+      // GL upload consumes (and clears) pending.
+    } else {
+      impl_->atlas_fingerprint = std::move(fingerprint);
+      impl_->cached_pattern_atlas = pattern_atlas;
+      impl_->cached_glyph_atlas = glyph_atlas;
+      impl_->cached_pattern_uvs = pattern_uvs;
+      impl_->cached_glyph_entries = glyph_atlas_entries;
+    }
     impl_->pending_pattern_atlas = std::move(pattern_atlas);
     impl_->pending_glyph_atlas = std::move(glyph_atlas);
     impl_->pending_scene_height = scene.physical_height().value;
