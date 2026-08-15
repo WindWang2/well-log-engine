@@ -266,10 +266,18 @@ Result<TableExportReport>
 XlsxTableExporter::write_to_file(const WellLogDocument &document,
                                  const std::vector<TableProjection> &projections,
                                  const std::filesystem::path &path) {
-  ZipWriter zip;
-  std::vector<std::string> sheet_names;
-  std::vector<std::uint64_t> sheet_starts; // global start row per sheet
-  std::vector<std::string> sheet_bodies;
+  // Streaming layout (issue #467): the old path held EVERY worksheet body in
+  // memory, then the whole deflated archive in one more string — a 1M-row
+  // workbook peaked at 3-4x its XML size. Sheet bodies are now built inside
+  // the atomic-write producer and streamed straight into the zip sink, so
+  // peak memory holds one sheet body plus its compressed copy.
+  struct SheetPlan {
+    std::string name;
+    std::uint64_t start{};
+    std::uint64_t end{};
+    const TableProjection *projection{}; // nullptr = metadata sheet
+  };
+  std::vector<SheetPlan> sheet_plans;
   std::uint64_t total_rows = 0;
 
   // One or more sheets per curve projection, split at the Excel row ceiling.
@@ -295,11 +303,11 @@ XlsxTableExporter::write_to_file(const WellLogDocument &document,
         if (part < 10) name += "0";
         append_integer(name, part);
       }
-      sheet_names.push_back(name);
-      sheet_starts.push_back(start);
-      std::string body;
-      total_rows += build_worksheet_body(body, p, start, end, start);
-      sheet_bodies.push_back(std::move(body));
+      total_rows += end - start;
+      sheet_plans.push_back(SheetPlan{.name = std::move(name),
+                                      .start = start,
+                                      .end = end,
+                                      .projection = &p});
       ++part;
       if (start == end) {
         break; // 0-row projection: one empty sheet, then stop
@@ -309,43 +317,57 @@ XlsxTableExporter::write_to_file(const WellLogDocument &document,
   }
 
   // Metadata sheet (always last).
-  sheet_names.push_back("Metadata");
-  sheet_starts.push_back(0);
-  std::string meta_body;
-  build_metadata_sheet(meta_body, document, projections, sheet_names, sheet_starts);
-  sheet_bodies.push_back(std::move(meta_body));
+  sheet_plans.push_back(
+      SheetPlan{.name = "Metadata", .start = 0, .end = 0, .projection = nullptr});
 
-  const auto total_sheets = sheet_bodies.size();
-  // Assemble the zip parts.
-  zip.add_entry("[Content_Types].xml", build_content_types(total_sheets), true);
-  zip.add_entry("_rels/.rels", build_root_rels(), true);
-  zip.add_entry("xl/workbook.xml", build_workbook(total_sheets, sheet_names), true);
-  zip.add_entry("xl/_rels/workbook.xml.rels", build_workbook_rels(total_sheets), true);
-  for (std::size_t i = 0; i < sheet_bodies.size(); ++i) {
-    std::string part_name = "xl/worksheets/sheet";
-    append_integer(part_name, i + 1);
-    part_name += ".xml";
-    zip.add_entry(part_name, sheet_bodies[i], true);
-  }
-
-  std::string archive;
-  try {
-    zip.serialize(archive);
-  } catch (...) {
-    return Error{
-        .code = ErrorCode::resource_exhausted,
-        .severity = Severity::error,
-        .entity_id = std::nullopt,
-        .message = MessageKey::resource_exhausted,
-        .arguments = {},
-    };
-  }
-
+  const auto total_sheets = sheet_plans.size();
   const auto result = write_file_atomic(
       path,
       [&](std::ostream &out) -> bool {
-        out.write(archive.data(), static_cast<std::streamsize>(archive.size()));
-        return static_cast<bool>(out);
+        export_table::StreamingZipSink zip(out);
+        std::vector<std::string> sheet_names;
+        std::vector<std::uint64_t> sheet_starts;
+        sheet_names.reserve(sheet_plans.size());
+        sheet_starts.reserve(sheet_plans.size());
+        for (const auto &plan : sheet_plans) {
+          sheet_names.push_back(plan.name);
+          sheet_starts.push_back(plan.start);
+        }
+        if (!zip.add_entry("[Content_Types].xml",
+                           build_content_types(total_sheets), true)) {
+          return false;
+        }
+        if (!zip.add_entry("_rels/.rels", build_root_rels(), true)) {
+          return false;
+        }
+        if (!zip.add_entry("xl/workbook.xml",
+                           build_workbook(total_sheets, sheet_names), true)) {
+          return false;
+        }
+        if (!zip.add_entry("xl/_rels/workbook.xml.rels",
+                           build_workbook_rels(total_sheets), true)) {
+          return false;
+        }
+        for (std::size_t i = 0; i < sheet_plans.size(); ++i) {
+          std::string part_name = "xl/worksheets/sheet";
+          append_integer(part_name, i + 1);
+          part_name += ".xml";
+          std::string body;
+          if (sheet_plans[i].projection != nullptr) {
+            build_worksheet_body(body, *sheet_plans[i].projection,
+                                 sheet_plans[i].start, sheet_plans[i].end,
+                                 sheet_plans[i].start);
+          } else {
+            build_metadata_sheet(body, document, projections, sheet_names,
+                                 sheet_starts);
+          }
+          if (!zip.add_entry(part_name, body, true)) {
+            return false;
+          }
+          // Free the body before the next sheet is built.
+          std::string().swap(body);
+        }
+        return zip.finalize();
       });
   if (!result.has_value()) {
     return result.error();

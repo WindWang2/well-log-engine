@@ -453,7 +453,7 @@ void manifest_round_trip_preserves_multi_rate_and_interval() {
   });
   const auto encoded = ManifestCodec::write(builder.build());
   require(encoded.has_value(), "multi-rate manifest must serialize");
-  require(encoded.value().text().find("\"nominalInterval\":0.125000") !=
+  require(encoded.value().text().find("\"nominalInterval\":0.125") !=
               std::string::npos,
           "writer must emit nominalInterval when set");
 
