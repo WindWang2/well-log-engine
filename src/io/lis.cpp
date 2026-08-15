@@ -1587,7 +1587,14 @@ LisSourceAdapter::import(std::span<const std::byte> bytes,
       });
     }
 
-    return LisImport{.document = builder.build(),
+    auto document = builder.build();
+    if (document.id().is_nil()) {
+      // Builder allocation failed: surface resource_exhausted like the
+      // LAS/716 adapters instead of silently returning an empty document
+      // (issue #479).
+      return resource_exhausted();
+    }
+    return LisImport{.document = std::move(document),
                      .diagnostics = std::move(diagnostics)};
   } catch (ParseFailure failure) {
     return failure == ParseFailure::exhausted ? resource_exhausted()
