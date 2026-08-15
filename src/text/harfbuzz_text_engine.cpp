@@ -17,6 +17,7 @@
 #include <unicode/ustring.h>
 
 #include <algorithm>
+#include <iterator>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -236,6 +237,12 @@ struct HarfBuzzTextEngine::Impl {
   std::vector<std::string> system_directories;
   std::optional<std::uint32_t> builtin_index;
   std::uint32_t project_font_count{};
+  // System-font scan caches (issue #474): the enumerated candidate list is
+  // built once, and code points that a FULL scan could not cover are
+  // remembered so shape() stops re-scanning every font directory for them.
+  // Loading any new font invalidates the negative cache.
+  std::optional<std::vector<std::filesystem::path>> system_font_candidates;
+  std::set<char32_t> uncovered_code_points;
 
   Impl() = default;
   ~Impl() {
@@ -264,6 +271,7 @@ struct HarfBuzzTextEngine::Impl {
     face->units_per_em = 8.0;
     face->builtin = true;
     fonts.push_back(std::move(face));
+    uncovered_code_points.clear();
     builtin_index = static_cast<std::uint32_t>(fonts.size() - 1);
     return *builtin_index;
   }
@@ -325,6 +333,7 @@ struct HarfBuzzTextEngine::Impl {
     font->fingerprint = fingerprint_for(bytes, face_index);
     font->bytes = std::move(bytes);
     fonts.push_back(std::move(font));
+    uncovered_code_points.clear();
     return static_cast<std::uint32_t>(fonts.size() - 1);
   }
 
@@ -348,31 +357,49 @@ struct HarfBuzzTextEngine::Impl {
     if (needed.empty() || !ensure_library()) {
       return;
     }
-    std::set<char32_t> unresolved(needed.begin(), needed.end());
-    std::vector<std::filesystem::path> candidates;
-    std::vector<std::string> directories = system_directories;
-    const auto defaults = default_system_font_directories();
-    directories.insert(directories.end(), defaults.begin(), defaults.end());
-    for (const auto &directory : directories) {
-      std::error_code error;
-      if (!std::filesystem::is_directory(directory, error)) {
-        continue;
-      }
-      std::filesystem::recursive_directory_iterator iterator(
-          directory, std::filesystem::directory_options::skip_permission_denied,
-          error);
-      const std::filesystem::recursive_directory_iterator end;
-      while (!error && iterator != end) {
-        const auto &entry = *iterator;
-        if (entry.is_regular_file(error) && has_font_extension(entry.path())) {
-          candidates.push_back(entry.path());
-        }
-        iterator.increment(error);
+    // Negative cache: a previous FULL scan already proved these code points
+    // have no covering system font — re-scanning every directory for them on
+    // every shape() call was the repeat-stall (issue #474).
+    std::set<char32_t> unresolved;
+    for (const auto code_point : needed) {
+      if (uncovered_code_points.find(code_point) ==
+          uncovered_code_points.end()) {
+        unresolved.insert(code_point);
       }
     }
-    std::sort(candidates.begin(), candidates.end());
-    candidates.erase(std::unique(candidates.begin(), candidates.end()),
-                     candidates.end());
+    if (unresolved.empty()) {
+      return;
+    }
+    if (!system_font_candidates.has_value()) {
+      std::vector<std::filesystem::path> candidates;
+      std::vector<std::string> directories = system_directories;
+      const auto defaults = default_system_font_directories();
+      directories.insert(directories.end(), defaults.begin(), defaults.end());
+      for (const auto &directory : directories) {
+        std::error_code error;
+        if (!std::filesystem::is_directory(directory, error)) {
+          continue;
+        }
+        std::filesystem::recursive_directory_iterator iterator(
+            directory,
+            std::filesystem::directory_options::skip_permission_denied,
+            error);
+        const std::filesystem::recursive_directory_iterator end;
+        while (!error && iterator != end) {
+          const auto &entry = *iterator;
+          if (entry.is_regular_file(error) &&
+              has_font_extension(entry.path())) {
+            candidates.push_back(entry.path());
+          }
+          iterator.increment(error);
+        }
+      }
+      std::sort(candidates.begin(), candidates.end());
+      candidates.erase(std::unique(candidates.begin(), candidates.end()),
+                       candidates.end());
+      system_font_candidates = std::move(candidates);
+    }
+    const auto &candidates = *system_font_candidates;
 
     std::size_t scanned = 0;
     for (const auto &path : candidates) {
@@ -425,6 +452,9 @@ struct HarfBuzzTextEngine::Impl {
         }
       }
     }
+    // Whatever a full scan could not cover stays uncovered until a new font
+    // is loaded (which clears the negative cache).
+    uncovered_code_points.insert(unresolved.begin(), unresolved.end());
   }
 
   [[nodiscard]] Result<ShapedRun> shape(const TextShapeRequest &request) {
@@ -627,17 +657,24 @@ struct HarfBuzzTextEngine::Impl {
       const auto *infos = hb_buffer_get_glyph_infos(buffer, &glyph_count);
       const auto *positions =
           hb_buffer_get_glyph_positions(buffer, &glyph_count);
+      // The segment's code_points are sorted by byte_offset; binary-search
+      // each glyph's cluster instead of re-walking the segment per glyph
+      // (O(glyphs x segment) -> O(glyphs x log segment), issue #484).
+      const auto segment_cp_begin =
+          code_points.begin() + static_cast<std::ptrdiff_t>(segment_begin);
+      const auto segment_cp_end =
+          code_points.begin() + static_cast<std::ptrdiff_t>(segment_end);
       for (unsigned int glyph = 0; glyph < glyph_count; ++glyph) {
         const auto cluster = static_cast<std::uint32_t>(byte_begin) +
                              infos[glyph].cluster;
         char32_t code_point = 0;
-        for (std::size_t index = segment_begin; index < segment_end;
-             ++index) {
-          if (code_points[index].byte_offset <= cluster) {
-            code_point = code_points[index].code_point;
-          } else {
-            break;
-          }
+        const auto upper = std::upper_bound(
+            segment_cp_begin, segment_cp_end, cluster,
+            [](std::uint32_t value, const auto &cp) {
+              return value < cp.byte_offset;
+            });
+        if (upper != segment_cp_begin) {
+          code_point = std::prev(upper)->code_point;
         }
         run.glyphs.push_back(ShapedGlyph{
             .glyph_id = infos[glyph].codepoint,
