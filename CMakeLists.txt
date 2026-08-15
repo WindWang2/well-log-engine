@@ -1277,6 +1277,7 @@ if(WELLLOG_BUILD_TESTS)
     target_link_libraries(
         welllog_crossover_fill_tests
         PRIVATE WellLog::ExportVector WellLog::RenderGL WellLog::Session
+                WellLog::ExportRaster ZLIB::ZLIB
     )
     add_test(
         NAME welllog.crossover-fill

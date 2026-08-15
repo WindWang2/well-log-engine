@@ -297,13 +297,41 @@ void fill_polygon(std::vector<std::uint8_t> &tile, std::uint32_t width,
       static_cast<int>(height),
       static_cast<int>(std::ceil((center_y + max_y) * ppm) -
                       static_cast<double>(tile_origin_y)));
+  // Scanline even-odd fill: per row, intersect the polygon's edges with the
+  // row's sample line once (O(rows x edges + filled pixels)) and fill pixel
+  // centers between paired crossings. The per-pixel point_in_polygon loop
+  // this replaces re-walked every edge for every bbox pixel (O(bbox x
+  // edges)) — large symbols at high DPI dominated raster export time.
+  // Edge inclusion follows the same half-open rule as point_in_polygon, so
+  // the filled set is the even-odd interior at pixel centers.
+  std::vector<double> crossings;
   for (int y = y0; y < y1; ++y) {
-    for (int x = x0; x < x1; ++x) {
-      const auto sx = (static_cast<double>(x) + 0.5) / ppm;
-      const auto sy = (static_cast<double>(y) + 0.5 +
-                       static_cast<double>(tile_origin_y)) /
-                      ppm;
-      if (point_in_polygon(outline, sx - center_x, sy - center_y)) {
+    const auto sy = (static_cast<double>(y) + 0.5 +
+                     static_cast<double>(tile_origin_y)) / ppm - center_y;
+    crossings.clear();
+    for (std::size_t i = 0, j = outline.size() - 1; i < outline.size();
+         j = i++) {
+      const auto &a = outline[j];
+      const auto &b = outline[i];
+      const auto ay = a.top.value;
+      const auto by = b.top.value;
+      if ((ay <= sy && by > sy) || (by <= sy && ay > sy)) {
+        const auto t = (sy - ay) / (by - ay);
+        crossings.push_back(a.left.value +
+                            t * (b.left.value - a.left.value));
+      }
+    }
+    std::sort(crossings.begin(), crossings.end());
+    for (std::size_t k = 0; k + 1 < crossings.size(); k += 2) {
+      // Pixel centers (x + 0.5)/ppm strictly between the paired crossings
+      // (scene mm), translated by center_x.
+      // Pixel x has its center at (x + 0.5)/ppm; require strictly
+      // lo < x + 0.5 < hi, i.e. lo_px < x < hi_px.
+      const auto lo_px = (crossings[k] + center_x) * ppm - 0.5;
+      const auto hi_px = (crossings[k + 1] + center_x) * ppm - 0.5;
+      const auto xs = std::max(x0, static_cast<int>(std::floor(lo_px)) + 1);
+      const auto xe = std::min(x1, static_cast<int>(std::ceil(hi_px)));
+      for (int x = xs; x < xe; ++x) {
         blend_pixel(tile, width, height, channels, x, y, color);
       }
     }
@@ -450,6 +478,197 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
                        symbol_glyph(kind, layer.symbol_size).outline, center_x,
                        center_y, ppm, tile_origin_y, layer.line_color);
         }
+      }
+    }
+  }
+
+  // Crossover fill layers (issue #477): each fill region's boundary polygon,
+  // filled with the region colour — same geometry the SVG/PDF/GL backends
+  // draw. (Pattern fills approximate as the base colour.)
+  {
+    const auto regions = scene.fill_regions();
+    const auto vertices = scene.fill_vertices();
+    for (const auto &layer : scene.fill_layers()) {
+      const auto end = layer.first_region + layer.region_count;
+      for (std::uint64_t index = layer.first_region; index < end; ++index) {
+        const auto &region = regions[index];
+        if (region.vertex_count < 3) {
+          continue;
+        }
+        std::vector<PhysicalPoint> outline;
+        outline.reserve(static_cast<std::size_t>(region.vertex_count));
+        for (std::uint64_t v = 0; v < region.vertex_count; ++v) {
+          outline.push_back(
+              vertices[static_cast<std::size_t>(region.first_vertex + v)]
+                  .position);
+        }
+        fill_polygon(tile, geom.width, tile_rows, geom.channels, outline, 0.0,
+                     0.0, ppm, tile_origin_y, region.fill_color);
+      }
+    }
+  }
+
+  // Custom layers (issue #477): polylines stroke (dash patterns approximate
+  // solid — raster has no dash rasterizer), filled kinds use the same
+  // scanline polygon fill, symbols reuse the shared glyph geometry.
+  {
+    const auto primitives = scene.custom_primitives();
+    const auto cvertices = scene.custom_vertices();
+    for (const auto &layer : scene.custom_layers()) {
+      const auto end = layer.first_primitive + layer.primitive_count;
+      for (std::uint64_t index = layer.first_primitive; index < end; ++index) {
+        const auto &primitive =
+            primitives[static_cast<std::size_t>(index)];
+        if (primitive.vertex_count == 0) {
+          continue;
+        }
+        const auto vertex_at = [&](std::uint64_t offset) -> PhysicalPoint {
+          return cvertices[static_cast<std::size_t>(
+              primitive.first_vertex + offset)];
+        };
+        switch (primitive.kind) {
+        case CustomPrimitiveKind::polyline: {
+          const auto stroke = std::max(
+              1, static_cast<int>(std::lround(
+                     primitive.stroke_width.value * ppm)));
+          const auto segments = primitive.closed
+                                    ? primitive.vertex_count
+                                    : primitive.vertex_count - 1;
+          for (std::uint64_t seg = 0; seg < segments; ++seg) {
+            const auto a = to_pixel(vertex_at(seg), ppm, tile_origin_y);
+            const auto b = to_pixel(
+                vertex_at((seg + 1) % primitive.vertex_count), ppm,
+                tile_origin_y);
+            draw_line(tile, geom.width, tile_rows, geom.channels, a.x, a.y,
+                      b.x, b.y, primitive.color, stroke);
+          }
+          break;
+        }
+        case CustomPrimitiveKind::symbol: {
+          const auto &center = vertex_at(0);
+          if (primitive.symbol_kind == SymbolKind::cross) {
+            const auto half = static_cast<int>(std::lround(
+                primitive.bounds.width.value / 2.0 * ppm));
+            const auto c = to_pixel(center, ppm, tile_origin_y);
+            const auto stroke = std::max(
+                1, static_cast<int>(std::lround(
+                       primitive.bounds.width.value / 6.0 * ppm)));
+            draw_line(tile, geom.width, tile_rows, geom.channels, c.x - half,
+                      c.y - half, c.x + half, c.y + half, primitive.color,
+                      stroke);
+            draw_line(tile, geom.width, tile_rows, geom.channels, c.x + half,
+                      c.y - half, c.x - half, c.y + half, primitive.color,
+                      stroke);
+          } else {
+            // Bounds carry the prepared symbol size (width = full extent).
+            fill_polygon(tile, geom.width, tile_rows, geom.channels,
+                         symbol_glyph(primitive.symbol_kind,
+                                      Millimetres{primitive.bounds.width.value})
+                             .outline,
+                         center.left.value, center.top.value, ppm,
+                         tile_origin_y, primitive.color);
+          }
+          break;
+        }
+        default: {
+          // triangle / quad: filled polygon from the primitive's vertices.
+          std::vector<PhysicalPoint> outline;
+          outline.reserve(static_cast<std::size_t>(primitive.vertex_count));
+          for (std::uint64_t v = 0; v < primitive.vertex_count; ++v) {
+            outline.push_back(vertex_at(v));
+          }
+          fill_polygon(tile, geom.width, tile_rows, geom.channels, outline,
+                       0.0, 0.0, ppm, tile_origin_y, primitive.color);
+          break;
+        }
+        }
+      }
+    }
+  }
+
+  // Text runs (issue #477): each glyph's vector outline (em fractions, y-up)
+  // flattened to polygons and scanline-filled with the SAME
+  // translate/rotate/scale(em, -em) transform the SVG emitter applies, so
+  // raster text lands where the vector backends draw it.
+  {
+    const auto glyphs = scene.glyphs();
+    const auto outlines = scene.glyph_outlines();
+    const auto commands = scene.outline_commands();
+    for (const auto &run : scene.text_runs()) {
+      const auto em = run.font_size.value;
+      for (std::uint64_t offset = 0; offset < run.glyph_count; ++offset) {
+        const auto &glyph =
+            glyphs[static_cast<std::size_t>(run.first_glyph + offset)];
+        const PreparedGlyphOutline *outline = nullptr;
+        for (const auto &candidate : outlines) {
+          if (candidate.font_index == glyph.font_index &&
+              candidate.glyph_id == glyph.glyph_id) {
+            outline = &candidate;
+            break;
+          }
+        }
+        if (outline == nullptr) {
+          continue;
+        }
+        const auto rot =
+            glyph.rotation_degrees * 3.14159265358979323846 / 180.0;
+        const auto cos_r = std::cos(rot);
+        const auto sin_r = std::sin(rot);
+        const auto to_scene_mm = [&](double ex, double ey) {
+          // SVG parity: translate(origin) rotate(deg) scale(em, -em).
+          const auto gx = ex * em;
+          const auto gy = -ey * em;
+          return PhysicalPoint{
+              .left = Millimetres{glyph.origin.left.value +
+                                  gx * cos_r - gy * sin_r},
+              .top = Millimetres{glyph.origin.top.value + gx * sin_r +
+                                 gy * cos_r}};
+        };
+        std::vector<PhysicalPoint> subpath;
+        const auto flush_subpath = [&]() {
+          if (subpath.size() >= 3) {
+            fill_polygon(tile, geom.width, tile_rows, geom.channels, subpath,
+                         0.0, 0.0, ppm, tile_origin_y, run.color);
+          }
+          subpath.clear();
+        };
+        double current_x = 0.0;
+        double current_y = 0.0;
+        for (std::uint64_t c = 0; c < outline->command_count; ++c) {
+          const auto &command =
+              commands[static_cast<std::size_t>(outline->first_command + c)];
+          switch (command.verb) {
+          case OutlineVerb::move_to:
+            flush_subpath();
+            current_x = command.coordinates[0];
+            current_y = command.coordinates[1];
+            subpath.push_back(to_scene_mm(current_x, current_y));
+            break;
+          case OutlineVerb::line_to:
+            current_x = command.coordinates[0];
+            current_y = command.coordinates[1];
+            subpath.push_back(to_scene_mm(current_x, current_y));
+            break;
+          case OutlineVerb::quadratic_to: {
+            const auto cx = command.coordinates[0];
+            const auto cy = command.coordinates[1];
+            const auto tx = command.coordinates[2];
+            const auto ty = command.coordinates[3];
+            // Flatten the quadratic to 8 segments.
+            for (int step = 1; step <= 8; ++step) {
+              const auto t = static_cast<double>(step) / 8.0;
+              const auto u = 1.0 - t;
+              const auto px = u * u * current_x + 2 * u * t * cx + t * t * tx;
+              const auto py = u * u * current_y + 2 * u * t * cy + t * t * ty;
+              subpath.push_back(to_scene_mm(px, py));
+            }
+            current_x = tx;
+            current_y = ty;
+            break;
+          }
+          }
+        }
+        flush_subpath();
       }
     }
   }
@@ -674,8 +893,12 @@ render_export(const PreparedScene &scene, const ExportSnapshot &snapshot,
           return true;
         };
 
-        std::vector<unsigned char> filtered(
-            1U + static_cast<std::size_t>(geom.width) * geom.channels);
+        const std::size_t row_bytes =
+            static_cast<std::size_t>(geom.width) * geom.channels;
+        std::vector<unsigned char> filtered(1U + row_bytes);
+        // Previous row's RAW bytes for the Up filter (zero for the first
+        // image row, per the PNG spec).
+        std::vector<unsigned char> prev_row(row_bytes, 0U);
         for (std::uint32_t t = 0; t < tile_count; ++t) {
           if (stop.stop_requested()) {
             deflateEnd(&stream);
@@ -689,12 +912,43 @@ render_export(const PreparedScene &scene, const ExportSnapshot &snapshot,
           peak_tile_bytes =
               std::max<std::uint64_t>(peak_tile_bytes, tile.size());
           for (std::uint32_t row = 0; row < rows; ++row) {
-            filtered[0] = 0;
-            std::memcpy(
-                filtered.data() + 1,
-                tile.data() + static_cast<std::size_t>(row) * geom.width *
-                                  geom.channels,
-                static_cast<std::size_t>(geom.width) * geom.channels);
+            const unsigned char *raw =
+                tile.data() + static_cast<std::size_t>(row) * row_bytes;
+            // Per-row filter selection among None/Sub/Up (minimum sum of
+            // absolute filtered bytes — the spec's recommended heuristic).
+            // Well-log rasters have large constant-colour regions where Sub
+            // and Up collapse rows to zeros; filter type 0 for every row
+            // inflated PNGs well beyond necessary size (#489).
+            unsigned long sum_none = 0, sum_sub = 0, sum_up = 0;
+            for (std::size_t i = 0; i < row_bytes; ++i) {
+              const auto left = i >= geom.channels ? raw[i - geom.channels] : 0U;
+              sum_none += raw[i];
+              sum_sub += static_cast<unsigned char>(raw[i] - left);
+              sum_up += static_cast<unsigned char>(raw[i] - prev_row[i]);
+            }
+            unsigned char filter_type = 0;
+            if (sum_sub < sum_none && sum_sub <= sum_up) {
+              filter_type = 1;
+            } else if (sum_up < sum_none) {
+              filter_type = 2;
+            }
+            filtered[0] = filter_type;
+            for (std::size_t i = 0; i < row_bytes; ++i) {
+              const auto left = i >= geom.channels ? raw[i - geom.channels] : 0U;
+              switch (filter_type) {
+              case 1:
+                filtered[1U + i] = static_cast<unsigned char>(raw[i] - left);
+                break;
+              case 2:
+                filtered[1U + i] =
+                    static_cast<unsigned char>(raw[i] - prev_row[i]);
+                break;
+              default:
+                filtered[1U + i] = raw[i];
+                break;
+              }
+            }
+            std::memcpy(prev_row.data(), raw, row_bytes);
             stream.next_in = filtered.data();
             stream.avail_in = static_cast<uInt>(filtered.size());
             if (!flush_deflate(Z_NO_FLUSH)) {
@@ -793,7 +1047,8 @@ render_export(const PreparedScene &scene, const ExportSnapshot &snapshot,
       write_le32(out, 1);
 
       const auto ifd_off = static_cast<std::uint32_t>(out.tellp());
-      write_le16(out, 12);
+      // 12 base entries; 4-channel files add ExtraSamples(338) (#488).
+      write_le16(out, geom.channels == 4 ? 13 : 12);
       auto entry = [&](std::uint16_t tag, std::uint16_t type, std::uint32_t count,
                        std::uint32_t value) {
         write_le16(out, tag);
@@ -824,6 +1079,12 @@ render_export(const PreparedScene &scene, const ExportSnapshot &snapshot,
       entry(282, 5, 1, xres_off);
       entry(283, 5, 1, yres_off);
       entry(296, 3, 1, 2); // ResolutionUnit = inch
+      if (geom.channels == 4) {
+        // ExtraSamples = 2 (unassociated alpha): without tag 338 viewers
+        // treat the 4th sample as another colour channel and misrender
+        // (#488).
+        entry(338, 3, 1, 2);
+      }
       write_le32(out, 0);
 
       const auto end = out.tellp();
@@ -862,6 +1123,15 @@ render_export(const PreparedScene &scene, const ExportSnapshot &snapshot,
         .document_id = snapshot.document_id,
         .peak_tile_bytes = peak_tile_bytes,
     };
+    // Image layers carry only source references — the raster path has no
+    // synchronous pixel resolver, so those tiles cannot be drawn here. Say
+    // so instead of exporting a silently incomplete image (issue #477).
+    if (!scene.image_tiles().empty()) {
+      outcome.report.notes.push_back(
+          "image layers not rendered: raster export has no synchronous "
+          "pixel resolver (" +
+          std::to_string(scene.image_tiles().size()) + " tiles skipped)");
+    }
     outcome.ok = true;
     return outcome;
   } catch (const std::bad_alloc &) {
