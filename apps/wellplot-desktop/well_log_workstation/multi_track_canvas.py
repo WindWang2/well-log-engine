@@ -11,7 +11,7 @@ import math
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QWheelEvent
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
 from well_log_workstation.template_model import HostPresentation, ScaleSpec
@@ -1574,21 +1574,41 @@ class MultiTrackCanvas(QWidget):
 
         pen = QPen(color, 1.5)
         p.setPen(pen)
-        prev = None
+        # Peak-preserving decimation: uniform stride sampling skipped spikes
+        # between stride points; per stride-block min/max pairs keep them, and
+        # a single QPainterPath strokes the whole curve instead of thousands of
+        # drawLine calls (engine summarize parity).
         step = max(1, n // 2000)
-        for i in range(0, n, step):
-            if null_mask is not None and bool(null_mask[i]):
+        path = QPainterPath()
+        prev = None
+
+        def _block_points(i0: int, i1: int):
+            pts = []
+            for i in range(i0, i1):
+                if null_mask is not None and bool(null_mask[i]):
+                    continue
+                d = float(depth[i])
+                if d < d0 or d > d1:
+                    continue
+                v = float(vals[i])
+                xx, yy = x_map(v), y_map(d)
+                if not math.isfinite(xx) or not math.isfinite(yy):
+                    continue
+                pts.append((xx, yy, v, i))
+            return pts
+
+        for start in range(0, n, step):
+            pts = _block_points(start, min(start + step, n))
+            if not pts:
                 prev = None
                 continue
-            d = float(depth[i])
-            if d < d0 or d > d1:
-                prev = None
-                continue
-            v = float(vals[i])
-            xx, yy = x_map(v), y_map(d)
-            if not math.isfinite(xx) or not math.isfinite(yy):
-                prev = None
-                continue
-            if prev is not None:
-                p.drawLine(int(prev[0]), int(prev[1]), int(xx), int(yy))
-            prev = (xx, yy)
+            lo = min(pts, key=lambda t: t[2])
+            hi = max(pts, key=lambda t: t[2])
+            pair = [lo, hi] if lo[3] != hi[3] else [lo]
+            for xx, yy, _v, _i in sorted(pair, key=lambda t: t[3]):
+                if prev is None:
+                    path.moveTo(xx, yy)
+                else:
+                    path.lineTo(xx, yy)
+                prev = (xx, yy)
+        p.drawPath(path)
