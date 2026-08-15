@@ -41,6 +41,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <deque>
 #include <vector>
 
 namespace welllog {
@@ -1244,10 +1245,12 @@ PdfSceneExporter::write(const PreparedScene &scene,
 
     std::vector<PdfPageContent> contents;
     std::vector<PdfPageSpec> specs;
-    std::vector<std::vector<PdfIndirectObject>> object_storage;
+    // deque: push_back never invalidates references to existing elements,
+    // so the spans handed to PdfPageContent::objects stay valid without
+    // relying on the reserve() matching the final page count.
+    std::deque<std::vector<PdfIndirectObject>> object_storage;
     contents.reserve(windows.size());
     specs.reserve(windows.size());
-    object_storage.reserve(windows.size());
 
     const auto page_count = static_cast<std::uint32_t>(windows.size());
     for (std::uint32_t page_index = 0; page_index < page_count; ++page_index) {
