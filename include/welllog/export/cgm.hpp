@@ -148,6 +148,11 @@ public:
 [[nodiscard]] WELLLOG_EXPORT_CGM_API std::size_t
 cgm_count_polylines(std::string_view cgm_bytes) noexcept;
 
+// Sum of (x, y) pairs across all POLYLINE commands — chunked polylines each
+// contribute their points (test parity for the 8191-point chunking).
+WELLLOG_EXPORT_CGM_API std::size_t
+cgm_polyline_total_points(std::string_view cgm_bytes) noexcept;
+
 [[nodiscard]] WELLLOG_EXPORT_CGM_API std::size_t
 cgm_count_polygons(std::string_view cgm_bytes) noexcept;
 

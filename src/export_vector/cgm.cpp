@@ -353,13 +353,36 @@ void CgmBinaryWriter::polyline(
   if (points.size() < 2) {
     return;
   }
-  std::string params;
-  params.reserve(points.size() * 4);
-  for (const auto &p : points) {
-    append_i16_be(params, p.first);
-    append_i16_be(params, p.second);
+  // Chunk so every command's parameter list stays within the 15-bit long-form
+  // length (≤32767 bytes = 8191 points at 4 bytes each) and never splits an
+  // (x, y) pair: append_command clamps oversized parameter lists to 0x7FFF
+  // bytes, which used to drop the polyline's tail — and could cut it between
+  // a point's x and y (issue #468). Each continuation chunk repeats the
+  // previous chunk's last point so the geometry stays connected without
+  // relying on viewer-side polyline chaining.
+  constexpr std::size_t max_points_per_command = 8191;
+  std::size_t offset = 0;
+  bool first_chunk = true;
+  while (offset < points.size()) {
+    // Continuation chunks start by repeating the previous chunk's last point
+    // so consecutive elements connect without relying on viewer chaining.
+    const auto budget = first_chunk ? max_points_per_command
+                                    : max_points_per_command - 1;
+    const auto count = std::min(budget, points.size() - offset);
+    std::string params;
+    params.reserve((count + (first_chunk ? 0 : 1)) * 4);
+    if (!first_chunk) {
+      append_i16_be(params, points[offset - 1].first);
+      append_i16_be(params, points[offset - 1].second);
+    }
+    for (std::size_t i = 0; i < count; ++i) {
+      append_i16_be(params, points[offset + i].first);
+      append_i16_be(params, points[offset + i].second);
+    }
+    append_command(impl_->bytes, 4, 1, params);
+    offset += count;
+    first_chunk = false;
   }
-  append_command(impl_->bytes, 4, 1, params);
 }
 
 void CgmBinaryWriter::polygon(
@@ -833,6 +856,24 @@ std::size_t cgm_count_polylines(std::string_view cgm_bytes) noexcept {
     offset = cmd.next_offset;
   }
   return count;
+}
+
+std::size_t cgm_polyline_total_points(std::string_view cgm_bytes) noexcept {
+  // Sum of vertex coordinates-pairs across every POLYLINE command (chunked
+  // polylines each contribute their points; test parity for issue #468).
+  std::size_t total = 0;
+  std::size_t offset = 0;
+  CmdView cmd{};
+  while (read_command(cgm_bytes, offset, cmd)) {
+    if (cmd.cls == 4 && cmd.id == 1 && cmd.param_len % 4 == 0) {
+      total += cmd.param_len / 4;
+    }
+    if (cmd.next_offset <= offset) {
+      break;
+    }
+    offset = cmd.next_offset;
+  }
+  return total;
 }
 
 std::size_t cgm_count_polygons(std::string_view cgm_bytes) noexcept {
