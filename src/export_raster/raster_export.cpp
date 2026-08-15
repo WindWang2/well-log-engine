@@ -297,13 +297,41 @@ void fill_polygon(std::vector<std::uint8_t> &tile, std::uint32_t width,
       static_cast<int>(height),
       static_cast<int>(std::ceil((center_y + max_y) * ppm) -
                       static_cast<double>(tile_origin_y)));
+  // Scanline even-odd fill: per row, intersect the polygon's edges with the
+  // row's sample line once (O(rows x edges + filled pixels)) and fill pixel
+  // centers between paired crossings. The per-pixel point_in_polygon loop
+  // this replaces re-walked every edge for every bbox pixel (O(bbox x
+  // edges)) — large symbols at high DPI dominated raster export time.
+  // Edge inclusion follows the same half-open rule as point_in_polygon, so
+  // the filled set is the even-odd interior at pixel centers.
+  std::vector<double> crossings;
   for (int y = y0; y < y1; ++y) {
-    for (int x = x0; x < x1; ++x) {
-      const auto sx = (static_cast<double>(x) + 0.5) / ppm;
-      const auto sy = (static_cast<double>(y) + 0.5 +
-                       static_cast<double>(tile_origin_y)) /
-                      ppm;
-      if (point_in_polygon(outline, sx - center_x, sy - center_y)) {
+    const auto sy = (static_cast<double>(y) + 0.5 +
+                     static_cast<double>(tile_origin_y)) / ppm - center_y;
+    crossings.clear();
+    for (std::size_t i = 0, j = outline.size() - 1; i < outline.size();
+         j = i++) {
+      const auto &a = outline[j];
+      const auto &b = outline[i];
+      const auto ay = a.top.value;
+      const auto by = b.top.value;
+      if ((ay <= sy && by > sy) || (by <= sy && ay > sy)) {
+        const auto t = (sy - ay) / (by - ay);
+        crossings.push_back(a.left.value +
+                            t * (b.left.value - a.left.value));
+      }
+    }
+    std::sort(crossings.begin(), crossings.end());
+    for (std::size_t k = 0; k + 1 < crossings.size(); k += 2) {
+      // Pixel centers (x + 0.5)/ppm strictly between the paired crossings
+      // (scene mm), translated by center_x.
+      // Pixel x has its center at (x + 0.5)/ppm; require strictly
+      // lo < x + 0.5 < hi, i.e. lo_px < x < hi_px.
+      const auto lo_px = (crossings[k] + center_x) * ppm - 0.5;
+      const auto hi_px = (crossings[k + 1] + center_x) * ppm - 0.5;
+      const auto xs = std::max(x0, static_cast<int>(std::floor(lo_px)) + 1);
+      const auto xe = std::min(x1, static_cast<int>(std::ceil(hi_px)));
+      for (int x = xs; x < xe; ++x) {
         blend_pixel(tile, width, height, channels, x, y, color);
       }
     }
