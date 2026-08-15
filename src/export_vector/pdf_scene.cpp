@@ -41,6 +41,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <deque>
 #include <vector>
 
 namespace welllog {
@@ -121,9 +122,10 @@ void append_number(std::string &out, double value) {
     return;
   }
   std::array<char, 48> buffer{};
+  // Shortest round-trip representation (no explicit precision).
   const auto res =
       std::to_chars(buffer.data(), buffer.data() + buffer.size(), value,
-                    std::chars_format::general, 17);
+                    std::chars_format::general);
   if (res.ec == std::errc{}) {
     out.append(buffer.data(), res.ptr);
   } else {
@@ -418,19 +420,16 @@ build_pattern_body(const PatternDefinition &pattern) {
   return body;
 }
 
-// Builds the full object body for an image XObject: dictionary + the pixel
-// stream (Flate-compressed). Colourspace maps PixelFormat → DeviceRGB/DeviceGray.
-// RGBA's alpha channel is currently DROPPED (the RGB channels are embedded):
-// preserving alpha needs a separate /SMask indirect image XObject, which the
-// writer's object model doesn't yet let a caller own (object numbers are
-// assigned at write time, not body-build time) — that is a documented follow-up
-// (tracked separately). DPI is encoded by the placement `cm` (physical rect vs
+// Builds the image XObject indirect object: dictionary + the pixel stream
+// (Flate-compressed). Colourspace maps PixelFormat → DeviceRGB/DeviceGray.
+// RGBA ships its alpha plane as a DeviceGray /SMask child XObject (#476), so
+// transparent pixels composite in the PDF exactly like on screen. DPI is encoded by the placement `cm` (physical rect vs
 // pixel count), consistent with SVG's width/height and recoverable for the
 // test. Returns nullopt on a Flate failure so the caller surfaces an error. NOT
 // noexcept: it allocates (string + Flate), so bad_alloc propagates to write()'s
 // catch (→ resource_exhausted) rather than terminating.
-std::optional<std::string>
-build_image_body(const PageResources::ImageRecord &rec) {
+std::optional<PdfIndirectObject>
+build_image_object(const PageResources::ImageRecord &rec) {
   const bool is_rgba = rec.pixel_format == PixelFormat::rgba8;
   const std::uint32_t channels = is_rgba || rec.pixel_format == PixelFormat::rgb8
                                      ? 3 : 1;
@@ -439,32 +438,65 @@ build_image_body(const PageResources::ImageRecord &rec) {
       static_cast<std::uint64_t>(rec.height_px);
   const std::uint32_t in_channels = is_rgba ? 4
       : rec.pixel_format == PixelFormat::rgb8 ? 3 : 1;
-  // Extract the colour channels (drop alpha for RGBA — see header note).
+  // Split colour and (for RGBA) alpha channels. The alpha plane ships as a
+  // grayscale /SMask XObject child object (#476) so PDF exports composite
+  // transparent pixels exactly like the on-screen rendering; the writer
+  // numbers the child immediately after the image and substitutes the
+  // @@CHILD0@@ placeholder with that number.
   std::string pixels;
   pixels.reserve(pixels_in * channels);
+  std::string alpha;
+  if (is_rgba) {
+    alpha.reserve(pixels_in);
+  }
   for (std::uint64_t i = 0; i < pixels_in; ++i) {
     const auto base = i * in_channels;
     for (std::uint32_t c = 0; c < channels; ++c) {
       pixels.push_back(static_cast<char>(rec.data[base + c]));
+    }
+    if (is_rgba) {
+      alpha.push_back(static_cast<char>(rec.data[base + channels]));
     }
   }
   std::string compressed;
   if (!flate_compress_buffer(pixels, compressed)) {
     return std::nullopt;
   }
-  std::string body;
+  PdfIndirectObject object;
+  std::string &body = object.body;
   body += "<< /Type /XObject /Subtype /Image /Width ";
   append_integer(body, static_cast<std::int64_t>(rec.width_px));
   body += " /Height ";
   append_integer(body, static_cast<std::int64_t>(rec.height_px));
   body += " /ColorSpace /";
   body += channels == 1 ? "DeviceGray" : "DeviceRGB";
-  body += " /BitsPerComponent 8 /Length ";
+  body += " /BitsPerComponent 8";
+  if (is_rgba) {
+    std::string alpha_compressed;
+    if (!flate_compress_buffer(alpha, alpha_compressed)) {
+      return std::nullopt;
+    }
+    // The writer substitutes "@@CHILD0@@" with "<n> 0 R" — no suffix here.
+    body += " /SMask @@CHILD0@@";
+    std::string smask;
+    smask += "<< /Type /XObject /Subtype /Image /Width ";
+    append_integer(smask, static_cast<std::int64_t>(rec.width_px));
+    smask += " /Height ";
+    append_integer(smask, static_cast<std::int64_t>(rec.height_px));
+    smask += " /ColorSpace /DeviceGray /BitsPerComponent 8 /Length ";
+    append_integer(smask, static_cast<std::int64_t>(alpha_compressed.size()));
+    smask += " /Filter /FlateDecode >>\nstream\n";
+    smask.append(alpha_compressed.data(), alpha_compressed.size());
+    smask += "\nendstream";
+    object.extra_bodies.push_back(std::move(smask));
+  }
+  body += " /Length ";
   append_integer(body, static_cast<std::int64_t>(compressed.size()));
   body += " /Filter /FlateDecode >>\nstream\n";
   body.append(compressed.data(), compressed.size());
   body += "\nendstream";
-  return body;
+  object.kind = PdfObjectKind::image;
+  return object;
 }
 
 // Emits one prepared symbol as PDF path operators, mirroring svg.cpp's
@@ -1179,6 +1211,7 @@ materialize_objects(const PreparedScene &scene,
         .body = std::move(*body),
         .kind = PdfObjectKind::pattern,
         .local_name = resources.pattern_names.at(pattern_id),
+        .extra_bodies = {},
     });
   }
   for (const auto &key : resources.image_order) {
@@ -1187,15 +1220,12 @@ materialize_objects(const PreparedScene &scene,
     if (rec_it == resources.image_records.end()) {
       continue;
     }
-    auto body = build_image_body(rec_it->second);
-    if (!body.has_value()) {
+    auto object = build_image_object(rec_it->second);
+    if (!object.has_value()) {
       return std::nullopt;
     }
-    objects.push_back(PdfIndirectObject{
-        .body = std::move(*body),
-        .kind = PdfObjectKind::image,
-        .local_name = name,
-    });
+    object->local_name = name;
+    objects.push_back(std::move(*object));
   }
   return objects;
 }
@@ -1249,10 +1279,12 @@ PdfSceneExporter::write(const PreparedScene &scene,
 
     std::vector<PdfPageContent> contents;
     std::vector<PdfPageSpec> specs;
-    std::vector<std::vector<PdfIndirectObject>> object_storage;
+    // deque: push_back never invalidates references to existing elements,
+    // so the spans handed to PdfPageContent::objects stay valid without
+    // relying on the reserve() matching the final page count.
+    std::deque<std::vector<PdfIndirectObject>> object_storage;
     contents.reserve(windows.size());
     specs.reserve(windows.size());
-    object_storage.reserve(windows.size());
 
     const auto page_count = static_cast<std::uint32_t>(windows.size());
     for (std::uint32_t page_index = 0; page_index < page_count; ++page_index) {
