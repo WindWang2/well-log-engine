@@ -241,47 +241,36 @@ void fill_rect(std::vector<std::uint8_t> &tile, std::uint32_t width,
   }
 }
 
-// Even-odd point-in-polygon test on a polygon centred at the origin (scene
-// millimetres, y-down).
-bool point_in_polygon(const std::vector<PhysicalPoint> &polygon, double px,
-                      double py) {
-  bool inside = false;
-  for (std::size_t i = 0, j = polygon.size() - 1; i < polygon.size();
-       j = i++) {
-    const auto &a = polygon[i];
-    const auto &b = polygon[j];
-    if ((a.top.value > py) != (b.top.value > py)) {
-      const auto x_intersect =
-          a.left.value +
-          (py - a.top.value) / (b.top.value - a.top.value) *
-              (b.left.value - a.left.value);
-      if (px < x_intersect) {
-        inside = !inside;
-      }
-    }
-  }
-  return inside;
-}
-
-// Fills a scene-mm polygon (centred at the origin) translated to
+// Fills scene-mm polygons (each centred at the origin) translated to
 // (center_x, center_y) — the raster path's shared symbol geometry consumer.
-void fill_polygon(std::vector<std::uint8_t> &tile, std::uint32_t width,
-                  std::uint32_t height, std::uint32_t channels,
-                  const std::vector<PhysicalPoint> &outline, double center_x,
-                  double center_y, double ppm, std::int64_t tile_origin_y,
-                  RgbaColor color) {
-  if (outline.size() < 3) {
-    return;
-  }
+// All contours are swept in one scanline pass and crossings are paired with
+// the even-odd rule, so a nested counter-contour toggles parity a second
+// time and subtracts its interior (SVG single-path multi-subpath semantics;
+// without it O/A/B/e/o paint their holes solid).
+void fill_polygons(std::vector<std::uint8_t> &tile, std::uint32_t width,
+                   std::uint32_t height, std::uint32_t channels,
+                   const std::vector<std::vector<PhysicalPoint>> &contours,
+                   double center_x, double center_y, double ppm,
+                   std::int64_t tile_origin_y, RgbaColor color) {
   double min_x = std::numeric_limits<double>::infinity();
   double max_x = -std::numeric_limits<double>::infinity();
   double min_y = std::numeric_limits<double>::infinity();
   double max_y = -std::numeric_limits<double>::infinity();
-  for (const auto &p : outline) {
-    min_x = std::min(min_x, p.left.value);
-    max_x = std::max(max_x, p.left.value);
-    min_y = std::min(min_y, p.top.value);
-    max_y = std::max(max_y, p.top.value);
+  bool has_contour = false;
+  for (const auto &polygon : contours) {
+    if (polygon.size() < 3) {
+      continue;
+    }
+    has_contour = true;
+    for (const auto &p : polygon) {
+      min_x = std::min(min_x, p.left.value);
+      max_x = std::max(max_x, p.left.value);
+      min_y = std::min(min_y, p.top.value);
+      max_y = std::max(max_y, p.top.value);
+    }
+  }
+  if (!has_contour) {
+    return;
   }
   const auto x0 = std::max(
       0, static_cast<int>(std::floor((center_x + min_x) * ppm)));
@@ -297,28 +286,34 @@ void fill_polygon(std::vector<std::uint8_t> &tile, std::uint32_t width,
       static_cast<int>(height),
       static_cast<int>(std::ceil((center_y + max_y) * ppm) -
                       static_cast<double>(tile_origin_y)));
-  // Scanline even-odd fill: per row, intersect the polygon's edges with the
+  // Scanline even-odd fill: per row, intersect every contour's edges with the
   // row's sample line once (O(rows x edges + filled pixels)) and fill pixel
-  // centers between paired crossings. The per-pixel point_in_polygon loop
-  // this replaces re-walked every edge for every bbox pixel (O(bbox x
-  // edges)) — large symbols at high DPI dominated raster export time.
-  // Edge inclusion follows the same half-open rule as point_in_polygon, so
-  // the filled set is the even-odd interior at pixel centers.
+  // centers between paired crossings. Replaces a per-pixel loop that
+  // re-walked every edge for every bbox pixel (O(bbox x edges)) — large
+  // symbols at high DPI dominated raster export time. Edges are swept with a
+  // half-open rule (a crossing is counted when the sample line spans the
+  // edge on exactly one side), so the filled set is the even-odd interior at
+  // pixel centers.
   std::vector<double> crossings;
   for (int y = y0; y < y1; ++y) {
     const auto sy = (static_cast<double>(y) + 0.5 +
                      static_cast<double>(tile_origin_y)) / ppm - center_y;
     crossings.clear();
-    for (std::size_t i = 0, j = outline.size() - 1; i < outline.size();
-         j = i++) {
-      const auto &a = outline[j];
-      const auto &b = outline[i];
-      const auto ay = a.top.value;
-      const auto by = b.top.value;
-      if ((ay <= sy && by > sy) || (by <= sy && ay > sy)) {
-        const auto t = (sy - ay) / (by - ay);
-        crossings.push_back(a.left.value +
-                            t * (b.left.value - a.left.value));
+    for (const auto &polygon : contours) {
+      if (polygon.size() < 3) {
+        continue;
+      }
+      for (std::size_t i = 0, j = polygon.size() - 1; i < polygon.size();
+           j = i++) {
+        const auto &a = polygon[j];
+        const auto &b = polygon[i];
+        const auto ay = a.top.value;
+        const auto by = b.top.value;
+        if ((ay <= sy && by > sy) || (by <= sy && ay > sy)) {
+          const auto t = (sy - ay) / (by - ay);
+          crossings.push_back(a.left.value +
+                              t * (b.left.value - a.left.value));
+        }
       }
     }
     std::sort(crossings.begin(), crossings.end());
@@ -336,6 +331,16 @@ void fill_polygon(std::vector<std::uint8_t> &tile, std::uint32_t width,
       }
     }
   }
+}
+
+void fill_polygon(std::vector<std::uint8_t> &tile, std::uint32_t width,
+                  std::uint32_t height, std::uint32_t channels,
+                  const std::vector<PhysicalPoint> &outline, double center_x,
+                  double center_y, double ppm, std::int64_t tile_origin_y,
+                  RgbaColor color) {
+  const std::vector<std::vector<PhysicalPoint>> contours{outline};
+  fill_polygons(tile, width, height, channels, contours, center_x, center_y,
+                ppm, tile_origin_y, color);
 }
 
 struct PixelPoint {
@@ -624,11 +629,15 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
               .top = Millimetres{glyph.origin.top.value + gx * sin_r +
                                  gy * cos_r}};
         };
+        // All contours of one glyph are swept in a single even-odd pass.
+        // Per-contour fills cannot subtract holes (O/A/B/e/o would paint
+        // their counters solid); pairing crossings across contours gives the
+        // SVG single-path multi-subpath semantics.
         std::vector<PhysicalPoint> subpath;
+        std::vector<std::vector<PhysicalPoint>> contours;
         const auto flush_subpath = [&]() {
           if (subpath.size() >= 3) {
-            fill_polygon(tile, geom.width, tile_rows, geom.channels, subpath,
-                         0.0, 0.0, ppm, tile_origin_y, run.color);
+            contours.push_back(std::move(subpath));
           }
           subpath.clear();
         };
@@ -666,9 +675,40 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
             current_y = ty;
             break;
           }
+          case OutlineVerb::cubic_to: {
+            const auto c1x = command.coordinates[0];
+            const auto c1y = command.coordinates[1];
+            const auto c2x = command.coordinates[2];
+            const auto c2y = command.coordinates[3];
+            const auto tx = command.coordinates[4];
+            const auto ty = command.coordinates[5];
+            // Flatten the cubic to 8 segments (CFF/OTF outlines carry
+            // cubics).
+            for (int step = 1; step <= 8; ++step) {
+              const auto t = static_cast<double>(step) / 8.0;
+              const auto u = 1.0 - t;
+              const auto px = u * u * u * current_x + 3 * u * u * t * c1x +
+                              3 * u * t * t * c2x + t * t * t * tx;
+              const auto py = u * u * u * current_y + 3 * u * u * t * c1y +
+                              3 * u * t * t * c2y + t * t * t * ty;
+              subpath.push_back(to_scene_mm(px, py));
+            }
+            current_x = tx;
+            current_y = ty;
+            break;
+          }
+          case OutlineVerb::close:
+            // End the contour; the scanline fill closes subpaths implicitly
+            // (the edge loop connects the last vertex back to the first).
+            flush_subpath();
+            break;
           }
         }
         flush_subpath();
+        if (!contours.empty()) {
+          fill_polygons(tile, geom.width, tile_rows, geom.channels, contours,
+                        0.0, 0.0, ppm, tile_origin_y, run.color);
+        }
       }
     }
   }
@@ -1122,6 +1162,7 @@ render_export(const PreparedScene &scene, const ExportSnapshot &snapshot,
         .presentation_version = snapshot.presentation_version,
         .document_id = snapshot.document_id,
         .peak_tile_bytes = peak_tile_bytes,
+        .notes = {},
     };
     // Image layers carry only source references — the raster path has no
     // synchronous pixel resolver, so those tiles cannot be drawn here. Say
