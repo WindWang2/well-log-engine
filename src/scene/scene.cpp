@@ -3904,11 +3904,11 @@ compose_multi_well_scene(std::span<const WellScenePlacement> wells,
       for (const auto &glyph : local.glyphs) {
         out->glyphs.push_back(glyph);
       }
+      const auto run_base = out->text_runs.size();
       for (auto run : local.text_runs) {
         run.first_glyph += static_cast<std::uint64_t>(glyph_base);
         out->text_runs.push_back(run);
       }
-      const auto run_base = out->text_runs.size();
       for (auto layer : local.text_layers) {
         layer.first_run += static_cast<std::uint64_t>(run_base);
         out->text_layers.push_back(layer);
