@@ -29,9 +29,10 @@ void append_number(std::string &output, double value) {
     return;
   }
   std::array<char, 64> buffer{};
-  const auto result = std::to_chars(
-      buffer.data(), buffer.data() + buffer.size(), value,
-      std::chars_format::general, std::numeric_limits<double>::max_digits10);
+  // Shortest round-trip representation (no explicit precision), keeping
+  // export coordinates compact instead of max_digits10 noise.
+  const auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(),
+                                    value, std::chars_format::general);
   if (result.ec != std::errc{}) {
     throw std::bad_alloc{};
   }

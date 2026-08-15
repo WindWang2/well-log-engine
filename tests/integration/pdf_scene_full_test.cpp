@@ -56,7 +56,7 @@ void require_near(double actual, double expected, std::string_view message) {
 
 // Builds the exact normalized-colour operator string the writer emits for an
 // sRGB triple + operator (rg = fill, RG = stroke), reproducing its append_number
-// (to_chars general, max_digits10) so the assertion is robust to digit count.
+// (to_chars general, shortest round-trip) so the assertion is robust to digit count.
 // Used to assert the custom-layer primitives by their unique colours (which no
 // other layer emits) rather than generic S/f operators.
 [[nodiscard]] std::string color_operator(std::uint8_t r, std::uint8_t g,
@@ -67,9 +67,9 @@ void require_near(double actual, double expected, std::string_view message) {
       return std::string{"0"};
     }
     std::array<char, 48> buffer{};
-    const auto res = std::to_chars(buffer.data(), buffer.data() + buffer.size(),
-                                   v, std::chars_format::general,
-                                   std::numeric_limits<double>::max_digits10);
+    const auto res =
+        std::to_chars(buffer.data(), buffer.data() + buffer.size(), v,
+                      std::chars_format::general);
     return res.ec == std::errc{} ? std::string(buffer.data(), res.ptr)
                                  : std::string{"0"};
   };

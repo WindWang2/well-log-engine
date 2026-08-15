@@ -121,9 +121,10 @@ void append_number(std::string &out, double value) {
     return;
   }
   std::array<char, 48> buffer{};
+  // Shortest round-trip representation (no explicit precision).
   const auto res =
       std::to_chars(buffer.data(), buffer.data() + buffer.size(), value,
-                    std::chars_format::general, 17);
+                    std::chars_format::general);
   if (res.ec == std::errc{}) {
     out.append(buffer.data(), res.ptr);
   } else {

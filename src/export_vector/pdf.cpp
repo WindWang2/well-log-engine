@@ -35,9 +35,12 @@ void append_number(std::string &out, double value) {
     return;
   }
   std::array<char, 48> buffer{};
-  const auto res = std::to_chars(buffer.data(), buffer.data() + buffer.size(),
-                                 value, std::chars_format::general,
-                                 std::numeric_limits<double>::max_digits10);
+  // No explicit precision: to_chars then emits the SHORTEST round-trip
+  // representation (max_digits10 digits is never shortest — it padded every
+  // coordinate with numeric noise and 2-5x'd export file sizes).
+  const auto res =
+      std::to_chars(buffer.data(), buffer.data() + buffer.size(), value,
+                    std::chars_format::general);
   if (res.ec != std::errc{}) {
     out.push_back('0');
     return;
