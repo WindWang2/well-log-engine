@@ -557,8 +557,11 @@ Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
     std::vector<std::size_t> page_object_base(pages.size() + 1);
     page_object_base[0] = object_base;
     for (std::size_t p = 0; p < pages.size(); ++p) {
-      page_object_base[p + 1] =
-          page_object_base[p] + pages[p].objects.size();
+      std::size_t page_objects = 0;
+      for (const auto &object : pages[p].objects) {
+        page_objects += 1 + object.extra_bodies.size();
+      }
+      page_object_base[p + 1] = page_object_base[p] + page_objects;
     }
     const std::size_t total_caller_objects =
         page_object_base[pages.size()] - object_base;
@@ -779,10 +782,42 @@ Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
     // body is already a complete dict (+ optional stream); the writer only adds
     // the "N 0 obj\n" header and "endobj\n" trailer.
     for (std::size_t p = 0; p < pages.size(); ++p) {
+      // Running object number: each caller object occupies 1 + its child
+      // count numbers (children immediately follow their parent).
+      std::size_t next_number = page_object_base[p];
       for (std::size_t oi = 0; oi < pages[p].objects.size(); ++oi) {
-        emit_object_header(page_object_base[p] + oi);
-        out += pages[p].objects[oi].body;
+        const auto &object = pages[p].objects[oi];
+        const std::size_t parent_number = next_number;
+        const std::size_t child_base = parent_number + 1;
+        next_number = child_base + object.extra_bodies.size();
+        emit_object_header(parent_number);
+        if (object.extra_bodies.empty()) {
+          out += object.body;
+        } else {
+          // Substitute each "@@CHILD<n>@@" placeholder with the child's
+          // assigned number (numbers exist only at write time — see the
+          // PdfIndirectObject::extra_bodies contract).
+          auto body = object.body;
+          for (std::size_t child = 0; child < object.extra_bodies.size();
+               ++child) {
+            const auto marker = "@@CHILD" + std::to_string(child) + "@@";
+            const auto replacement =
+                std::to_string(child_base + child) + " 0 R";
+            auto at = body.find(marker);
+            while (at != std::string::npos) {
+              body.replace(at, marker.size(), replacement);
+              at = body.find(marker, at + replacement.size());
+            }
+          }
+          out += body;
+        }
         out += "\nendobj\n";
+        for (std::size_t child = 0; child < object.extra_bodies.size();
+             ++child) {
+          emit_object_header(child_base + child);
+          out += object.extra_bodies[child];
+          out += "\nendobj\n";
+        }
       }
     }
 
