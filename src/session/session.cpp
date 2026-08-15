@@ -12,6 +12,10 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <condition_variable>
+#include <functional>
+#include <queue>
+#include <stop_token>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
@@ -746,8 +750,96 @@ struct LodBuildOutput {
   std::vector<EntityId> skipped_images;
 };
 
+// Long-lived worker pool for LOD/frame build tasks (issue #492): every
+// viewport pan/zoom used to create and join a fresh std::jthread per mouse
+// event (~50-100us of thread churn at 60 Hz drag). Tasks now run on
+// persistent pool threads; cancellation moved from the jthread's implicit
+// stop token into the task state's stop_source, so request_stop()/reap/drain
+// keep their semantics (generation discard unchanged).
+class TaskExecutor {
+public:
+  explicit TaskExecutor(unsigned int thread_count) {
+    for (unsigned int index = 0; index < thread_count; ++index) {
+      workers_.emplace_back([this] { worker_loop(); });
+    }
+  }
+
+  ~TaskExecutor() {
+    std::vector<QueuedJob> dropped;
+    {
+      const auto lock = std::lock_guard{mutex_};
+      shutdown_ = true;
+      while (!pending_.empty()) {
+        dropped.push_back(std::move(pending_.front()));
+        pending_.pop();
+      }
+    }
+    cv_.notify_all();
+    // Jobs still queued at shutdown will never run on a pool thread; run
+    // them inline with an already-stopped token so their task states observe
+    // cancellation and waiters (drain/reap) are not left blocking on a job
+    // that will not run. The workers_' jthread dtors then join any in-flight
+    // pool threads (same join-on-destruction contract as the per-task jthread
+    // this class replaces).
+    for (auto &job : dropped) {
+      run_cancelled(*job.source, std::move(job.job));
+    }
+  }
+
+  // Runs job(source.get_token()) on a pool thread. The stop_source lives in
+  // the task state (shared_ptr-kept alive by the task record), so a
+  // request_stop() racing with queueing is still observed by the job.
+  void submit(std::stop_source &source,
+              std::function<void(std::stop_token)> job) {
+    {
+      const auto lock = std::lock_guard{mutex_};
+      if (!shutdown_) {
+        pending_.push(QueuedJob{&source, std::move(job)});
+        cv_.notify_one();
+        return;
+      }
+    }
+    run_cancelled(source, std::move(job));
+  }
+
+private:
+  struct QueuedJob {
+    std::stop_source *source;
+    std::function<void(std::stop_token)> job;
+  };
+
+  void worker_loop() {
+    for (;;) {
+      auto job = QueuedJob{};
+      {
+        auto lock = std::unique_lock{mutex_};
+        cv_.wait(lock, [this] { return shutdown_ || !pending_.empty(); });
+        if (shutdown_ && pending_.empty()) {
+          return;
+        }
+        job = std::move(pending_.front());
+        pending_.pop();
+      }
+      job.job(job.source->get_token());
+    }
+  }
+
+  static void run_cancelled(std::stop_source &source,
+                            std::function<void(std::stop_token)> job) {
+    source.request_stop();
+    job(source.get_token());
+  }
+
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  std::queue<QueuedJob> pending_;
+  bool shutdown_{};
+  std::vector<std::jthread> workers_;
+};
+
 struct LodTaskState {
   std::mutex mutex;
+  std::stop_source stop_source;
   bool finished{};
   LodBuildOutput output;
 };
@@ -757,7 +849,6 @@ struct LodTask {
   DocumentRevision revision;
   std::uint64_t generation{};
   std::shared_ptr<LodTaskState> state;
-  std::jthread worker;
 };
 
 struct FrameBuildOutput {
@@ -768,6 +859,7 @@ struct FrameBuildOutput {
 
 struct FrameTaskState {
   std::mutex mutex;
+  std::stop_source stop_source;
   bool finished{};
   FrameBuildOutput output;
 };
@@ -777,12 +869,11 @@ struct FrameTask {
   DocumentRevision revision;
   std::uint64_t generation{};
   std::shared_ptr<FrameTaskState> state;
-  std::jthread worker;
 };
 
 [[nodiscard]] std::unique_ptr<FrameTask> make_frame_task(
-    EntityId document_id, DocumentRevision revision, std::uint64_t generation,
-    std::shared_ptr<const WellLogDocument> document,
+    TaskExecutor &executor, EntityId document_id, DocumentRevision revision,
+    std::uint64_t generation, std::shared_ptr<const WellLogDocument> document,
     ScenePresentation presentation,
     std::shared_ptr<const detail::ScenePreparer::CurveLodMap> pyramids,
     CurveLodQuery query,
@@ -796,7 +887,11 @@ struct FrameTask {
   task->revision = revision;
   task->generation = generation;
   task->state = state;
-  task->worker = std::jthread(
+  // Bind the reference BEFORE the lambda capture moves the shared_ptr:
+  // argument evaluation order is unspecified, so evaluating
+  // `state->stop_source` after the move would dereference a null state.
+  auto &stop_source = state->stop_source;
+  executor.submit(stop_source,
       [document = std::move(document), presentation = std::move(presentation),
        pyramids = std::move(pyramids), query,
        image_pyramids = std::move(image_pyramids), image_query,
@@ -1019,6 +1114,7 @@ struct WellLogSession::Impl {
   std::unordered_map<EntityId, PendingLodReuse, EntityIdHash>
       pending_lod_reuse;
   std::unordered_map<EntityId, std::uint64_t, EntityIdHash> frame_generations;
+  TaskExecutor task_executor{2};
   std::vector<std::unique_ptr<LodTask>> lod_tasks;
   std::vector<std::unique_ptr<FrameTask>> frame_tasks;
   std::vector<ViewEvent> events;
@@ -1235,9 +1331,7 @@ struct WellLogSession::Impl {
     // Request cooperative cancellation on every outstanding worker first, so
     // they all observe the stop_token concurrently rather than one-at-a-time.
     for (auto &task : tasks) {
-      if (task->worker.joinable()) {
-        task->worker.request_stop();
-      }
+      task->state->stop_source.request_stop();
     }
     // Bounded wait: give workers a short window to observe the token and
     // finish. Normal teardown (workers already done) reaps immediately.
@@ -1259,8 +1353,8 @@ struct WellLogSession::Impl {
         std::this_thread::yield();
         continue;
       }
-      // Worker is done — erasing the task destroys its jthread, but the thread
-      // has already exited so the implicit join returns immediately.
+      // Worker is done — erasing the task drops the task record; the pool
+      // thread it ran on stays alive for the next job (TaskExecutor, #492).
       tasks.erase(task_iter);
     }
     // Workers still running after the deadline remain in `tasks`; their jthread
@@ -1421,9 +1515,10 @@ Result<CommandReceipt> WellLogSession::execute(SetDocumentCommand command) {
           .base_bucket_samples = 16,
           .maximum_derived_bytes = per_curve_budget,
       };
-      task->worker = std::jthread([document, state, image_pyramid_options,
-                                   reuse_map,
-                                   build_options](std::stop_token stop_token) {
+      impl_->task_executor.submit(
+          state->stop_source,
+          [document, state, image_pyramid_options, reuse_map,
+           build_options](std::stop_token stop_token) {
         auto output = LodBuildOutput{};
         try {
           for (const auto &curve : document->curves()) {
@@ -1598,12 +1693,12 @@ Result<CommandReceipt> WellLogSession::execute(SetDocumentCommand command) {
     }
     for (auto &existing_task : impl_->lod_tasks) {
       if (existing_task->document_id == document_id) {
-        existing_task->worker.request_stop();
+        existing_task->state->stop_source.request_stop();
       }
     }
     for (auto &existing_task : impl_->frame_tasks) {
       if (existing_task->document_id == document_id) {
-        existing_task->worker.request_stop();
+        existing_task->state->stop_source.request_stop();
       }
     }
     impl_->documents.insert_or_assign(document_id, document);
@@ -1818,6 +1913,7 @@ WellLogSession::execute(const SetPresentationCommand &command) {
         }
         frame_generation = impl_->next_frame_generation;
         frame_task = make_frame_task(
+            impl_->task_executor,
             document_id, revision, frame_generation, document->second,
             command.presentation, preparation->second.pyramids,
             CurveLodQuery{
@@ -1862,7 +1958,7 @@ WellLogSession::execute(const SetPresentationCommand &command) {
       }
       for (auto &existing_task : impl_->frame_tasks) {
         if (existing_task->document_id == document_id) {
-          existing_task->worker.request_stop();
+          existing_task->state->stop_source.request_stop();
         }
       }
       if (frame_task != nullptr) {
@@ -1952,7 +2048,7 @@ WellLogSession::execute(const SetPresentationCommand &command) {
     impl_->viewport_defaults.reserve(impl_->viewport_defaults.size() + 1);
     for (auto &existing_task : impl_->frame_tasks) {
       if (existing_task->document_id == document_id) {
-        existing_task->worker.request_stop();
+        existing_task->state->stop_source.request_stop();
       }
     }
     impl_->frame_generations.erase(document_id);
@@ -2538,6 +2634,7 @@ WellLogSession::execute(const SetViewportMetricsCommand &command) {
       }
       frame_generation = impl_->next_frame_generation;
       frame_task = make_frame_task(
+          impl_->task_executor,
           command.document_id, document->second->revision(), frame_generation,
           document->second, presentation->second, preparation->second.pyramids,
           CurveLodQuery{
@@ -2563,7 +2660,7 @@ WellLogSession::execute(const SetViewportMetricsCommand &command) {
       impl_->frame_generations.reserve(impl_->frame_generations.size() + 1);
       for (auto &existing_task : impl_->frame_tasks) {
         if (existing_task->document_id == command.document_id) {
-          existing_task->worker.request_stop();
+          existing_task->state->stop_source.request_stop();
         }
       }
       impl_->frame_generations.insert_or_assign(command.document_id,
@@ -4377,6 +4474,7 @@ void WellLogSession::poll_async() noexcept {
             } else {
               const auto frame_generation = impl_->next_frame_generation;
               auto pending_frame = make_frame_task(
+                  impl_->task_executor,
                   completed_task->document_id, completed_task->revision,
                   frame_generation, document->second, presentation->second,
                   preparation->second.pyramids,
@@ -4400,7 +4498,7 @@ void WellLogSession::poll_async() noexcept {
                                                1);
               for (auto &existing_task : impl_->frame_tasks) {
                 if (existing_task->document_id == completed_task->document_id) {
-                  existing_task->worker.request_stop();
+                  existing_task->state->stop_source.request_stop();
                 }
               }
               impl_->frame_generations.insert_or_assign(
