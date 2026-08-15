@@ -676,19 +676,25 @@ void emit_text_run(PdfPathStream &stream, const PreparedScene &scene,
     stream.set_fill_alpha(static_cast<double>(run.color.alpha) / 255.0);
   }
   const auto fs = run.font_size.value;
+  // (font_index, glyph_id) -> outline lookup, built once per run instead of a
+  // linear scan per glyph (O(glyphs x outlines) -> O(glyphs + outlines),
+  // issue #487). The outlines span is the single source of truth shared with
+  // the SVG backend.
+  std::unordered_map<std::uint64_t, const PreparedGlyphOutline *> outline_by_key;
+  outline_by_key.reserve(outlines.size());
+  for (const auto &candidate : outlines) {
+    const auto key = (static_cast<std::uint64_t>(candidate.font_index) << 32U) |
+                     candidate.glyph_id;
+    outline_by_key.emplace(key, &candidate);
+  }
   for (std::uint64_t offset = 0; offset < run.glyph_count; ++offset) {
     const auto &glyph = glyphs[static_cast<std::size_t>(run.first_glyph +
                                                          offset)];
-    // Locate this glyph's outline by matching font_index + glyph_id. The
-    // outlines span is the single source of truth shared with the SVG backend.
-    const PreparedGlyphOutline *outline = nullptr;
-    for (const auto &candidate : outlines) {
-      if (candidate.font_index == glyph.font_index &&
-          candidate.glyph_id == glyph.glyph_id) {
-        outline = &candidate;
-        break;
-      }
-    }
+    const auto key = (static_cast<std::uint64_t>(glyph.font_index) << 32U) |
+                     glyph.glyph_id;
+    const auto outline_it = outline_by_key.find(key);
+    const PreparedGlyphOutline *outline =
+        outline_it == outline_by_key.end() ? nullptr : outline_it->second;
     if (outline == nullptr || outline->command_count == 0) {
       continue;
     }
