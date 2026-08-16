@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import uuid
 import zipfile
@@ -1892,13 +1893,9 @@ class WellLogWorkstationWindow(QMainWindow):
         found: FormationTop | None = None
         for t in tops:
             if (t.id or t.name) == key:
-                found = FormationTop(
-                    id=t.id,
-                    name=t.name,
-                    depth=float(depth),
-                    unit=t.unit,
-                    color=t.color,
-                )
+                # dataclasses.replace preserves every field (unit_id,
+                # semantic, ...) — hand-enumeration dropped them (#599).
+                found = dataclasses.replace(t, depth=float(depth))
                 updated.append(found)
             else:
                 updated.append(t)
@@ -6322,6 +6319,7 @@ class WellLogWorkstationWindow(QMainWindow):
                             values=values,
                             null_mask=null_mask,
                             depth=edit_depth,
+                            identity=f"edited:{mnemonic}",
                         )
                     ],
                 )

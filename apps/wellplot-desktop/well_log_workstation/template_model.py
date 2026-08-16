@@ -105,6 +105,12 @@ class BoundCurveLayer:
     # maps values with its own scale instead of the track's. None = fall
     # back to the track scale. Optional; default None.
     scale: ScaleSpec | None = None
+    # Stable identity used by the engine bridge to deduplicate curve layers.
+    # The document model's invariant is identity = mnemonic + version, so the
+    # plain mnemonic is NOT unique (edited-* correction tracks and multi-rate
+    # resample leaves bind the same mnemonic). None = fall back to the
+    # historic mnemonic-only key (#585).
+    identity: str | None = None
 
 
 @dataclass
