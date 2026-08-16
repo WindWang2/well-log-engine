@@ -3711,7 +3711,13 @@ WellLogSession::execute(const ApplyPatchCommand &command) {
           pres.document_id(), pres.reference_depth_range(),
           pres.physical_height(), pres.font_asset_fingerprint());
       pres_builder.set_presentation_version(pres.presentation_version());
-      // Depth-transform version round-trips via the descriptor's version.
+      // Depth transform: the control-point MAP must round-trip too, not
+      // just the version — the builder defaults to an empty transform, so
+      // rebuilding with the version alone left the scene claiming a
+      // transform exists while mapping identity (curves/markers snapped
+      // back to untransformed depths after every patch edit). Mirrors
+      // rebuild_presentation_with_transform.
+      pres_builder.set_depth_transform(pres.depth_transform_map());
       pres_builder.set_depth_transform_version(pres.depth_transform().version);
       for (const auto &pattern : pres.patterns()) {
         pres_builder.add_pattern(pattern);

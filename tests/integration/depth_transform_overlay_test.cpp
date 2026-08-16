@@ -644,6 +644,74 @@ void domain_mismatch_diagnostic_under_transform() {
           "domain mismatch under transform yields diagnostic");
 }
 
+// #514 (workbench): ApplyPatchCommand rebuilds the presentation for any
+// entity edit; the rebuild used to copy only the depth-transform VERSION,
+// not the control-point MAP, so the builder's default empty transform won —
+// the scene kept claiming a transform (nonzero version) while mapping
+// identity, and curves snapped back to reference depths after every patch.
+void apply_patch_preserves_depth_transform_map() {
+  WellLogSession session;
+  auto well = make_well_with_markers(
+      "16100000-0000-4000-8000-0000000000b1",
+      "16100000-0000-4000-8000-0000000000b2",
+      "16100000-0000-4000-8000-0000000000b3",
+      "16100000-0000-4000-8000-0000000000b4",
+      "16100000-0000-4000-8000-0000000000b5",
+      "16100000-0000-4000-8000-0000000000b6",
+      "16100000-0000-4000-8000-0000000000b7",
+      "16100000-0000-4000-8000-0000000000b8",
+      "16100000-0000-4000-8000-0000000000b9", 10.0, 50.0, 1000.0, 1200.0,
+      1000.0, 1200.0);
+  load_well_display_range(session, well, 900.0, 1100.0);
+
+  DepthTransform shift{
+      .control_points =
+          {
+              {.reference_depth = 1000.0, .display_depth = 900.0},
+              {.reference_depth = 1200.0, .display_depth = 1100.0},
+          },
+      .version = 1,
+  };
+  require(session
+              .execute(SetDepthTransformCommand{.document_id = well.document_id,
+                                                .transform = shift})
+              .has_value(),
+          "set depth transform");
+
+  // Any presentation-backed entity edit goes through the patched-
+  // presentation rebuild path.
+  const auto revision = session.document(well.document_id)->revision();
+  const auto result = session.execute(ApplyPatchCommand{
+      .document_id = well.document_id,
+      .patch =
+          DocumentPatch{
+              .base_revision = revision,
+              .edits = {EntityEdit{UpsertEntity{TrackSpec{
+                  .id = well.track_id, .width = Millimetres{40.0}}}}},
+          },
+  });
+  require(result.has_value(), "patch must succeed with a transform set");
+
+  auto scene = session.prepared_scene(well.document_id);
+  require(scene != nullptr, "scene after patch");
+  require(!scene->curve_points().empty(), "has curve points");
+  bool saw_display = false;
+  for (const auto &pt : scene->curve_points()) {
+    require(std::isfinite(pt.display_depth), "display depth finite");
+    require_near(pt.display_depth,
+                 map_reference_to_display(shift, pt.reference_depth), 1e-9,
+                 "patch must keep the depth-transform map");
+    if (std::abs(pt.reference_depth - 1000.0) < 1e-9) {
+      // Identity mapping (the bug) reported 1000; the transform maps the
+      // first sample to 900.
+      require_near(pt.display_depth, 900.0, 1e-9,
+                   "first sample display survives the patch");
+      saw_display = true;
+    }
+  }
+  require(saw_display, "found reference 1000 sample");
+}
+
 } // namespace
 
 int main() {
@@ -651,6 +719,7 @@ int main() {
   depth_transform_rejects_conflicts();
   depth_transform_clamp_and_linear_extrapolate();
   set_depth_transform_rebuilds_curves_with_display_depth();
+  apply_patch_preserves_depth_transform_map();
   align_wells_to_markers_shares_display_depth();
   cross_well_overlay_on_surface_svg();
   domain_mismatch_diagnostic_under_transform();
