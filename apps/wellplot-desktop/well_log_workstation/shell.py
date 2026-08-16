@@ -10,7 +10,7 @@ from typing import AbstractSet, Any, Iterable
 from xml.etree import ElementTree as ET
 
 import numpy as np
-from PySide6.QtCore import QPoint, QRectF, Qt, QTimer
+from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, QObject, QThread, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -187,6 +187,36 @@ from well_log_workstation.workspace import (
 )
 
 
+class _LasImportWorker(QObject):
+    """Parse + import a LAS file off the GUI thread (#511).
+
+    ``lasio.read`` is a pure-Python line-by-line ASCII parse (plus a full
+    file copy afterwards); a field-scale LAS froze the window for tens of
+    seconds to minutes. The worker performs the whole
+    ``import_las_into_workspace`` call off-thread; the GUI thread only
+    applies the resulting document and refreshes the trees.
+    """
+
+    finished = Signal(object)  # LasImportResult
+    failed = Signal(str)
+
+    def __init__(self, workspace, las_path):
+        super().__init__()
+        self._workspace = workspace
+        self._las_path = las_path
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = import_las_into_workspace(self._workspace, self._las_path)
+        except (LasImportError, WorkspaceError) as exc:
+            self.failed.emit(str(exc))
+        except OSError as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.finished.emit(result)
+
+
 class WellLogWorkstationWindow(QMainWindow):
     """Log-first shell: left tree · center document tabs · right inspector."""
 
@@ -273,6 +303,9 @@ class WellLogWorkstationWindow(QMainWindow):
         self._act_import_las.setObjectName("Action_ImportLas")
         self._act_import_las.triggered.connect(self._on_import_las)
         self._act_import_las.setEnabled(False)
+        # Off-thread LAS import state (#511): one import at a time.
+        self._las_import_thread: QThread | None = None
+        self._las_import_worker: _LasImportWorker | None = None
         self._act_import_plot_xml = file_menu.addAction("导入井图定义 XML…")
         self._act_import_plot_xml.setObjectName("Action_ImportPlotXml")
         self._act_import_plot_xml.triggered.connect(self._on_import_plot_xml)
@@ -1759,18 +1792,15 @@ class WellLogWorkstationWindow(QMainWindow):
         return ws
 
     def import_las_path(self, las_path: Path | str) -> str:
+        """Synchronous LAS import (BLOCKS the GUI thread for the whole parse).
+
+        Programmatic/test entry point. The interactive menu path runs the
+        same import off the GUI thread via _start_las_import (#511).
+        """
         if self._workspace is None:
             raise WorkspaceError("请先打开或新建工区")
         result = import_las_into_workspace(self._workspace, las_path)
-        self.session.put(result.document)
-        self._selected_well_id = result.catalog_well_id
-        self._refresh_tree()
-        self._select_well_in_tree(result.catalog_well_id)
-        self._refresh_well_content_tree()
-        self._refresh_tops_list()
-        self._sync_apply_enabled()
-        self._update_status()
-        return result.catalog_well_id
+        return self._apply_las_import_result(result)
 
     def load_tops_for_selected_well(self) -> list[FormationTop]:
         """Load tops for selection; update inspector + single-well canvas."""
@@ -6398,26 +6428,85 @@ class WellLogWorkstationWindow(QMainWindow):
         )
         if not path:
             return
-        try:
-            well_id = self.import_las_path(path)
-            doc = self.session.get(well_id)
-            n_curves = len(doc.curves) if doc else 0
-            extra = ""
-            if doc and doc.diagnostics:
-                extra = "\n\n提示:\n- " + "\n- ".join(doc.diagnostics[:8])
-            QMessageBox.information(
-                self,
-                "导入成功",
-                f"已导入井「{doc.well_name if doc else well_id}」\n"
-                f"曲线数: {n_curves}\n"
-                f"路径: {doc.source_path if doc else ''}"
-                f"{extra}\n\n"
-                f"请在右栏选择图版并「应用到选中井」以显示多图道。",
-            )
-        except (LasImportError, WorkspaceError) as exc:
-            QMessageBox.warning(self, "导入 LAS 失败", str(exc))
-        except OSError as exc:
-            QMessageBox.warning(self, "导入 LAS 失败", str(exc))
+        self._start_las_import(path)
+
+    def _start_las_import(self, las_path: Path | str) -> None:
+        """Import a LAS file off the GUI thread (#511).
+
+        The lasio parse (pure-Python, line-by-line ASCII) plus the file
+        copy used to run synchronously in the menu slot and froze the
+        window for tens of seconds to minutes on field-scale files. The
+        parse/copy runs in a worker thread; the document commit and all
+        tree/UI refreshes stay on the GUI thread via queued signals.
+        """
+        if self._workspace is None:
+            QMessageBox.information(self, "导入 LAS", "请先打开或新建工区。")
+            return
+        if self._las_import_thread is not None:
+            QMessageBox.information(self, "导入 LAS", "已有导入正在进行，请稍候。")
+            return
+        self._act_import_las.setEnabled(False)
+        self.statusBar().showMessage(f"正在后台解析 {Path(las_path).name} …")
+        thread = QThread()
+        worker = _LasImportWorker(self._workspace, las_path)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_las_import_finished)
+        worker.failed.connect(self._on_las_import_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._on_las_import_thread_done)
+        self._las_import_thread = thread
+        self._las_import_worker = worker
+        thread.start()
+
+    def _on_las_import_thread_done(self) -> None:
+        self._las_import_thread = None
+        self._las_import_worker = None
+        self._act_import_las.setEnabled(self._workspace is not None)
+
+    def _apply_las_import_result(self, result) -> str:
+        """Commit an import result and refresh the trees (GUI thread)."""
+        self.session.put(result.document)
+        self._selected_well_id = result.catalog_well_id
+        self._refresh_tree()
+        self._select_well_in_tree(result.catalog_well_id)
+        self._refresh_well_content_tree()
+        self._refresh_tops_list()
+        self._sync_apply_enabled()
+        self._update_status()
+        return result.catalog_well_id
+
+    def _on_las_import_finished(self, result) -> None:
+        well_id = self._apply_las_import_result(result)
+        self.statusBar().showMessage(f"LAS 导入完成: {well_id}", 5000)
+        doc = self.session.get(well_id)
+        n_curves = len(doc.curves) if doc else 0
+        extra = ""
+        if doc and doc.diagnostics:
+            extra = "\n\n提示:\n- " + "\n- ".join(doc.diagnostics[:8])
+        QMessageBox.information(
+            self,
+            "导入成功",
+            f"已导入井「{doc.well_name if doc else well_id}」\n"
+            f"曲线数: {n_curves}\n"
+            f"路径: {doc.source_path if doc else ''}"
+            f"{extra}\n\n"
+            f"请在右栏选择图版并「应用到选中井」以显示多图道。",
+        )
+
+    def _on_las_import_failed(self, message: str) -> None:
+        self.statusBar().clearMessage()
+        QMessageBox.warning(self, "导入 LAS 失败", message)
+
+    def closeEvent(self, event) -> None:
+        # An in-flight LAS import thread must be drained before the widget
+        # tree dies, or QThread destruction crashes the process at exit.
+        thread = self._las_import_thread
+        if thread is not None:
+            thread.quit()
+            thread.wait(3000)
+        super().closeEvent(event)
 
     def _on_apply_template(self) -> None:
         if self._selected_well_id is None:
