@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import QDialog
 
 from well_log_workstation.curve_edit import (
     CurveEdit,
@@ -916,3 +917,52 @@ def test_shell_undo_shortcut_distinct_from_tops(qtbot, tmp_path: Path) -> None:
     assert win._act_redo_curve_edits.shortcut().toString() == "Ctrl+Alt+Shift+Z"
     assert win._act_undo_tops.shortcut().toString() == "Ctrl+Z"
     assert win._act_redo_tops.shortcut().toString() == "Ctrl+Shift+Z"
+
+
+def test_curve_edit_dialog_preserves_freehand_edits(qtbot) -> None:
+    """#588: opening the dialog for a well with freehand strokes must not
+    convert them to despike definitions or destroy the points on OK."""
+    from well_log_workstation.curve_edit import CurveEdit
+    from well_log_workstation.curve_edit_dialog import CurveEditDialog
+
+    original = CurveEdit(
+        mnemonic="GR",
+        method="freehand",
+        points=((1000.0, 5.0), (1050.0, 8.0), (1100.0, 6.0)),
+    )
+    dlg = CurveEditDialog(current=[original])
+    qtbot.addWidget(dlg)
+    combo = dlg.table.cellWidget(0, 1)
+    assert combo.currentData() == "freehand", (
+        "freehand rows must not silently become despike"
+    )
+    out = dlg.value()
+    assert len(out) == 1
+    assert out[0].method == "freehand"
+    assert out[0].points == ((1000.0, 5.0), (1050.0, 8.0), (1100.0, 6.0))
+    assert out[0].mnemonic == "GR"
+
+
+def test_curve_edit_dialog_freehand_ok_does_not_require_window(
+    qtbot, monkeypatch
+) -> None:
+    """#588: OK on a freehand row must not block on the despike window>=3
+    validation."""
+    from well_log_workstation.curve_edit import CurveEdit
+    from well_log_workstation.curve_edit_dialog import CurveEditDialog
+
+    warnings: list = []
+    monkeypatch.setattr(
+        "well_log_workstation.curve_edit_dialog.QMessageBox.warning",
+        lambda *a, **k: warnings.append(a),
+    )
+    original = CurveEdit(
+        mnemonic="RT",
+        method="freehand",
+        points=((1000.0, 1.0), (1100.0, 2.0)),
+    )
+    dlg = CurveEditDialog(current=[original])
+    qtbot.addWidget(dlg)
+    dlg._on_accept()
+    assert not warnings, f"freehand row must not trip the despike guard: {warnings}"
+    assert dlg.result() == QDialog.DialogCode.Accepted
