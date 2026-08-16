@@ -103,3 +103,89 @@ def test_snapshot_independent() -> None:
     snap = snapshot_tops(tops)
     assert snap[0].name == "X"
     assert snap is not tops
+
+
+def test_snapshot_preserves_unit_id_and_semantic() -> None:
+    """#599: undo/redo snapshots must not drop unit_id / semantic."""
+    from well_log_workstation.tops_model import FormationTop
+
+    tops = [
+        FormationTop(
+            name="T1", depth=100.0, id="t1", unit_id="u-42", semantic="fault"
+        )
+    ]
+    snap = snapshot_tops(tops)
+    assert snap[0].unit_id == "u-42"
+    assert snap[0].semantic == "fault"
+    assert snap[0].id == "t1"
+
+
+def test_tops_json_roundtrip_preserves_unit_id_and_semantic(tmp_path: Path) -> None:
+    """#599: save/load must carry unit_id and semantic through."""
+    from well_log_workstation.tops_model import (
+        FormationTop,
+        load_tops_for_well,
+        save_tops_for_well,
+    )
+    from well_log_workstation.workspace import create_workspace
+
+    ws = create_workspace(tmp_path / "ws-top")
+    from well_log_workstation.workspace import add_well
+
+    well = add_well(ws, name="W1", path="wells/w1/data.las", well_id="well-1")
+    (ws.root / "wells" / "w1").mkdir(parents=True)
+    tops = [
+        FormationTop(
+            name="CSG",
+            depth=1001.0,
+            id="00000000-0000-0000-0000-000000000001",
+            unit_id="u-7",
+            semantic="casing_shoe",
+        )
+    ]
+    save_tops_for_well(ws, well.id, tops)
+    loaded, diags = load_tops_for_well(ws, well.id)
+    assert not diags
+    assert loaded[0].unit_id == "u-7"
+    assert loaded[0].semantic == "casing_shoe"
+
+
+def test_set_top_depth_preserves_unit_id(qtbot, tmp_path: Path) -> None:
+    """#599: set_top_depth rebuilds the top with every field intact."""
+    from well_log_workstation.shell import WellLogWorkstationWindow
+    from well_log_workstation.tops_model import (
+        FormationTop,
+        load_tops_for_well,
+        save_tops_for_well,
+    )
+    from well_log_workstation.workspace import create_workspace
+
+    ws = create_workspace(tmp_path / "ws-depth")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    well_id = win.import_las_path(_write_las(tmp_path / "d.las"))
+    win.apply_template_to_well(well_id, "std-gr-rt-den")
+    save_tops_for_well(
+        ws,
+        well_id,
+        [
+            FormationTop(
+                name="T1",
+                depth=1000.0,
+                id="00000000-0000-0000-0000-000000000001",
+                unit_id="u-7",
+                semantic="formation_top",
+            )
+        ],
+    )
+    updated = win.set_top_depth(
+        well_id, "00000000-0000-0000-0000-000000000001", 1005.0
+    )
+    assert updated.unit_id == "u-7"
+    assert updated.semantic == "formation_top"
+    tops, diags = load_tops_for_well(ws, well_id)
+    assert not diags
+    assert tops[0].depth == 1005.0
+    assert tops[0].unit_id == "u-7"
+    assert tops[0].semantic == "formation_top"

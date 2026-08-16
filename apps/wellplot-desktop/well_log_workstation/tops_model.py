@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclasses_replace
 from pathlib import Path
 from typing import Any
 
@@ -76,8 +76,10 @@ def _from_json_item(item: dict[str, Any]) -> FormationTop | None:
     unit = str(item.get("unit") or "m")
     tid = str(item.get("id") or "")
     unit_id = str(item.get("unit_id") or "")
+    semantic = str(item.get("semantic") or "")
     return FormationTop(
-        name=name, depth=depth, unit=unit, color=color, id=tid, unit_id=unit_id
+        name=name, depth=depth, unit=unit, color=color, id=tid,
+        unit_id=unit_id, semantic=semantic,
     )
 
 
@@ -129,13 +131,7 @@ def load_tops_for_well(
             diagnostics.append(f"跳过无效层位项 [{i}]（需 name + depth）")
             continue
         if not top.id:
-            top = FormationTop(
-                name=top.name,
-                depth=top.depth,
-                unit=top.unit,
-                color=top.color,
-                id=str(uuid.uuid4()),
-            )
+            top = dataclasses_replace(top, id=str(uuid.uuid4()))
         tops.append(top)
 
     tops.sort(key=lambda t: t.depth)
@@ -161,6 +157,7 @@ def save_tops_for_well(
                 "unit": t.unit,
                 "color": t.color,
                 **({"unit_id": t.unit_id} if t.unit_id else {}),
+                **({"semantic": t.semantic} if t.semantic else {}),
             }
             for t in tops
         ],
@@ -373,13 +370,7 @@ def import_tops_from_json_file(
             diagnostics.append(f"跳过无效项 [{i}]")
             continue
         if not top.id:
-            top = FormationTop(
-                name=top.name,
-                depth=top.depth,
-                unit=top.unit,
-                color=top.color,
-                id=str(uuid.uuid4()),
-            )
+            top = dataclasses_replace(top, id=str(uuid.uuid4()))
         tops.append(top)
 
     if not tops:
