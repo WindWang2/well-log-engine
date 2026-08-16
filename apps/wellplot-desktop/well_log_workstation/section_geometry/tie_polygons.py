@@ -42,10 +42,26 @@ def tie_quads(
         well_positions: ``(x, y)`` per well in project CRS (section x-axis
             is cumulative distance).
         fill_color: solid fill for the quads (used when ``pattern_id`` is None).
-        datum_shifts: per-well-name shift applied to top depths before
+        datum_shifts: per-well-column shift (keyed by index string) applied
+            to top depths before
             section placement.
         pattern_id: optional PatternDefinition EntityId for lithology hatch
             fill (ADR 0050). None = solid ``fill_color``.
+
+    Section-x is in WELL-INDEX units (well i sits at x = i), the same
+    convention as faults/contacts/surfaces — the previous cumulative-CRS-
+    distance x mixed conventions with every other section overlay and
+    compressed the quads into the leftmost inter-well gap once the canvas
+    mapped them as indices (#593). ``well_positions`` is retained for API
+    compatibility and column count only.
+
+    Each vertical edge uses ITS OWN well's top depths (left edge from the
+    left well, right edge from the right well), so dipping shared tops
+    render as dipping quad edges instead of being flattened to the left
+    well's depths (#594).
+
+    ``datum_shifts`` is keyed by well column INDEX as a string ("0", "1",
+    ...), matching the per-column application below.
 
     Returns:
         One quad per adjacent well pair that shares at least one top name.
@@ -81,19 +97,24 @@ def tie_quads(
         shared = sorted(set(left) & set(right))
         if not shared:
             continue
-        x0 = float(well_dists[i])
-        x1 = float(well_dists[i + 1])
+        # Well-index units (#593): the canvas maps section overlays by
+        # well-index fraction; CRS distances are not section-x.
+        x0 = float(i)
+        x1 = float(i + 1)
         # Quad spans the top-most shared top (smallest depth) down to the
         # bottom-most shared top (largest depth) - the reservoir interval
-        # both wells have in common.
-        y_top = min(left[n] for n in shared)
-        y_bot = max(left[n] for n in shared)
+        # both wells have in common. Each edge uses its own well's depths
+        # so dipping tops stay dipping (#594).
+        y_top_left = min(left[n] for n in shared)
+        y_bot_left = max(left[n] for n in shared)
+        y_top_right = min(right[n] for n in shared)
+        y_bot_right = max(right[n] for n in shared)
         corners = np.array(
             [
-                [x0, y_top],
-                [x1, y_top],
-                [x1, y_bot],
-                [x0, y_bot],
+                [x0, y_top_left],
+                [x1, y_top_right],
+                [x1, y_bot_right],
+                [x0, y_bot_left],
             ],
             dtype=np.float64,
         )

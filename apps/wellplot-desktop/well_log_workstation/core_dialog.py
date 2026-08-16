@@ -210,6 +210,14 @@ class CoreDialog(QDialog):
         for r in rows:
             self._samples.pop(r, None)
             self.runs.removeRow(r)
+            # removeRow shifts every later row up; re-key the samples cache
+            # to the new row indices. Without this, every run below the
+            # deleted row displayed and saved ANOTHER run's samples, and the
+            # tail runs' samples were silently dropped (#512).
+            self._samples = {
+                (row if row < r else row - 1): samples
+                for row, samples in self._samples.items()
+            }
         self._active_run_row = -1
         self.samples.setRowCount(0)
         if self.runs.rowCount() > 0:

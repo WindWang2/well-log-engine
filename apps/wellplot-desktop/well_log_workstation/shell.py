@@ -3294,7 +3294,15 @@ class WellLogWorkstationWindow(QMainWindow):
             [{"name": ft.name, "depth": ft.depth} for ft in col]
             for col in tops_cols
         ]
-        quads = tie_quads(tops_as_dicts, well_positions, datum_shifts=shifts)
+        # tie_quads applies shifts per well COLUMN keyed by index ("0",
+        # "1", ...); datum.compute_shifts returns a well-NAME-keyed dict.
+        # Passing it directly meant the tvd/tvdss correction never applied
+        # to the quads (#741).
+        quad_shifts = {
+            str(i): float(shifts.get(pres.well_name, 0.0))
+            for i, pres in enumerate(presentations)
+        }
+        quads = tie_quads(tops_as_dicts, well_positions, datum_shifts=quad_shifts)
         # Attach lithology patterns (SY/T 5615) by matching the quad's top
         # names against the plot's litho_pattern_map (name → pattern id).
         lpm = getattr(plot, "litho_pattern_map", None) or {}
