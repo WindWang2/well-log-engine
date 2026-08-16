@@ -187,6 +187,9 @@ class WellTestDialog(QDialog):
                 "payload": itv.payload,
                 "source": itv.source,
                 "version": itv.version,
+                # Round-trip the attachment references verbatim like the
+                # perforation dialog does (#600).
+                "attachment_refs": list(getattr(itv, "attachment_refs", None) or []),
             },
         )
         self.table.setItem(r, COL_BOTTOM, QTableWidgetItem(f"{itv.bottom:g}"))
@@ -277,6 +280,9 @@ class WellTestDialog(QDialog):
                     payload=self._row_meta(r).get("payload") or {},
                     source=self._row_meta(r).get("source") or "",
                     version=self._row_meta(r).get("version") or "",
+                    attachment_refs=list(
+                        self._row_meta(r).get("attachment_refs") or []
+                    ),
                 )
             )
         intervals.sort(key=lambda i: (i.top, i.bottom))
