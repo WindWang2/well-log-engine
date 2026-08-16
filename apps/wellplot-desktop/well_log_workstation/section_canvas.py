@@ -529,7 +529,7 @@ class SectionCanvas(QWidget):
         def _paint_quad(item: TieQuad2D) -> None:
             poly = QPolygonF()
             for (qx, qy) in item.corners:
-                xi = min(max(qx / max(1.0, n - 1), 0.0), float(n - 1))
+                xi = min(max(qx, 0.0), float(n - 1))
                 cx = x_unit(xi)
                 poly.append(QPointF(cx, y_map(qy)))
             p.setPen(Qt.PenStyle.NoPen)
@@ -795,7 +795,7 @@ class SectionCanvas(QWidget):
             p.setPen(pen)
             prev = None
             for (fx, fy) in pts:
-                xi = min(max(fx / max(1.0, n - 1), 0.0), float(n - 1))
+                xi = min(max(fx, 0.0), float(n - 1))
                 cx = x_unit(xi)
                 yy = y_map(fy)
                 if prev is not None:
@@ -810,7 +810,7 @@ class SectionCanvas(QWidget):
             for seg in contact_segment_2d(contact, n):
                 prev = None
                 for (cx0, cy) in seg:
-                    xi = min(max(cx0 / max(1.0, n - 1), 0.0), float(n - 1))
+                    xi = min(max(cx0, 0.0), float(n - 1))
                     cx = x_unit(xi)
                     yy = y_map(cy)
                     if prev is not None:
@@ -830,7 +830,7 @@ class SectionCanvas(QWidget):
                 for seg in surface_segment_2d(surface, n):
                     prev = None
                     for (sx, sy) in seg:
-                        xi = min(max(sx / max(1.0, n - 1), 0.0), float(n - 1))
+                        xi = min(max(sx, 0.0), float(n - 1))
                         cx = x_unit(xi)
                         yy = y_map(sy)
                         if prev is not None:

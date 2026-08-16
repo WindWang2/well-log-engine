@@ -534,3 +534,46 @@ def test_shell_core_and_perforation_handlers_persist(
     perf, diags2 = load_perforation_for_well(ws, wid)
     assert not diags2 and len(perf.intervals) == 1
     assert perf.intervals[0].id == "cp1"
+
+
+def test_core_dialog_delete_run_keeps_samples_bound_to_runs(qtbot) -> None:
+    """#512: deleting a run must not shift samples onto other runs.
+
+    The per-run samples cache was keyed by row index and never re-keyed
+    after removeRow, so every run below the deleted row displayed and
+    saved ANOTHER run's samples and the tail run's samples vanished.
+    """
+    from well_log_workstation.core_model import CoreModel, CoreRun, CoreSample
+
+    model = _core_model()  # r1 (1 sample), r2 (no samples)
+    run3 = CoreRun(
+        id="r3",
+        top=2200.0,
+        bottom=2250.0,
+        samples=[CoreSample(id="s3", depth=2200.5, description="r3-sample")],
+    )
+    model3 = CoreModel(
+        well_id=model.well_id, unit=model.unit,
+        runs=[model.runs[0], model.runs[1], run3],
+    )
+    dlg = CoreDialog(model3, dictionary=_dictionary())
+    qtbot.addWidget(dlg)
+    assert dlg.runs.rowCount() == 3
+
+    dlg.runs.selectRow(0)  # delete the FIRST run; two rows shift up
+    dlg._delete_selected_run()
+    assert dlg.runs.rowCount() == 2
+
+    value = dlg.value()
+    assert [r.id for r in value.runs] == ["r2", "r3"]
+    r2 = next(r for r in value.runs if r.id == "r2")
+    r3 = next(r for r in value.runs if r.id == "r3")
+    # Each surviving run kept ITS OWN samples: r2 had none in the fixture;
+    # r3 kept its sample instead of inheriting r1's stale slot content, and
+    # the tail sample was not dropped.
+    assert [s.depth for s in r2.samples] == []
+    assert [s.description for s in r3.samples] == ["r3-sample"]
+
+    # The samples TABLE also reflects the correct binding after selection.
+    dlg.runs.selectRow(1)
+    assert dlg.samples.rowCount() == 1
