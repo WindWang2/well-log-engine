@@ -17,6 +17,16 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# Host-only runs (parent workbench job: WLWS_DISABLE_ENGINE=1, no wheel)
+# skip at collection instead of aborting the directory with ImportError.
+# Strict binding-first runs (WLWS_REQUIRE_NATIVE_BINDING=1) keep the hard
+# import so a broken wheel FAILS rather than silently skipping.
+if os.environ.get("WLWS_REQUIRE_NATIVE_BINDING") != "1":
+    pytest.importorskip(
+        "welllog",
+        reason="welllog engine wheel not installed (host-only run)",
+        exc_type=ModuleNotFoundError,
+    )
 from welllog import WellLogView  # noqa: E402
 
 from well_log_workstation.engine_bridge import (  # noqa: E402
