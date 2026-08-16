@@ -270,3 +270,23 @@ jobs:
         env:
           QT_QPA_PLATFORM: minimal
         run: python tests/python/test_qt_embedding.py
+
+      # #515/#587 (workbench): the desktop workstation suite is the ONLY
+      # end-to-end coverage of the native engine path (WellLogView
+      # embedding, multi-well submit, engine SVG/PDF/CGM export, depth-ruler
+      # SDK/Desktop parity). Every prior topology ran it with
+      # WLWS_DISABLE_ENGINE=1 (or not at all), so all engine-gated tests
+      # silently skipped and the native path had zero automated coverage.
+      # This leg runs the suite against the just-installed wheel in strict
+      # binding-first mode: a broken binding FAILS instead of skipping.
+      - name: Desktop workstation suite against the installed wheel
+        env:
+          QT_QPA_PLATFORM: offscreen
+          WLWS_REQUIRE_NATIVE_BINDING: "1"
+        run: |
+          python -m pip install pytest pytest-qt
+          cd apps/wellplot-desktop
+          python -m pytest tests -q -p no:cacheprovider             --ignore=tests/test_well_section_datum.py             --ignore=tests/test_well_section_workbench.py             --ignore=tests/test_well_log_workstation_packaging.py
+          # The three ignored files import the paleo-workbench parent repo /
+          # geoviz packages, which are not available in the engine
+          # repository (misplaced parent tests, workbench #734).
