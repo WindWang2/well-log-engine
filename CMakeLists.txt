@@ -1514,21 +1514,27 @@ if(WELLLOG_BUILD_TESTS)
     )
     add_test(NAME welllog.qc-derived-curve COMMAND welllog_qc_derived_curve_tests)
 
-    add_executable(welllog_multi_well_surface_tests
-        tests/integration/multi_well_surface_test.cpp
-    )
-    target_compile_features(welllog_multi_well_surface_tests PRIVATE cxx_std_20)
-    welllog_enable_warnings(welllog_multi_well_surface_tests)
-    target_compile_definitions(
-        welllog_multi_well_surface_tests
-        PRIVATE
-            "WELLLOG_TEST_FONT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/tests/assets/fonts\""
-    )
-    target_link_libraries(
-        welllog_multi_well_surface_tests
-        PRIVATE WellLog::ExportVector WellLog::Text WellLog::Session
-    )
-    add_test(NAME welllog.multi-well-surface COMMAND welllog_multi_well_surface_tests)
+    # The test drives the HarfBuzz text engine directly, so it can only
+    # exist when the Text library is built. Unguarded, the target broke
+    # CMake generation under -DWELLLOG_BUILD_TEXT=OFF (host windows legs:
+    # "WellLog::Text ... the target was not found").
+    if(WELLLOG_BUILD_TEXT)
+        add_executable(welllog_multi_well_surface_tests
+            tests/integration/multi_well_surface_test.cpp
+        )
+        target_compile_features(welllog_multi_well_surface_tests PRIVATE cxx_std_20)
+        welllog_enable_warnings(welllog_multi_well_surface_tests)
+        target_compile_definitions(
+            welllog_multi_well_surface_tests
+            PRIVATE
+                "WELLLOG_TEST_FONT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/tests/assets/fonts\""
+        )
+        target_link_libraries(
+            welllog_multi_well_surface_tests
+            PRIVATE WellLog::ExportVector WellLog::Text WellLog::Session
+        )
+        add_test(NAME welllog.multi-well-surface COMMAND welllog_multi_well_surface_tests)
+    endif()
 
     add_executable(welllog_depth_transform_overlay_tests
         tests/integration/depth_transform_overlay_test.cpp
