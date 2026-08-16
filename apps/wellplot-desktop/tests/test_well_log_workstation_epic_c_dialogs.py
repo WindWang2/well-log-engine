@@ -24,7 +24,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QDialog, QMessageBox
+from PySide6.QtWidgets import QDialog, QMessageBox, QTableWidgetItem
 
 from well_log_workstation.core_dialog import CoreDialog
 from well_log_workstation.core_model import (
@@ -577,3 +577,62 @@ def test_core_dialog_delete_run_keeps_samples_bound_to_runs(qtbot) -> None:
     # The samples TABLE also reflects the correct binding after selection.
     dlg.runs.selectRow(1)
     assert dlg.samples.rowCount() == 1
+
+
+def test_core_dialog_rejects_sample_with_unparseable_depth(
+    qtbot, monkeypatch
+) -> None:
+    """#592: a sample row with a depth typo must be rejected on OK instead of
+    being silently dropped from the saved model."""
+    from well_log_workstation.core_dialog import CoreDialog
+    from well_log_workstation.core_model import CoreModel
+
+    model = CoreModel(well_id="w1", unit="m")
+    dlg = CoreDialog(model, dictionary=_dictionary())
+    qtbot.addWidget(dlg)
+    # Runs table: one run so samples can attach.
+    dlg.runs.insertRow(0)
+    dlg.runs.setItem(0, 0, QTableWidgetItem("2100.0"))  # top
+    dlg.runs.setItem(0, 1, QTableWidgetItem("2120.0"))  # bottom
+    # Samples table: a full row with a depth typo.
+    dlg.samples.insertRow(0)
+    dlg.samples.setItem(0, 0, QTableWidgetItem("1O25"))  # depth typo
+    dlg.samples.setItem(0, 1, QTableWidgetItem("细粒砂岩"))
+
+    warnings: list = []
+    monkeypatch.setattr(
+        "well_log_workstation.core_dialog.QMessageBox.warning",
+        lambda *a, **k: warnings.append(a),
+    )
+    dlg._on_accept()
+    assert warnings, "unparseable sample depth must be surfaced"
+    assert dlg.result() != QDialog.DialogCode.Accepted
+
+
+def test_well_test_dialog_roundtrip_preserves_attachment_refs(qtbot) -> None:
+    """#600: WellTestDialog must write attachment_refs back verbatim (the
+    module docstring promises it; the perforation dialog already does)."""
+    from well_log_workstation.well_test_dialog import WellTestDialog
+    from well_log_workstation.well_test_model import WellTestInterval, WellTestModel
+
+    model = WellTestModel(
+        well_id="w1",
+        unit="m",
+        intervals=[
+            WellTestInterval(
+                id="t1",
+                top=2100.0,
+                bottom=2110.0,
+                test_type="DST",
+                result="获工业油流",
+                attachment_refs=["report-2024-05.pdf", "photo-3.jpg"],
+            )
+        ],
+    )
+    dlg = WellTestDialog(model, dictionary=_dictionary())
+    qtbot.addWidget(dlg)
+    value = dlg.value()
+    assert value.intervals[0].attachment_refs == [
+        "report-2024-05.pdf",
+        "photo-3.jpg",
+    ]
