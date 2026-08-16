@@ -284,9 +284,14 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           WLWS_REQUIRE_NATIVE_BINDING: "1"
         run: |
-          python -m pip install pytest pytest-qt
+          # lasio>=0.31 is a declared wellplot-desktop dependency
+          # (apps/wellplot-desktop/pyproject.toml); without it eight test
+          # modules die at collection with ModuleNotFoundError.
+          python -m pip install pytest pytest-qt "lasio>=0.31"
           cd apps/wellplot-desktop
-          python -m pytest tests -q -p no:cacheprovider             --ignore=tests/test_well_section_datum.py             --ignore=tests/test_well_section_workbench.py             --ignore=tests/test_well_log_workstation_packaging.py
-          # The three ignored files import the paleo-workbench parent repo /
-          # geoviz packages, which are not available in the engine
-          # repository (misplaced parent tests, workbench #734).
+          python -m pytest tests -q -p no:cacheprovider --ignore=tests/test_well_log_workstation_packaging.py
+          # The ignored file exercises the PyInstaller packaging skeleton,
+          # which is not part of the wheel-under-test. The two misplaced
+          # parent-repo test modules were removed entirely (workbench #734):
+          # engine-repo tests must not import paleo_workbench/geoviz —
+          # guarded by test_no_parent_repo_imports.py.
