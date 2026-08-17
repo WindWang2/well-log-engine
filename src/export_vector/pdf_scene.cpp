@@ -1351,6 +1351,10 @@ PdfSceneExporter::write(const PreparedScene &scene,
     // Page windows from the shared page model (identical slicing to the SVG
     // paginated exporter — export_layout::compute_page_windows).
     const auto windows = compute_page_windows(scene, snapshot);
+    if (windows.empty()) {
+      return pdf_scene_error(ErrorCode::resource_exhausted,
+                             MessageKey::resource_exhausted);
+    }
 
     std::vector<PdfPageContent> contents;
     std::vector<PdfPageSpec> specs;

@@ -637,6 +637,198 @@ void cancel_stops_work_and_cleans_temp() {
   std::filesystem::remove(path);
 }
 
+void marker_line_spans_own_track_not_the_first() {
+  // #744: raster marker lines must use layer.track_id. A two-track scene
+  // with the marker bound to track 2 must not paint the line across track 1
+  // (the old loop broke after tracks()[0]).
+  const auto document_id = id("74400000-0000-4000-8000-000000000001");
+  const auto axis_id = id("74400000-0000-4000-8000-000000000002");
+  const auto curve_id = id("74400000-0000-4000-8000-000000000003");
+  const auto marker_id = id("74400000-0000-4000-8000-000000000004");
+  const auto track1_id = id("74400000-0000-4000-8000-000000000010");
+  const auto track2_id = id("74400000-0000-4000-8000-000000000011");
+  const auto scale1_id = id("74400000-0000-4000-8000-000000000020");
+  const auto scale2_id = id("74400000-0000-4000-8000-000000000021");
+  const auto layer1_id = id("74400000-0000-4000-8000-000000000030");
+  const auto layer2_id = id("74400000-0000-4000-8000-000000000031");
+  const auto marker_layer_id = id("74400000-0000-4000-8000-000000000040");
+  auto depths = std::make_shared<const std::vector<double>>(
+      std::vector<double>{1000.0, 1001.0, 1002.0, 1003.0});
+  auto values = std::make_shared<const std::vector<double>>(
+      std::vector<double>{10.0, 40.0, 20.0, 60.0});
+  WellLogDocumentBuilder builder(document_id, DocumentRevision{7});
+  builder.add_sampling_axis(SamplingAxis{
+      .id = axis_id,
+      .coordinates = BufferView::from_vector(depths),
+      .domain = DepthDomain::measured_depth,
+      .unit = "m",
+      .direction = AxisDirection::increasing,
+  });
+  builder.add_curve(Curve{
+      .id = curve_id,
+      .mnemonic = "GR",
+      .display_name = "Gamma Ray",
+      .unit = "API",
+      .sampling_axis_id = axis_id,
+      .values = BufferView::from_vector(values),
+      .nulls = {},
+  });
+  builder.add_marker(Marker{
+      .id = marker_id,
+      .reference_depth = 1001.5,
+      .semantic = MarkerSemantic::formation_top,
+      .label = "Top",
+  });
+  WellLogSession session;
+  require(session.execute(SetDocumentCommand{builder.build()}).has_value(),
+          "two-track marker document must load");
+  ScenePresentationBuilder presentation(
+      document_id,
+      ReferenceDepthRange{.domain = DepthDomain::measured_depth,
+                          .unit = "m",
+                          .top = 1000.0,
+                          .bottom = 1003.0},
+      Millimetres{100.0}, "font-fixture-v1");
+  presentation.add_track(
+      TrackSpec{.id = track1_id, .width = Millimetres{40.0}, .z_order = 0});
+  presentation.add_track(
+      TrackSpec{.id = track2_id, .width = Millimetres{40.0}, .z_order = 1});
+  presentation.add_scale(TrackScaleSpec{.id = scale1_id,
+                                        .track_id = track1_id,
+                                        .mode = ScaleMode::linear,
+                                        .minimum = 0.0,
+                                        .maximum = 100.0,
+                                        .direction = ScaleDirection::left_to_right,
+                                        .unit = "API"});
+  presentation.add_scale(TrackScaleSpec{.id = scale2_id,
+                                        .track_id = track2_id,
+                                        .mode = ScaleMode::linear,
+                                        .minimum = 0.0,
+                                        .maximum = 100.0,
+                                        .direction = ScaleDirection::left_to_right,
+                                        .unit = "API"});
+  const auto curve_color = RgbaColor{20, 20, 200, 255};
+  const auto marker_color = RgbaColor{220, 10, 10, 255};
+  presentation.add_curve_layer(CurveLayerSpec{
+      .id = layer1_id,
+      .track_id = track1_id,
+      .curve_id = curve_id,
+      .scale_id = scale1_id,
+      .color = curve_color,
+      .line_width = Millimetres{0.4},
+      .z_order = 1,
+      .visible = true,
+  });
+  presentation.add_curve_layer(CurveLayerSpec{
+      .id = layer2_id,
+      .track_id = track2_id,
+      .curve_id = curve_id,
+      .scale_id = scale2_id,
+      .color = curve_color,
+      .line_width = Millimetres{0.4},
+      .z_order = 1,
+      .visible = true,
+  });
+  presentation.add_marker_layer(MarkerLayerSpec{
+      .id = marker_layer_id,
+      .track_id = track2_id,
+      .z_order = 5,
+      .line_color = marker_color,
+      .line_width = Millimetres{0.6},
+      .draw_labels = false,
+      .draw_symbols = false,
+  });
+  require(session.execute(SetPresentationCommand{presentation.build()}).has_value(),
+          "two-track marker presentation must load");
+  const auto scene = session.prepared_scene(document_id);
+  require(scene != nullptr && scene->tracks().size() == 2 &&
+              !scene->marker_layers().empty() && !scene->markers().empty(),
+          "fixture must prepare two tracks and a marker");
+  require(scene->marker_layers().front().track_id == track2_id,
+          "marker layer must stay bound to track 2");
+
+  ExportSnapshot snapshot{
+      .document_id = document_id,
+      .document_revision = DocumentRevision{7},
+      .presentation_version = PresentationVersion{1},
+      .depth_transform =
+          DepthTransformDescriptor{.domain = DepthDomain::measured_depth,
+                                   .unit = "m",
+                                   .reference_top = 1000.0,
+                                   .reference_bottom = 1003.0,
+                                   .version = 1},
+      .font_asset_fingerprint = "font-fixture-v1",
+      .page = ExportPageSpec{.mode = PaginationMode::continuous,
+                             .page_width = Millimetres{80.0},
+                             .page_height = Millimetres{100.0},
+                             .dpi = 254,
+                             .well_name = "Marker-Track-Fixture"},
+  };
+  const auto path = temp_file("welllog-744-marker-track.png");
+  std::filesystem::remove(path);
+  RasterExportRequest req{
+      .path = path,
+      .format = RasterImageFormat::png,
+      .dpi_override = 254,
+      .background = RgbaColor{255, 255, 255, 255},
+      .tile_height_px = 64,
+      .overwrite_confirmed = true,
+  };
+  const auto report = export_raster_sync(*scene, snapshot, req);
+  require(report.has_value(), "two-track marker PNG export must succeed");
+  const auto png = decode_png(path);
+  require(png.has_value(), "marker PNG must decode");
+
+  const auto ppm = static_cast<double>(report.value().dpi) / 25.4;
+  const auto *track2 = static_cast<const PreparedTrack *>(nullptr);
+  for (const auto &track : scene->tracks()) {
+    if (track.id == track2_id) {
+      track2 = &track;
+      break;
+    }
+  }
+  require(track2 != nullptr, "prepared scene must contain track 2");
+  const auto track2_left = static_cast<int>(
+      std::lround(track2->bounds.left.value * ppm));
+  const auto track2_right = static_cast<int>(std::lround(
+      (track2->bounds.left.value + track2->bounds.width.value) * ppm));
+  // draw_line stamps a square brush of radius thickness/2 at each endpoint.
+  const auto thickness = std::max(
+      1, static_cast<int>(std::lround(
+             scene->marker_layers().front().line_width.value * ppm)));
+  const auto pad = thickness / 2 + 1;
+  const auto channels = 4U;
+  const auto stride = static_cast<std::size_t>(png->width) * channels;
+  const auto pixel = [&](std::uint32_t x, std::uint32_t y) {
+    const auto at = stride * y + static_cast<std::size_t>(x) * channels;
+    return std::array<std::uint8_t, 4>{
+        png->samples[at], png->samples[at + 1], png->samples[at + 2],
+        png->samples[at + 3]};
+  };
+  const auto marker_rgba = std::array<std::uint8_t, 4>{
+      marker_color.red, marker_color.green, marker_color.blue,
+      marker_color.alpha};
+  std::size_t in_track2 = 0;
+  std::size_t outside_track2 = 0;
+  for (std::uint32_t y = 0; y < png->height; ++y) {
+    for (std::uint32_t x = 0; x < png->width; ++x) {
+      if (pixel(x, y) != marker_rgba) {
+        continue;
+      }
+      const auto xi = static_cast<int>(x);
+      if (xi + pad >= track2_left && xi <= track2_right + pad) {
+        ++in_track2;
+      } else {
+        ++outside_track2;
+      }
+    }
+  }
+  require(in_track2 > 0, "marker line must paint pixels on track 2");
+  require(outside_track2 == 0,
+          "marker line must not span track 1 (layer.track_id)");
+  std::filesystem::remove(path);
+}
+
 void tile_cull_skips_bresenham_for_out_of_window_curves() {
   const auto document_id = id("15700000-0000-4000-8000-000000000101");
   const auto shallow_axis = id("15700000-0000-4000-8000-000000000102");
@@ -799,6 +991,7 @@ int main() {
   gray_png_curve_samples_match_srgb_luma();
   raster_draws_symbol_layer_pixels();
   raster_page_dimensions_match_the_shared_snapshot_geometry();
+  marker_line_spans_own_track_not_the_first();
   tile_cull_skips_bresenham_for_out_of_window_curves();
   return EXIT_SUCCESS;
 }

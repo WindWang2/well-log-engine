@@ -582,17 +582,18 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
                              ppm, tile_origin_y, tile_rows, marker_pad)) {
         continue;
       }
-      // Find a track that contains this marker's depth line; fall back to full
-      // scene width.
+      // Span the layer's track; fall back to full scene width if the id
+      // is missing (SVG/PDF emit the same layer inside that track's clip).
       int x0 = 0;
       int x1 = static_cast<int>(geom.width);
       for (const auto &track : scene.tracks()) {
-        const auto left = static_cast<int>(
+        if (track.id != layer.track_id) {
+          continue;
+        }
+        x0 = static_cast<int>(
             std::lround(track.bounds.left.value * ppm));
-        const auto right = static_cast<int>(std::lround(
+        x1 = static_cast<int>(std::lround(
             (track.bounds.left.value + track.bounds.width.value) * ppm));
-        x0 = left;
-        x1 = right;
         break;
       }
       const auto y = static_cast<int>(

@@ -89,8 +89,19 @@ compute_page_windows(const PreparedScene &scene,
   const auto printable_depth_mm = printable_depth_height_mm(scene, page);
   const auto effective_step = printable_depth_mm * (1.0 - page.page_overlap);
   const auto scene_height = scene.physical_height().value;
-  auto page_count =
-      static_cast<std::uint32_t>(std::ceil(scene_height / effective_step));
+  // Guard the double→uint32 narrowing: a tiny-but-positive physical_width
+  // (host-authored, still snapshot-valid) makes effective_step arbitrarily
+  // small and page_count out of range (UB + multi-billion push_back).
+  constexpr double k_max_page_windows = 65'536.0;
+  if (!std::isfinite(effective_step) || effective_step <= 0.0 ||
+      !std::isfinite(scene_height) || scene_height < 0.0) {
+    return windows;
+  }
+  const auto page_count_d = std::ceil(scene_height / effective_step);
+  if (!std::isfinite(page_count_d) || page_count_d > k_max_page_windows) {
+    return windows;
+  }
+  auto page_count = static_cast<std::uint32_t>(page_count_d);
   if (page_count == 0) {
     page_count = 1;
   }

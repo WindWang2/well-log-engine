@@ -1977,12 +1977,12 @@ submit_multi_well_section_impl(WellLogView *view, PyObject *payload) {
             continue;
           }
           const auto layer_curve_id = parse_id(layer_curve_id_text, "curve_id");
-          if (!layer_curve_id ||
-              curve_index.find(layer_curve_id->to_string()) ==
-                  curve_index.end()) {
-            if (layer_curve_id) {
-              PyErr_Clear();
-            }
+          if (!layer_curve_id) {
+            PyErr_Clear();
+            continue;
+          }
+          if (curve_index.find(layer_curve_id->to_string()) ==
+              curve_index.end()) {
             continue;
           }
           QString color_text;

@@ -788,7 +788,10 @@ if(WELLLOG_BUILD_PYTHON)
     file(
         COPY
             "${CMAKE_CURRENT_SOURCE_DIR}/python/welllog/__init__.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/python/welllog/__init__.pyi"
             "${CMAKE_CURRENT_SOURCE_DIR}/python/welllog/errors.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/python/welllog/errors.pyi"
+            "${CMAKE_CURRENT_SOURCE_DIR}/python/welllog/py.typed"
         DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/python/welllog"
     )
 endif()

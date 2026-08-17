@@ -33,6 +33,7 @@
 //     curves become Curve entities (strategy = depth_as_first_curve).
 //   - Otherwise depths are synthesized as start + i * sample_interval
 //     (strategy = synthetic_depth) and every curve is a measurement curve.
+//     The axis unit is "unknown" (the file header has no depth-unit field).
 //
 // Endianness is never silently guessed when both interpretations look
 // valid: the host must choose Format716Endian, or use detect_endian which
@@ -70,6 +71,9 @@ enum class Format716DiagnosticCode : std::uint8_t {
   non_finite_curve_value,
   reserved_bytes_nonzero,
   truncated_curve_name,
+  // Synthetic-depth files have no depth-unit field; the axis unit is
+  // "unknown" rather than a guessed metre label.
+  synthetic_depth_unit_unknown,
 };
 
 struct Format716Diagnostic {

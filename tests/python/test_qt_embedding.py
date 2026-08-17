@@ -1,6 +1,7 @@
 import gc
 import unittest
 import weakref
+from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QCoreApplication, QEvent
@@ -413,6 +414,7 @@ class WellLogViewEmbeddingTest(unittest.TestCase):
         curve_id = "30000000-0000-4000-8000-000000000102"
         shoe_id = "30000000-0000-4000-8000-000000000103"
         top_id = "30000000-0000-4000-8000-000000000104"
+        plain_id = "30000000-0000-4000-8000-000000000105"
         payload = {
             "document_id": doc_id,
             "depth": depth,
@@ -428,10 +430,9 @@ class WellLogViewEmbeddingTest(unittest.TestCase):
             "markers": [
                 {"id": shoe_id, "depth": 1001.0, "label": "Shoe",
                  "semantic": "casing_shoe"},
-                {"id": top_id, "depth": 1002.0, "label": "Top",
+                {"id": top_id, "depth": 1001.25, "label": "Top",
                  "semantic": "formation_top"},
-                {"id": "30000000-0000-4000-8000-000000000105",
-                 "depth": 1000.5, "label": "Plain"},
+                {"id": plain_id, "depth": 1000.5, "label": "Plain"},
             ],
             "marker_symbols": True,
         }
@@ -442,10 +443,18 @@ class WellLogViewEmbeddingTest(unittest.TestCase):
         self.assertIn(f"marker-symbol-{shoe_id}", svg,
                       "casing_shoe marker must render its symbol glyph")
         self.assertIn('data-semantic="casing_shoe"', svg)
-        self.assertIn('data-semantic="formation_top"', svg)
+        self.assertRegex(
+            svg,
+            rf'id="marker-symbol-{top_id}"[^>]*data-semantic="formation_top"',
+            "explicit formation_top marker keeps its semantic",
+        )
         # Legacy marker without semantic keeps the historical behaviour
         # (formation_top) — still rendered as a symbol under marker_symbols.
-        self.assertIn('data-semantic="formation_top"', svg)
+        self.assertRegex(
+            svg,
+            rf'id="marker-symbol-{plain_id}"[^>]*data-semantic="formation_top"',
+            "legacy Plain marker must default to formation_top on its own node",
+        )
 
         # Without marker_symbols the glyph paths are not emitted.
         payload.pop("marker_symbols")
@@ -521,6 +530,74 @@ class WellLogViewEmbeddingTest(unittest.TestCase):
             view.submit_multi_track(bad2)
         self.assertIn("length", str(ctx2.exception).lower(),
                       "shared-axis length mismatch must be reported")
+
+        view.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.app.processEvents()
+        gc.collect()
+
+    def test_export_scene_pdf_stub_declares_show_depth_ruler(self) -> None:
+        # #771: the py.typed stub must match the shipped ABI (typesystem
+        # export_scene_pdf(..., show_depth_ruler=False)).
+        import welllog
+
+        stub_text = Path(welllog.__file__).with_name("__init__.pyi").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(
+            stub_text,
+            r"def export_scene_pdf\([\s\S]*show_depth_ruler:\s*bool\s*=\s*False",
+            "py.typed stub must declare show_depth_ruler",
+        )
+
+    def test_multi_well_invalid_layer_curve_id_does_not_set_exception(
+        self,
+    ) -> None:
+        # #748: parse_id failure in the multi-well layer loop must clear the
+        # Python error before returning a report. Otherwise CPython raises
+        # SystemError: returned a result with an exception set.
+        view = WellLogView()
+        depth = np.asarray([1000.0, 1001.0, 1002.0])
+        gr = np.asarray([1.0, 2.0, 3.0], dtype=np.float32)
+        for arr in (depth, gr):
+            arr.flags.writeable = False
+        good_curve = "40000000-0000-4000-8000-000000000002"
+        payload = {
+            "shared_top": 1000.0,
+            "shared_bottom": 1002.0,
+            "wells": [
+                {
+                    "document_id": "40000000-0000-4000-8000-000000000001",
+                    "depth": depth,
+                    "depth_unit": "m",
+                    "curves": [
+                        {
+                            "curve_id": good_curve,
+                            "mnemonic": "GR",
+                            "values": gr,
+                            "value_unit": "API",
+                        },
+                    ],
+                    "tracks": [
+                        {
+                            "width_mm": 40.0,
+                            "scale_min": 0.0,
+                            "scale_max": 10.0,
+                            "layers": [
+                                {"curve_id": good_curve, "color": "#1972b8"},
+                                {
+                                    "curve_id": "not-a-uuid",
+                                    "color": "#cc0000",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        report = view.submit_multi_well_section(payload)
+        self.assertIsInstance(report, dict)
+        self.assertIs(report["render_prepared"], True)
 
         view.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)

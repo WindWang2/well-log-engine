@@ -273,6 +273,31 @@ void synthesizes_depth_when_no_depth_channel_is_present() {
                "synthetic depth ends at start + (n-1)*interval");
   require(imported.document.curves().size() == 2,
           "every source curve becomes a measurement curve");
+  require(axis.unit != "m",
+          "synthetic depth must not invent a metre unit (issue #752)");
+  require(axis.unit == "unknown",
+          "synthetic depth unit is an explicit unknown token");
+}
+
+void synthetic_depth_does_not_label_feet_values_as_metres() {
+  // #752: header start/interval are just numbers. A feet-scale file without
+  // a DEPT curve must not ship a SamplingAxis whose unit is "m".
+  const auto bytes =
+      Format716Fixture{}
+          .well_name("Feet-Scale")
+          .depths(5000.0F, 5020.0F, 10.0F)
+          .sample_count(3)
+          .add_curve("GR", "API", {10.0F, 11.0F, 12.0F})
+          .finish();
+  const auto imported = import_bytes(bytes);
+  require(imported.depth_strategy_used ==
+              Format716DepthStrategy::synthetic_depth,
+          "GR-first file uses synthetic depth");
+  const auto &axis = imported.document.sampling_axes().front();
+  require_near(*axis.coordinates.value_as_double(0), 5000.0,
+               "header start_depth is retained");
+  require(axis.unit != "m",
+          "feet-scale synthetic depths must not be labelled metres");
 }
 
 void preserves_decreasing_axis_and_repeated_depths() {
@@ -499,6 +524,7 @@ void inspect_exposes_catalog_without_building_document() {
 int main() {
   normalizes_depth_channel_fixture_into_stable_document_semantics();
   synthesizes_depth_when_no_depth_channel_is_present();
+  synthetic_depth_does_not_label_feet_values_as_metres();
   preserves_decreasing_axis_and_repeated_depths();
   rejects_truncation_unknown_layout_and_resource_limits();
   detect_endian_requires_unique_match();

@@ -6,6 +6,7 @@
 // through; snapshot metadata is captured; invalid input is rejected. The
 // existing single-scene SvgExporter::write is asserted unchanged (additivity).
 
+#include <welllog/export/export_layout.hpp>
 #include <welllog/export/pagination.hpp>
 #include <welllog/export/svg.hpp>
 #include <welllog/scene/scene.hpp>
@@ -15,6 +16,7 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -742,6 +744,206 @@ void fixed_pages_omit_out_of_window_curve_points() {
           "vertex count must not scale with page count (issue #604)");
 }
 
+EntityId numbered_id(std::uint32_t n) {
+  char buf[37];
+  std::snprintf(buf, sizeof(buf), "63000000-0000-4000-8000-%012u", n);
+  return id(buf);
+}
+
+std::shared_ptr<const PreparedScene>
+prepare_scene_with_visible_layers(std::size_t layer_count,
+                                  Millimetres track_width) {
+  const auto document_id = id("63000000-0000-4000-8000-000000000001");
+  const auto axis_id = id("63000000-0000-4000-8000-000000000002");
+  const auto curve_id = id("63000000-0000-4000-8000-000000000003");
+  const auto track_id = id("63000000-0000-4000-8000-000000000004");
+  const auto scale_id = id("63000000-0000-4000-8000-000000000005");
+  auto depths = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{1000.0, 1100.0, 1200.0});
+  auto values = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{0.0, 50.0, 100.0});
+  WellLogDocumentBuilder document_builder(document_id, DocumentRevision{7});
+  document_builder.add_sampling_axis(SamplingAxis{
+      .id = axis_id,
+      .coordinates = BufferView::from_vector(depths),
+      .domain = DepthDomain::measured_depth,
+      .unit = "m",
+      .direction = AxisDirection::increasing,
+  });
+  document_builder.add_curve(Curve{
+      .id = curve_id,
+      .mnemonic = "GR",
+      .display_name = "Gamma Ray",
+      .unit = "API",
+      .sampling_axis_id = axis_id,
+      .values = BufferView::from_vector(values),
+      .nulls = {},
+  });
+  WellLogSession session;
+  require(session.execute(SetDocumentCommand{document_builder.build()})
+              .has_value(),
+          "many-layer document must be accepted");
+  ScenePresentationBuilder presentation_builder(
+      document_id,
+      ReferenceDepthRange{
+          .domain = DepthDomain::measured_depth,
+          .unit = "m",
+          .top = 1000.0,
+          .bottom = 1200.0,
+      },
+      Millimetres{100.0}, "font-fixture-v1");
+  presentation_builder.add_track(TrackSpec{
+      .id = track_id,
+      .width = track_width,
+      .z_order = 1,
+      .header = TrackHeaderSpec{.height = Millimetres{6.0},
+                                .font_size = Millimetres{2.5}},
+  });
+  presentation_builder.add_scale(TrackScaleSpec{
+      .id = scale_id,
+      .track_id = track_id,
+      .mode = ScaleMode::linear,
+      .minimum = 0.0,
+      .maximum = 100.0,
+      .direction = ScaleDirection::left_to_right,
+      .unit = "API",
+  });
+  for (std::size_t i = 0; i < layer_count; ++i) {
+    presentation_builder.add_curve_layer(CurveLayerSpec{
+        .id = numbered_id(static_cast<std::uint32_t>(100 + i)),
+        .track_id = track_id,
+        .curve_id = curve_id,
+        .scale_id = scale_id,
+        .color = RgbaColor{.red = 0x11, .green = 0x22, .blue = 0x33,
+                           .alpha = 0xff},
+        .line_width = Millimetres{0.25},
+        .z_order = static_cast<std::int32_t>(i),
+        .visible = true,
+    });
+  }
+  require(session.execute(SetPresentationCommand{presentation_builder.build()})
+              .has_value(),
+          "many-layer presentation must prepare");
+  const auto scene = session.prepared_scene(document_id);
+  require(scene != nullptr, "many-layer presentation must publish a scene");
+  require(scene->track_header_entries().size() == layer_count,
+          "each visible curve layer must produce a header/legend entry");
+  return scene;
+}
+
+void legend_band_does_not_emit_negative_body_clip() {
+  // #746: 100 visible curve layers × 4 mm overflow an A4 printable area.
+  // The clipPath rect height must stay non-negative; extra legend rows drop.
+  const auto scene = prepare_scene_with_visible_layers(100, Millimetres{80.0});
+  auto snapshot = ExportSnapshot{
+      .document_id = id("63000000-0000-4000-8000-000000000001"),
+      .document_revision = DocumentRevision{7},
+      .presentation_version = PresentationVersion{1},
+      .depth_transform =
+          DepthTransformDescriptor{
+              .domain = DepthDomain::measured_depth,
+              .unit = "m",
+              .reference_top = 1000.0,
+              .reference_bottom = 1200.0,
+              .version = 1,
+          },
+      .font_asset_fingerprint = "font-fixture-v1",
+      .page = ExportPageSpec{
+          .mode = PaginationMode::fixed,
+          .page_width = Millimetres{210.0},
+          .page_height = Millimetres{297.0},
+          .margins = ExportPageMargins{.top = Millimetres{10.0},
+                                       .right = Millimetres{10.0},
+                                       .bottom = Millimetres{10.0},
+                                       .left = Millimetres{10.0}},
+          .dpi = 72,
+          .page_overlap = 0.0,
+          .well_name = "Legend-Clamp",
+          .repeat_headers = true,
+          .repeat_legend = true,
+          .show_page_numbers = false,
+          .show_depth_range = false,
+      },
+  };
+  const auto result = PaginatedSvgExporter::write(*scene, snapshot);
+  require(result.has_value(), "A4 export with 100 layers must succeed");
+  const auto text = std::string{result.value().text()};
+  require(text.find("<clipPath id=\"page-window-") != std::string::npos,
+          "fixed page must emit a body clipPath");
+  std::size_t pos = 0;
+  std::size_t clip_rects = 0;
+  while ((pos = text.find("<clipPath id=\"page-window-", pos)) !=
+         std::string::npos) {
+    const auto rect = text.find("<rect ", pos);
+    require(rect != std::string::npos && rect < pos + 200,
+            "clipPath must contain a rect");
+    const auto height_key = text.find("height=\"", rect);
+    require(height_key != std::string::npos, "clip rect must have height");
+    const auto height_start = height_key + std::strlen("height=\"");
+    const auto height_end = text.find('"', height_start);
+    require(height_end != std::string::npos, "clip height must be quoted");
+    const auto height =
+        std::stod(text.substr(height_start, height_end - height_start));
+    require(height >= 0.0, "body clipPath rect height must be non-negative");
+    ++clip_rects;
+    pos = height_end;
+  }
+  require(clip_rects >= 1, "at least one page clip rect must be parsed");
+  const auto printable_height_mm = 297.0 - 10.0 - 10.0;
+  const auto max_rows = static_cast<std::size_t>(printable_height_mm / 4.0);
+  const auto legend_count =
+      count_occurrences(text, "data-export-role=\"legend\"");
+  require(legend_count == 2 * max_rows,
+          "legend entries must be capped to the printable band");
+}
+
+void tiny_physical_width_rejects_unbounded_page_count() {
+  // #747: a host-authored 1e-4 mm track width makes effective_step tiny and
+  // used to narrow an out-of-range double into uint32 (UB / multi-million
+  // page loop). Export must fail with a Result, not hang.
+  const auto scene =
+      prepare_scene_with_visible_layers(1, Millimetres{1.0e-4});
+  require(scene->physical_width().value > 0.0 &&
+              scene->physical_width().value < 1.0e-3,
+          "fixture must keep the degenerate-but-positive width");
+  auto snapshot = ExportSnapshot{
+      .document_id = id("63000000-0000-4000-8000-000000000001"),
+      .document_revision = DocumentRevision{7},
+      .presentation_version = PresentationVersion{1},
+      .depth_transform =
+          DepthTransformDescriptor{
+              .domain = DepthDomain::measured_depth,
+              .unit = "m",
+              .reference_top = 1000.0,
+              .reference_bottom = 1200.0,
+              .version = 1,
+          },
+      .font_asset_fingerprint = "font-fixture-v1",
+      .page = ExportPageSpec{
+          .mode = PaginationMode::fixed,
+          .page_width = Millimetres{210.0},
+          .page_height = Millimetres{297.0},
+          .margins = ExportPageMargins{.top = Millimetres{10.0},
+                                       .right = Millimetres{10.0},
+                                       .bottom = Millimetres{10.0},
+                                       .left = Millimetres{10.0}},
+          .dpi = 72,
+          .page_overlap = 0.0,
+          .well_name = "Tiny-Width",
+          .repeat_headers = false,
+          .repeat_legend = false,
+      },
+  };
+  const auto windows = export_layout::compute_page_windows(*scene, snapshot);
+  require(windows.empty(),
+          "degenerate scale must not produce a page-window list");
+  const auto result = PaginatedSvgExporter::write(*scene, snapshot);
+  require(!result.has_value(), "tiny physical_width must not emit pages");
+  require(result.error().code == ErrorCode::resource_exhausted ||
+              result.error().code == ErrorCode::invalid_presentation,
+          "tiny physical_width must be a clean Result");
+}
+
 void depth_ruler_off_by_default() {
   // Backward compatibility: existing exports are unchanged unless the option
   // is explicitly enabled.
@@ -768,6 +970,8 @@ int main() {
   prepare_for_export_returns_scene_and_preserves_interactive();
   depth_ruler_emits_authoritative_ticks();
   depth_ruler_off_by_default();
+  legend_band_does_not_emit_negative_body_clip();
+  tiny_physical_width_rejects_unbounded_page_count();
   fixed_pages_omit_out_of_window_curve_points();
   std::cout << "PASS: paginated SVG behavior\n";
   return EXIT_SUCCESS;
