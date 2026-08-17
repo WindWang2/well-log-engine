@@ -352,7 +352,7 @@ import_with_endian(std::span<const std::byte> bytes,
     };
 
     std::uint32_t first_measurement_curve = 0;
-    std::string depth_unit = "m";
+    std::string depth_unit = "unknown";
     if (header.depth_strategy == Format716DepthStrategy::depth_as_first_curve) {
       first_measurement_curve = 1;
       depth_unit = header.units.front().empty() ? "m" : header.units.front();
@@ -374,6 +374,15 @@ import_with_endian(std::span<const std::byte> bytes,
         depths.push_back(static_cast<double>(depth));
       }
     } else {
+      // The 716 file header has no depth-unit field. Do not invent metres
+      // for start/interval values that may be feet (or any other unit).
+      depth_unit = "unknown";
+      diagnostics.push_back(Format716Diagnostic{
+          .code = Format716DiagnosticCode::synthetic_depth_unit_unknown,
+          .severity = Severity::info,
+          .byte_offset = 84,
+          .curve_name = header.mnemonics.empty() ? "" : header.mnemonics.front(),
+      });
       for (std::uint32_t sample = 0; sample < header.sample_count; ++sample) {
         depths.push_back(static_cast<double>(header.start_depth) +
                          static_cast<double>(sample) *

@@ -45,6 +45,7 @@ class WellLogView(QOpenGLWidget):
         searchable_text: bool = False,
         crop_marks: bool = False,
         layered_pdf: bool = False,
+        show_depth_ruler: bool = False,
     ) -> bytes: ...
     def export_scene_cgm(
         self,

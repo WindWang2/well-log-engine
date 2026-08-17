@@ -69,7 +69,9 @@ class QtLifecycleStressTest(unittest.TestCase):
             "m",
             "API",
         )
-        self.assertTrue(report.get("render_prepared") or report is not None)
+        self.assertIs(report["render_prepared"], True)
+        self.assertEqual(report["depth"]["access_mode"], "zero_copy")
+        self.assertEqual(report["curve"]["access_mode"], "zero_copy")
 
         del depth
         del values

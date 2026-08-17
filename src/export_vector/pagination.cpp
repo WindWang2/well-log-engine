@@ -319,17 +319,25 @@ void append_fixed_page(std::string &output, const PreparedScene &scene,
   // The band is RESERVED at the bottom of the printable area (4 mm per entry),
   // and the scene body's clip rect is shrunk by that height below so the legend
   // never overpaints curve geometry.
+  const auto headers = scene.track_header_entries();
   const auto legend_entries =
-      page.repeat_legend ? scene.track_header_entries().size() : std::size_t{0};
+      page.repeat_legend ? headers.size() : std::size_t{0};
   constexpr double legend_row_height_mm = 4.0;
+  const auto max_legend_entries =
+      printable_page_height > 0.0
+          ? static_cast<std::size_t>(printable_page_height /
+                                     legend_row_height_mm)
+          : std::size_t{0};
+  const auto emitted_legend_entries =
+      std::min(legend_entries, max_legend_entries);
   const double legend_band_height_mm =
-      static_cast<double>(legend_entries) * legend_row_height_mm;
+      static_cast<double>(emitted_legend_entries) * legend_row_height_mm;
   const double body_clip_height_mm =
-      printable_page_height - legend_band_height_mm;
+      std::max(0.0, printable_page_height - legend_band_height_mm);
   if (page.repeat_legend) {
-    const auto headers = scene.track_header_entries();
     double legend_y = content_top + printable_page_height - 3.0;
-    for (const auto &entry : headers) {
+    for (std::size_t i = 0; i < emitted_legend_entries; ++i) {
+      const auto &entry = headers[i];
       output += "<rect data-export-role=\"legend\" x=\"";
       append_number(output, content_left);
       output += "\" y=\"";
@@ -529,6 +537,10 @@ PaginatedSvgExporter::write(const PreparedScene &scene,
     // Fixed mode: slice the scene depth range into pages using the shared page
     // model (identical slicing to the PDF backend — export_layout).
     const auto windows = compute_page_windows(scene, snapshot);
+    if (windows.empty()) {
+      return pagination_error(ErrorCode::resource_exhausted,
+                              MessageKey::resource_exhausted);
+    }
     const auto page_count = static_cast<std::uint32_t>(windows.size());
     for (std::uint32_t index = 0; index < page_count; ++index) {
       append_fixed_page(output, scene, snapshot, index, page_count,
