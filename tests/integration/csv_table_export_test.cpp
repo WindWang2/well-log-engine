@@ -314,7 +314,7 @@ void selection_slice_exports_only_the_selected_rows() {
   std::size_t n = 0;
   std::error_code ec;
   for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
-    if (entry.path().native().find(".tmp") != std::string::npos) {
+    if (entry.path().extension() == ".tmp") {
       ++n;
     }
   }
