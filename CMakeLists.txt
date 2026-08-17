@@ -1884,6 +1884,21 @@ if(WELLLOG_BUILD_TESTS)
     target_link_libraries(welllog_raster_tests PRIVATE WellLog::RenderGL)
     add_test(NAME welllog.render-raster COMMAND welllog_raster_tests)
 
+    add_executable(welllog_atlas_upload_tests
+        tests/render_gl/atlas_upload_test.cpp
+    )
+    target_compile_features(welllog_atlas_upload_tests PRIVATE cxx_std_20)
+    welllog_enable_warnings(welllog_atlas_upload_tests)
+    target_include_directories(
+        welllog_atlas_upload_tests
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
+    target_link_libraries(
+        welllog_atlas_upload_tests
+        PRIVATE WellLog::RenderGL WellLog::Session
+    )
+    add_test(NAME welllog.atlas-upload COMMAND welllog_atlas_upload_tests)
+
     if(WELLLOG_BUILD_QT_WIDGETS)
         qt_add_executable(welllog_qt_widget_tests
             tests/qt/well_log_view_test.cpp

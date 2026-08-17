@@ -1,9 +1,12 @@
 #include "render_gl/raster.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -156,6 +159,74 @@ void glyph_outlines_rasterize_with_winding_fill() {
           "the ring wall must stay covered");
 }
 
+void glyph_triangle_occupancy_matches_winding() {
+  const OutlineCommand commands[] = {
+      OutlineCommand{.verb = OutlineVerb::move_to,
+                     .coordinates = {0.0, 0.0}},
+      OutlineCommand{.verb = OutlineVerb::line_to,
+                     .coordinates = {1.0, 0.0}},
+      OutlineCommand{.verb = OutlineVerb::line_to,
+                     .coordinates = {0.5, 1.0}},
+      OutlineCommand{.verb = OutlineVerb::close, .coordinates = {}},
+  };
+  constexpr double density = 32.0;
+  const auto raster =
+      rasterize_glyph_outline(commands, 0.0, 0.0, 1.0, 1.0, density);
+  const auto px = [&](double em_x, double em_y) {
+    const auto x = static_cast<std::uint32_t>(
+        std::lround((em_x - raster.left_em) * density));
+    const auto y = static_cast<std::uint32_t>(
+        std::lround((raster.top_em - em_y) * density));
+    return raster.alpha[static_cast<std::size_t>(y) * raster.width + x];
+  };
+  require(px(0.5, 0.25) == 255, "triangle interior must be fully covered");
+  require(px(0.05, 0.85) == 0, "outside the triangle must stay empty");
+}
+
+void complex_cjk_like_outline_rasterizes_under_budget() {
+  // ~2000-edge wavy disk at 128 px/em — old O(W*H*4*E) winding is hundreds
+  // of ms; scanline fill must stay under a generous 50 ms (issue #607).
+  constexpr int edges = 2000;
+  constexpr double two_pi = 6.283185307179586;
+  std::vector<OutlineCommand> commands;
+  commands.reserve(static_cast<std::size_t>(edges) + 2);
+  const auto point = [](double angle) {
+    const auto radius = 0.35 + 0.10 * std::sin(11.0 * angle);
+    return std::pair{0.5 + radius * std::cos(angle),
+                     0.5 + radius * std::sin(angle)};
+  };
+  const auto start = point(0.0);
+  commands.push_back(OutlineCommand{
+      .verb = OutlineVerb::move_to,
+      .coordinates = {start.first, start.second, 0.0, 0.0, 0.0, 0.0},
+  });
+  for (int i = 1; i <= edges; ++i) {
+    const auto [x, y] = point(two_pi * static_cast<double>(i) / edges);
+    commands.push_back(OutlineCommand{
+        .verb = OutlineVerb::line_to,
+        .coordinates = {x, y, 0.0, 0.0, 0.0, 0.0},
+    });
+  }
+  commands.push_back(
+      OutlineCommand{.verb = OutlineVerb::close, .coordinates = {}});
+
+  const auto t0 = std::chrono::steady_clock::now();
+  const auto raster =
+      rasterize_glyph_outline(commands, 0.0, 0.0, 1.0, 1.0, 128.0);
+  const auto ms = std::chrono::duration<double, std::milli>(
+                      std::chrono::steady_clock::now() - t0)
+                      .count();
+  require(raster.width >= 128 && raster.height >= 128,
+          "128 px/em must produce a large glyph bitmap");
+  const auto cx = static_cast<std::uint32_t>(
+      std::lround((0.5 - raster.left_em) * 128.0));
+  const auto cy = static_cast<std::uint32_t>(
+      std::lround((raster.top_em - 0.5) * 128.0));
+  require(raster.alpha[static_cast<std::size_t>(cy) * raster.width + cx] > 200,
+          "wavy-disk interior must stay occupied");
+  require(ms < 50.0, "CJK-like outline must rasterize in under 50ms (#607)");
+}
+
 void atlas_packing_is_deterministic_and_bounded() {
   ShelfAtlasPacker packer(64, 32);
   const auto first = packer.allocate(16, 8);
@@ -184,6 +255,8 @@ int main() {
   pattern_tiles_rasterize_background_and_lines();
   transparent_backgrounds_stay_transparent();
   glyph_outlines_rasterize_with_winding_fill();
+  glyph_triangle_occupancy_matches_winding();
+  complex_cjk_like_outline_rasterizes_under_budget();
   atlas_packing_is_deterministic_and_bounded();
   std::cout << "PASS: pattern and glyph rasterization\n";
   return EXIT_SUCCESS;

@@ -9,6 +9,7 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -16,6 +17,14 @@
 #include <vector>
 
 namespace welllog::detail {
+
+GlAtlasDebugStats &gl_atlas_debug_stats() noexcept {
+  static GlAtlasDebugStats stats{};
+  return stats;
+}
+
+void reset_gl_atlas_debug_stats() noexcept { gl_atlas_debug_stats() = {}; }
+
 namespace {
 
 #if defined(_WIN32)
@@ -784,8 +793,10 @@ struct GlRenderer::Impl {
   std::vector<CurveBatch> pending_batches;
   std::vector<PrimitiveVertex> pending_primitive_vertices;
   std::vector<PrimitiveBatch> pending_primitive_batches;
-  RasterImage pending_pattern_atlas;
-  RasterImage pending_glyph_atlas;
+  std::shared_ptr<RasterImage> pending_pattern_atlas;
+  std::shared_ptr<RasterImage> pending_glyph_atlas;
+  std::string pending_atlas_fingerprint;
+  bool pending_atlases_need_upload{true};
   // Atlas reuse cache (issue #463): every queue_upload rebuilt both atlases
   // from scratch although the pattern/glyph sets barely change between
   // viewport moves. A fingerprint over the scene's pattern ids and glyph
@@ -802,8 +813,9 @@ struct GlRenderer::Impl {
     std::uint32_t pixel_height{};
   };
   std::string atlas_fingerprint;
-  RasterImage cached_pattern_atlas;
-  RasterImage cached_glyph_atlas;
+  std::optional<std::string> uploaded_atlas_fingerprint;
+  std::shared_ptr<RasterImage> cached_pattern_atlas;
+  std::shared_ptr<RasterImage> cached_glyph_atlas;
   std::unordered_map<EntityId, std::array<float, 4>, EntityIdHash>
       cached_pattern_uvs;
   std::unordered_map<std::uint64_t, GlyphAtlasEntry> cached_glyph_entries;
@@ -1057,20 +1069,6 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
     constexpr double glyph_pixels_per_em = 128.0;
     std::vector<PrimitiveVertex> primitive_vertices;
     std::vector<PrimitiveBatch> primitive_batches;
-    RasterImage pattern_atlas{
-        .width = atlas_extent,
-        .height = atlas_extent,
-        .channels = 4,
-        .pixels = std::vector<std::uint8_t>(
-            static_cast<std::size_t>(atlas_extent) * atlas_extent * 4, 0),
-    };
-    RasterImage glyph_atlas{
-        .width = atlas_extent,
-        .height = atlas_extent,
-        .channels = 1,
-        .pixels = std::vector<std::uint8_t>(
-            static_cast<std::size_t>(atlas_extent) * atlas_extent, 0),
-    };
     ShelfAtlasPacker pattern_packer(atlas_extent, atlas_extent);
     ShelfAtlasPacker glyph_packer(atlas_extent, atlas_extent);
     std::unordered_map<EntityId, std::array<float, 4>, EntityIdHash>
@@ -1093,14 +1091,35 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
       fingerprint += std::to_string(outline.glyph_id);
     }
     const bool atlas_cache_hit =
-        !impl_->cached_pattern_atlas.pixels.empty() &&
+        impl_->cached_pattern_atlas != nullptr &&
+        !impl_->cached_pattern_atlas->pixels.empty() &&
         impl_->atlas_fingerprint == fingerprint;
+    std::shared_ptr<RasterImage> pattern_atlas_ptr;
+    std::shared_ptr<RasterImage> glyph_atlas_ptr;
     if (atlas_cache_hit) {
-      pattern_atlas = impl_->cached_pattern_atlas;
-      glyph_atlas = impl_->cached_glyph_atlas;
+      // Share the cached bitmaps — do not value-copy 20 MB (issue #606).
+      pattern_atlas_ptr = impl_->cached_pattern_atlas;
+      glyph_atlas_ptr = impl_->cached_glyph_atlas;
       pattern_uvs = impl_->cached_pattern_uvs;
       glyph_atlas_entries = impl_->cached_glyph_entries;
+    } else {
+      pattern_atlas_ptr = std::make_shared<RasterImage>(RasterImage{
+          .width = atlas_extent,
+          .height = atlas_extent,
+          .channels = 4,
+          .pixels = std::vector<std::uint8_t>(
+              static_cast<std::size_t>(atlas_extent) * atlas_extent * 4, 0),
+      });
+      glyph_atlas_ptr = std::make_shared<RasterImage>(RasterImage{
+          .width = atlas_extent,
+          .height = atlas_extent,
+          .channels = 1,
+          .pixels = std::vector<std::uint8_t>(
+              static_cast<std::size_t>(atlas_extent) * atlas_extent, 0),
+      });
     }
+    RasterImage &pattern_atlas = *pattern_atlas_ptr;
+    RasterImage &glyph_atlas = *glyph_atlas_ptr;
 
     const auto clip_for_track = [&](EntityId track_id) {
       const auto track =
@@ -1789,17 +1808,21 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
     impl_->pending_primitive_vertices = std::move(primitive_vertices);
     impl_->pending_primitive_batches = std::move(primitive_batches);
     if (atlas_cache_hit) {
-      // Cache stays authoritative; pending needs its own copy because the
-      // GL upload consumes (and clears) pending.
+      // Cache stays authoritative; pending shares the same immutable
+      // bitmaps (issue #606).
     } else {
       impl_->atlas_fingerprint = std::move(fingerprint);
-      impl_->cached_pattern_atlas = pattern_atlas;
-      impl_->cached_glyph_atlas = glyph_atlas;
+      impl_->cached_pattern_atlas = pattern_atlas_ptr;
+      impl_->cached_glyph_atlas = glyph_atlas_ptr;
       impl_->cached_pattern_uvs = pattern_uvs;
       impl_->cached_glyph_entries = glyph_atlas_entries;
     }
-    impl_->pending_pattern_atlas = std::move(pattern_atlas);
-    impl_->pending_glyph_atlas = std::move(glyph_atlas);
+    impl_->pending_atlas_fingerprint = impl_->atlas_fingerprint;
+    impl_->pending_atlases_need_upload =
+        !impl_->uploaded_atlas_fingerprint.has_value() ||
+        *impl_->uploaded_atlas_fingerprint != impl_->pending_atlas_fingerprint;
+    impl_->pending_pattern_atlas = std::move(pattern_atlas_ptr);
+    impl_->pending_glyph_atlas = std::move(glyph_atlas_ptr);
     impl_->pending_scene_height = scene.physical_height().value;
     impl_->pending_depth_top = depth_range.top;
     impl_->pending_depth_span = depth_range.bottom - depth_range.top;
@@ -1937,40 +1960,48 @@ GlUploadProgress GlRenderer::upload_next() noexcept {
       return {};
     }
     impl_->gl.active_texture(gl_texture0);
-    if (!impl_->pending_pattern_atlas.pixels.empty()) {
-      clear_gl_errors(impl_->gl);
-      impl_->gl.bind_texture(gl_texture_2d, impl_->pattern_texture);
-      impl_->gl.tex_image_2d(
-          gl_texture_2d, 0, static_cast<GlInt>(gl_rgba8),
-          static_cast<GlSize>(impl_->pending_pattern_atlas.width),
-          static_cast<GlSize>(impl_->pending_pattern_atlas.height), 0,
-          gl_rgba, gl_unsigned_byte,
-          impl_->pending_pattern_atlas.pixels.data());
-      if (impl_->gl.get_error() != gl_no_error) {
-        impl_->upload_pending = false;
-        return {};
+    if (impl_->pending_atlases_need_upload) {
+      if (impl_->pending_pattern_atlas != nullptr &&
+          !impl_->pending_pattern_atlas->pixels.empty()) {
+        clear_gl_errors(impl_->gl);
+        impl_->gl.bind_texture(gl_texture_2d, impl_->pattern_texture);
+        impl_->gl.tex_image_2d(
+            gl_texture_2d, 0, static_cast<GlInt>(gl_rgba8),
+            static_cast<GlSize>(impl_->pending_pattern_atlas->width),
+            static_cast<GlSize>(impl_->pending_pattern_atlas->height), 0,
+            gl_rgba, gl_unsigned_byte,
+            impl_->pending_pattern_atlas->pixels.data());
+        if (impl_->gl.get_error() != gl_no_error) {
+          impl_->upload_pending = false;
+          return {};
+        }
+        ++gl_atlas_debug_stats().tex_image_2d_calls;
       }
-    }
-    if (!impl_->pending_glyph_atlas.pixels.empty()) {
-      clear_gl_errors(impl_->gl);
-      impl_->gl.bind_texture(gl_texture_2d, impl_->glyph_texture);
-      impl_->gl.tex_image_2d(
-          gl_texture_2d, 0, static_cast<GlInt>(gl_r8),
-          static_cast<GlSize>(impl_->pending_glyph_atlas.width),
-          static_cast<GlSize>(impl_->pending_glyph_atlas.height), 0, gl_red,
-          gl_unsigned_byte, impl_->pending_glyph_atlas.pixels.data());
-      if (impl_->gl.get_error() != gl_no_error) {
-        impl_->upload_pending = false;
-        return {};
+      if (impl_->pending_glyph_atlas != nullptr &&
+          !impl_->pending_glyph_atlas->pixels.empty()) {
+        clear_gl_errors(impl_->gl);
+        impl_->gl.bind_texture(gl_texture_2d, impl_->glyph_texture);
+        impl_->gl.tex_image_2d(
+            gl_texture_2d, 0, static_cast<GlInt>(gl_r8),
+            static_cast<GlSize>(impl_->pending_glyph_atlas->width),
+            static_cast<GlSize>(impl_->pending_glyph_atlas->height), 0, gl_red,
+            gl_unsigned_byte, impl_->pending_glyph_atlas->pixels.data());
+        if (impl_->gl.get_error() != gl_no_error) {
+          impl_->upload_pending = false;
+          return {};
+        }
+        ++gl_atlas_debug_stats().tex_image_2d_calls;
       }
+      impl_->uploaded_atlas_fingerprint = impl_->pending_atlas_fingerprint;
+      impl_->pending_atlases_need_upload = false;
     }
     impl_->primitive_batches = std::move(impl_->pending_primitive_batches);
     impl_->scene_height = impl_->pending_scene_height;
     impl_->depth_top = impl_->pending_depth_top;
     impl_->depth_span = impl_->pending_depth_span;
     impl_->pending_primitive_vertices.clear();
-    impl_->pending_pattern_atlas = RasterImage{};
-    impl_->pending_glyph_atlas = RasterImage{};
+    impl_->pending_pattern_atlas.reset();
+    impl_->pending_glyph_atlas.reset();
     impl_->pending_scene = PreparedScene{};
     impl_->pending_edges.clear();
     impl_->pending_chunks.clear();
@@ -2255,8 +2286,14 @@ void GlRenderer::abandon() noexcept {
   impl_->pending_batches.clear();
   impl_->pending_primitive_vertices.clear();
   impl_->pending_primitive_batches.clear();
-  impl_->pending_pattern_atlas = RasterImage{};
-  impl_->pending_glyph_atlas = RasterImage{};
+  impl_->pending_pattern_atlas.reset();
+  impl_->pending_glyph_atlas.reset();
+  impl_->cached_pattern_atlas.reset();
+  impl_->cached_glyph_atlas.reset();
+  impl_->atlas_fingerprint.clear();
+  impl_->uploaded_atlas_fingerprint.reset();
+  impl_->pending_atlas_fingerprint.clear();
+  impl_->pending_atlases_need_upload = true;
   impl_->pending_chunks.clear();
   impl_->pending_total_bytes = 0;
   impl_->pending_buffer_allocated = false;

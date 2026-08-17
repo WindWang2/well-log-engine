@@ -632,7 +632,8 @@ void emit_marker_symbol(PdfPathStream &stream, const PreparedMarker &marker,
 // (log-scale gaps, nulls); each segment is a separate subpath so the gaps do
 // not connect.
 void emit_curve_layer(PdfPathStream &stream, const PreparedScene &scene,
-                      const PreparedCurveLayer &layer) noexcept {
+                      const PreparedCurveLayer &layer,
+                      const export_layout::PageWindow *window) noexcept {
   if (!layer.visible || layer.segment_count == 0) {
     return;
   }
@@ -640,21 +641,47 @@ void emit_curve_layer(PdfPathStream &stream, const PreparedScene &scene,
   stream.set_line_width(layer.line_width.value);
   const auto segments = scene.curve_segments();
   const auto points = scene.curve_points();
+  bool emitted = false;
   for (std::uint64_t offset = 0; offset < layer.segment_count; ++offset) {
     const auto &segment = segments[static_cast<std::size_t>(
         layer.first_segment + offset)];
-    for (std::uint64_t point_offset = 0; point_offset < segment.point_count;
-         ++point_offset) {
-      const auto &point = points[static_cast<std::size_t>(
-          segment.first_point + point_offset)];
-      if (point_offset == 0) {
-        stream.move_to(point.position.left.value, point.position.top.value);
-      } else {
-        stream.line_to(point.position.left.value, point.position.top.value);
+    if (window == nullptr || !window->clip) {
+      for (std::uint64_t point_offset = 0; point_offset < segment.point_count;
+           ++point_offset) {
+        const auto &point = points[static_cast<std::size_t>(
+            segment.first_point + point_offset)];
+        if (point_offset == 0) {
+          stream.move_to(point.position.left.value, point.position.top.value);
+        } else {
+          stream.line_to(point.position.left.value, point.position.top.value);
+        }
+        emitted = true;
       }
+      continue;
+    }
+    bool subpath_open = false;
+    for (std::uint64_t point_offset = 0; point_offset + 1 < segment.point_count;
+         ++point_offset) {
+      const auto &from =
+          points[static_cast<std::size_t>(segment.first_point + point_offset)];
+      const auto &to = points[static_cast<std::size_t>(segment.first_point +
+                                                       point_offset + 1)];
+      if (!export_layout::edge_intersects_window(
+              window, from.position.top.value, to.position.top.value)) {
+        subpath_open = false;
+        continue;
+      }
+      if (!subpath_open) {
+        stream.move_to(from.position.left.value, from.position.top.value);
+        subpath_open = true;
+      }
+      stream.line_to(to.position.left.value, to.position.top.value);
+      emitted = true;
     }
   }
-  stream.stroke();
+  if (emitted) {
+    stream.stroke();
+  }
 }
 
 // Walks a region's closed boundary ring into the stream (m/l), shared by the
@@ -678,7 +705,13 @@ void append_fill_ring(PdfPathStream &stream, const PreparedScene &scene,
 // a tiling-pattern fill (registering the pattern in `resources`).
 void emit_fill_region(PdfPathStream &stream, const PreparedScene &scene,
                       const PreparedFillRegion &region,
-                      PageResources &resources) noexcept {
+                      PageResources &resources,
+                      const export_layout::PageWindow *window) noexcept {
+  if (!export_layout::range_intersects_window(
+          window, region.bounds.top.value,
+          region.bounds.top.value + region.bounds.height.value)) {
+    return;
+  }
   append_fill_ring(stream, scene, region);
   if (region.pattern_id.is_nil()) {
     set_solid_fill(stream, region.fill_color);
@@ -698,16 +731,24 @@ void emit_fill_region(PdfPathStream &stream, const PreparedScene &scene,
 // stream (em fractions, y-up) is emitted verbatim; the negative-d scale flips
 // it to scene y-down and sizes it in millimetres. No font program is embedded.
 void emit_text_run(PdfPathStream &stream, const PreparedScene &scene,
-                   const PreparedTextRun &run) noexcept {
+                   const PreparedTextRun &run,
+                   const export_layout::PageWindow *window) noexcept {
   const auto glyphs = scene.glyphs();
   const auto outlines = scene.glyph_outlines();
   const auto outline_commands = scene.outline_commands();
+  const auto fs = run.font_size.value;
+  if (run.bounds.width.value > 0.0 || run.bounds.height.value > 0.0) {
+    if (!export_layout::range_intersects_window(
+            window, run.bounds.top.value,
+            run.bounds.top.value + run.bounds.height.value, fs)) {
+      return;
+    }
+  }
   stream.save_state();
   stream.set_fill_color(run.color.red, run.color.green, run.color.blue);
   if (run.color.alpha < 255) {
     stream.set_fill_alpha(static_cast<double>(run.color.alpha) / 255.0);
   }
-  const auto fs = run.font_size.value;
   // (font_index, glyph_id) -> outline lookup, built once per run instead of a
   // linear scan per glyph (O(glyphs x outlines) -> O(glyphs + outlines),
   // issue #487). The outlines span is the single source of truth shared with
@@ -722,6 +763,10 @@ void emit_text_run(PdfPathStream &stream, const PreparedScene &scene,
   for (std::uint64_t offset = 0; offset < run.glyph_count; ++offset) {
     const auto &glyph = glyphs[static_cast<std::size_t>(run.first_glyph +
                                                          offset)];
+    if (!export_layout::y_intersects_window(window, glyph.origin.top.value,
+                                            fs)) {
+      continue;
+    }
     const auto key = (static_cast<std::uint64_t>(glyph.font_index) << 32U) |
                      glyph.glyph_id;
     const auto outline_it = outline_by_key.find(key);
@@ -930,7 +975,8 @@ void emit_page_bands(PdfPathStream &stream, const PreparedScene &scene,
 // prepare time (the same data GL/SVG draw).
 void emit_custom_layer(PdfPathStream &stream, const PreparedScene &scene,
                        const PreparedCustomLayer &layer,
-                       PageResources &resources) noexcept {
+                       PageResources &resources,
+                       const export_layout::PageWindow *window) noexcept {
   if (!layer.visible) {
     return;
   }
@@ -938,6 +984,14 @@ void emit_custom_layer(PdfPathStream &stream, const PreparedScene &scene,
   for (std::uint64_t offset = 0; offset < layer.primitive_count; ++offset) {
     const auto &primitive = scene.custom_primitives()[static_cast<std::size_t>(
         layer.first_primitive + offset)];
+    if (primitive.bounds.width.value > 0.0 ||
+        primitive.bounds.height.value > 0.0) {
+      if (!export_layout::range_intersects_window(
+              window, primitive.bounds.top.value,
+              primitive.bounds.top.value + primitive.bounds.height.value)) {
+        continue;
+      }
+    }
     if (primitive.kind == CustomPrimitiveKind::polyline) {
       stream.set_stroke_color(primitive.color.red, primitive.color.green,
                               primitive.color.blue);
@@ -1051,7 +1105,8 @@ void emit_crop_marks(PdfPathStream &stream, const ExportPageSpec &page) noexcept
 void emit_track_body(PdfPathStream &stream, const PreparedScene &scene,
                      const PreparedTrack &track, PageResources &resources,
                      const std::function<Result<RasterTile>(
-                         const ImageTileRequest &)> &image_tile) noexcept {
+                         const ImageTileRequest &)> &image_tile,
+                     const export_layout::PageWindow *window) noexcept {
   // Interval rects (solid or patterned fill — mirrors SVG's pattern_id branch).
   for (const auto &layer : scene.interval_layers()) {
     if (layer.track_id != track.id) {
@@ -1060,6 +1115,11 @@ void emit_track_body(PdfPathStream &stream, const PreparedScene &scene,
     for (std::uint64_t offset = 0; offset < layer.interval_count; ++offset) {
       const auto &interval = scene.intervals()[static_cast<std::size_t>(
           layer.first_interval + offset)];
+      if (!export_layout::range_intersects_window(
+              window, interval.rect.top.value,
+              interval.rect.top.value + interval.rect.height.value)) {
+        continue;
+      }
       stream.rect(interval.rect.left.value, interval.rect.top.value,
                   interval.rect.width.value, interval.rect.height.value);
       if (interval.pattern_id.is_nil()) {
@@ -1080,9 +1140,15 @@ void emit_track_body(PdfPathStream &stream, const PreparedScene &scene,
     stream.set_line_width(layer.line_width.value);
     const auto left = track.clip.left.value;
     const auto right = track.clip.left.value + track.clip.width.value;
+    const auto marker_pad = layer.line_width.value +
+                            (layer.draw_symbols ? layer.symbol_size.value : 0.0);
     for (std::uint64_t offset = 0; offset < layer.marker_count; ++offset) {
       const auto &marker = scene.markers()[static_cast<std::size_t>(
           layer.first_marker + offset)];
+      if (!export_layout::y_intersects_window(window, marker.display_top.value,
+                                              marker_pad)) {
+        continue;
+      }
       stream.move_to(left, marker.display_top.value)
           .line_to(right, marker.display_top.value);
       if (layer.draw_symbols) {
@@ -1099,13 +1165,17 @@ void emit_track_body(PdfPathStream &stream, const PreparedScene &scene,
     for (std::uint64_t offset = 0; offset < layer.symbol_count; ++offset) {
       const auto &symbol = scene.symbols()[static_cast<std::size_t>(
           layer.first_symbol + offset)];
+      if (!export_layout::y_intersects_window(
+              window, symbol.center.top.value, layer.symbol_size.value)) {
+        continue;
+      }
       emit_symbol(stream, symbol, layer);
     }
   }
   // Curve polylines.
   for (const auto &layer : scene.curve_layers()) {
     if (layer.track_id == track.id) {
-      emit_curve_layer(stream, scene, layer);
+      emit_curve_layer(stream, scene, layer, window);
     }
   }
   // Crossover fill regions.
@@ -1116,7 +1186,7 @@ void emit_track_body(PdfPathStream &stream, const PreparedScene &scene,
     for (std::uint64_t offset = 0; offset < fill_layer.region_count; ++offset) {
       const auto &region = scene.fill_regions()[static_cast<std::size_t>(
           fill_layer.first_region + offset)];
-      emit_fill_region(stream, scene, region, resources);
+      emit_fill_region(stream, scene, region, resources, window);
     }
   }
   // Image layer tiles: place each resolved tile as an image XObject. Pixels are
@@ -1131,6 +1201,11 @@ void emit_track_body(PdfPathStream &stream, const PreparedScene &scene,
       for (std::uint64_t offset = 0; offset < image_layer.tile_count; ++offset) {
         const auto &tile = scene.image_tiles()[static_cast<std::size_t>(
             image_layer.first_tile + offset)];
+        if (!export_layout::range_intersects_window(
+                window, tile.rect.top.value,
+                tile.rect.top.value + tile.rect.height.value)) {
+          continue;
+        }
         const auto resolved = image_tile(ImageTileRequest{
             .image_source_id = tile.image_source_id,
             .level = tile.level,
@@ -1170,14 +1245,14 @@ void emit_track_body(PdfPathStream &stream, const PreparedScene &scene,
   // Custom layer primitives.
   for (const auto &custom_layer : scene.custom_layers()) {
     if (custom_layer.track_id == track.id) {
-      emit_custom_layer(stream, scene, custom_layer, resources);
+      emit_custom_layer(stream, scene, custom_layer, resources, window);
     }
   }
   // Text runs (vector outlines).
   for (const auto &run : scene.text_runs()) {
     const auto run_track = scene.track_id_for_layer(run.layer_id);
     if (run_track.has_value() && *run_track == track.id) {
-      emit_text_run(stream, scene, run);
+      emit_text_run(stream, scene, run, window);
     }
   }
 }
@@ -1331,7 +1406,8 @@ PdfSceneExporter::write(const PreparedScene &scene,
                     track.clip.width.value, track.clip.height.value)
             .clip_nonzero()
             .end_path_no_paint();
-        emit_track_body(stream, scene, track, resources, image_tile);
+        emit_track_body(stream, scene, track, resources, image_tile,
+                        window.clip ? &window : nullptr);
         stream.restore_state();
         if (page.layered_pdf) {
           stream.mark_end();

@@ -637,6 +637,156 @@ void cancel_stops_work_and_cleans_temp() {
   std::filesystem::remove(path);
 }
 
+void tile_cull_skips_bresenham_for_out_of_window_curves() {
+  const auto document_id = id("15700000-0000-4000-8000-000000000101");
+  const auto shallow_axis = id("15700000-0000-4000-8000-000000000102");
+  const auto deep_axis = id("15700000-0000-4000-8000-000000000103");
+  const auto shallow_curve = id("15700000-0000-4000-8000-000000000104");
+  const auto deep_curve = id("15700000-0000-4000-8000-000000000105");
+  const auto track_id = id("15700000-0000-4000-8000-000000000106");
+  const auto scale_id = id("15700000-0000-4000-8000-000000000107");
+  const auto shallow_layer = id("15700000-0000-4000-8000-000000000108");
+  const auto deep_layer = id("15700000-0000-4000-8000-000000000109");
+
+  auto shallow_depths = std::make_shared<const std::vector<double>>(
+      std::vector<double>{1000.0, 1002.0, 1004.0});
+  auto shallow_values = std::make_shared<const std::vector<double>>(
+      std::vector<double>{10.0, 50.0, 20.0});
+  std::vector<double> deep_d;
+  std::vector<double> deep_v;
+  deep_d.reserve(500);
+  deep_v.reserve(500);
+  for (int i = 0; i < 500; ++i) {
+    deep_d.push_back(1700.0 + static_cast<double>(i) * 0.2);
+    deep_v.push_back(static_cast<double>(i % 80));
+  }
+  auto deep_depths =
+      std::make_shared<const std::vector<double>>(std::move(deep_d));
+  auto deep_values =
+      std::make_shared<const std::vector<double>>(std::move(deep_v));
+
+  WellLogDocumentBuilder builder(document_id, DocumentRevision{7});
+  builder.add_sampling_axis(SamplingAxis{
+      .id = shallow_axis,
+      .coordinates = BufferView::from_vector(shallow_depths),
+      .domain = DepthDomain::measured_depth,
+      .unit = "m",
+      .direction = AxisDirection::increasing,
+  });
+  builder.add_sampling_axis(SamplingAxis{
+      .id = deep_axis,
+      .coordinates = BufferView::from_vector(deep_depths),
+      .domain = DepthDomain::measured_depth,
+      .unit = "m",
+      .direction = AxisDirection::increasing,
+  });
+  builder.add_curve(Curve{
+      .id = shallow_curve,
+      .mnemonic = "GR",
+      .display_name = "Shallow",
+      .unit = "API",
+      .sampling_axis_id = shallow_axis,
+      .values = BufferView::from_vector(shallow_values),
+      .nulls = {},
+  });
+  builder.add_curve(Curve{
+      .id = deep_curve,
+      .mnemonic = "RES",
+      .display_name = "Deep",
+      .unit = "API",
+      .sampling_axis_id = deep_axis,
+      .values = BufferView::from_vector(deep_values),
+      .nulls = {},
+  });
+  WellLogSession session;
+  require(session.execute(SetDocumentCommand{builder.build()}).has_value(),
+          "cull fixture document must load");
+  ScenePresentationBuilder presentation(
+      document_id,
+      ReferenceDepthRange{.domain = DepthDomain::measured_depth,
+                          .unit = "m",
+                          .top = 1000.0,
+                          .bottom = 1800.0},
+      Millimetres{400.0}, "font-fixture-v1");
+  presentation.add_track(
+      TrackSpec{.id = track_id, .width = Millimetres{40.0}, .z_order = 1});
+  presentation.add_scale(TrackScaleSpec{.id = scale_id,
+                                        .track_id = track_id,
+                                        .mode = ScaleMode::linear,
+                                        .minimum = 0.0,
+                                        .maximum = 100.0,
+                                        .direction = ScaleDirection::left_to_right,
+                                        .unit = "API"});
+  presentation.add_curve_layer(CurveLayerSpec{
+      .id = shallow_layer,
+      .track_id = track_id,
+      .curve_id = shallow_curve,
+      .scale_id = scale_id,
+      .color = RgbaColor{200, 20, 20, 255},
+      .line_width = Millimetres{0.4},
+      .z_order = 1,
+      .visible = true,
+  });
+  presentation.add_curve_layer(CurveLayerSpec{
+      .id = deep_layer,
+      .track_id = track_id,
+      .curve_id = deep_curve,
+      .scale_id = scale_id,
+      .color = RgbaColor{20, 20, 200, 255},
+      .line_width = Millimetres{0.4},
+      .z_order = 2,
+      .visible = true,
+  });
+  const auto presented =
+      session.execute(SetPresentationCommand{presentation.build()});
+  if (!presented.has_value()) {
+    fail(std::string{"cull fixture presentation must load: "} +
+         std::to_string(static_cast<int>(presented.error().code)));
+  }
+  const auto scene = session.prepared_scene(document_id);
+  require(scene != nullptr, "cull fixture must prepare a scene");
+
+  ExportSnapshot snapshot{
+      .document_id = document_id,
+      .document_revision = DocumentRevision{7},
+      .presentation_version = PresentationVersion{1},
+      .depth_transform =
+          DepthTransformDescriptor{.domain = DepthDomain::measured_depth,
+                                   .unit = "m",
+                                   .reference_top = 1000.0,
+                                   .reference_bottom = 1800.0,
+                                   .version = 1},
+      .font_asset_fingerprint = "font-fixture-v1",
+      .page = ExportPageSpec{.mode = PaginationMode::continuous,
+                             .page_width = Millimetres{80.0},
+                             .page_height = Millimetres{400.0},
+                             .dpi = 25,
+                             .well_name = "Cull-Fixture"},
+  };
+  const auto path = temp_file("welllog-605-cull.png");
+  std::filesystem::remove(path);
+  reset_raster_export_debug_stats();
+  RasterExportRequest req{
+      .path = path,
+      .format = RasterImageFormat::png,
+      .width_px = 80,
+      .height_px = 400,
+      .tile_height_px = 200,
+      .overwrite_confirmed = true,
+  };
+  const auto report = export_raster_sync(*scene, snapshot, req);
+  require(report.has_value(), "two-tile cull export must succeed");
+  const auto &stats = raster_export_debug_stats();
+  require(stats.tiles_completed >= 2, "export must rasterize two tiles");
+  require(stats.first_tiles_draw_line_calls[0] > 0,
+          "tile 0 must still Bresenham the shallow in-window curve");
+  require(stats.first_tiles_draw_line_calls[0] < 50,
+          "tile 0 must not Bresenham a curve entirely below it (issue #605)");
+  require(stats.first_tiles_draw_line_calls[1] > 400,
+          "tile 1 must still Bresenham the deep curve");
+  std::filesystem::remove(path);
+}
+
 } // namespace
 
 int main() {
@@ -649,5 +799,6 @@ int main() {
   gray_png_curve_samples_match_srgb_luma();
   raster_draws_symbol_layer_pixels();
   raster_page_dimensions_match_the_shared_snapshot_geometry();
+  tile_cull_skips_bresenham_for_out_of_window_curves();
   return EXIT_SUCCESS;
 }

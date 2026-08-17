@@ -10,6 +10,7 @@
 // stops subsequent tiles and removes temp files; successful output is
 // written beside the target then atomically renamed.
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -151,5 +152,18 @@ private:
 [[nodiscard]] WELLLOG_EXPORT_RASTER_API Result<RasterExportReport>
 export_raster_sync(const PreparedScene &scene, const ExportSnapshot &snapshot,
                    const RasterExportRequest &request) noexcept;
+
+// Observability for tile-window culling tests (issue #605). One process-wide
+// instance lives in raster_export.cpp so shared-library builds share counters
+// with the test binary.
+struct RasterExportDebugStats {
+  std::uint64_t draw_line_calls{};
+  std::uint64_t tiles_completed{};
+  std::array<std::uint64_t, 2> first_tiles_draw_line_calls{};
+};
+
+[[nodiscard]] WELLLOG_EXPORT_RASTER_API RasterExportDebugStats &
+raster_export_debug_stats() noexcept;
+WELLLOG_EXPORT_RASTER_API void reset_raster_export_debug_stats() noexcept;
 
 } // namespace welllog

@@ -19,6 +19,7 @@
 #include <string_view>
 
 #include <welllog/core/units.hpp>
+#include <welllog/export/export_layout.hpp>
 #include <welllog/scene/scene.hpp>
 
 namespace welllog::svg_internal {
@@ -46,6 +47,12 @@ void append_defs(std::string &output, const PreparedScene &scene);
 // Emits the per-track, per-layer <g> body (the single geometric emitter shared
 // by both exporters). Each track <g> is clipped to its own track clip. Bridge to
 // a SvgExporter-private definition.
-void append_layer_body(std::string &output, const PreparedScene &scene);
+//
+// `window` (issue #604): when non-null and `window->clip`, geometry whose
+// scene-y range lies entirely outside the page depth window is omitted so
+// fixed-mode multi-page export is O(points) not O(pages × points). Null
+// (or unclipped) keeps the historical full-scene emit.
+void append_layer_body(std::string &output, const PreparedScene &scene,
+                       const export_layout::PageWindow *window = nullptr);
 
 } // namespace welllog::svg_internal

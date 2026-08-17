@@ -13,8 +13,10 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -27,6 +29,16 @@
 #endif
 
 namespace welllog {
+
+RasterExportDebugStats &raster_export_debug_stats() noexcept {
+  static RasterExportDebugStats stats{};
+  return stats;
+}
+
+void reset_raster_export_debug_stats() noexcept {
+  raster_export_debug_stats() = {};
+}
+
 namespace {
 
 constexpr double k_mm_per_inch = 25.4;
@@ -200,6 +212,7 @@ void blend_pixel(std::vector<std::uint8_t> &tile, std::uint32_t width,
 void draw_line(std::vector<std::uint8_t> &tile, std::uint32_t width,
                std::uint32_t height, std::uint32_t channels, int x0, int y0,
                int x1, int y1, RgbaColor color, int thickness) {
+  ++raster_export_debug_stats().draw_line_calls;
   const auto dx = std::abs(x1 - x0);
   const auto sx = x0 < x1 ? 1 : -1;
   const auto dy = -std::abs(y1 - y0);
@@ -356,9 +369,113 @@ struct PixelPoint {
   return PixelPoint{.x = x, .y = static_cast<int>(y_abs - tile_origin_y)};
 }
 
+[[nodiscard]] bool scene_y_hits_tile(double y0_mm, double y1_mm, double ppm,
+                                     std::int64_t tile_origin_y,
+                                     std::uint32_t tile_rows,
+                                     double pad_px) noexcept {
+  const auto y0 = y0_mm * ppm;
+  const auto y1 = y1_mm * ppm;
+  const auto lo = std::min(y0, y1) - pad_px;
+  const auto hi = std::max(y0, y1) + pad_px;
+  const auto tile_lo = static_cast<double>(tile_origin_y);
+  const auto tile_hi =
+      static_cast<double>(tile_origin_y + static_cast<std::int64_t>(tile_rows));
+  return hi >= tile_lo && lo < tile_hi;
+}
+
+using OutlineKey = std::uint64_t;
+
+[[nodiscard]] OutlineKey glyph_outline_key(std::uint32_t font_index,
+                                           std::uint32_t glyph_id) noexcept {
+  return (static_cast<std::uint64_t>(font_index) << 32U) | glyph_id;
+}
+
+struct FlattenedGlyph {
+  std::vector<std::vector<std::pair<double, double>>> contours;
+};
+
+struct RasterTextCache {
+  std::unordered_map<OutlineKey, const PreparedGlyphOutline *> outlines;
+  std::unordered_map<OutlineKey, FlattenedGlyph> flattened;
+};
+
+void flatten_glyph_em(const PreparedGlyphOutline &outline,
+                      std::span<const OutlineCommand> commands,
+                      FlattenedGlyph &out) {
+  out.contours.clear();
+  std::vector<std::pair<double, double>> subpath;
+  const auto flush = [&]() {
+    if (subpath.size() >= 3) {
+      out.contours.push_back(std::move(subpath));
+    }
+    subpath.clear();
+  };
+  double current_x = 0.0;
+  double current_y = 0.0;
+  const auto span = commands.subspan(
+      static_cast<std::size_t>(outline.first_command),
+      static_cast<std::size_t>(outline.command_count));
+  for (const auto &command : span) {
+    switch (command.verb) {
+    case OutlineVerb::move_to:
+      flush();
+      current_x = command.coordinates[0];
+      current_y = command.coordinates[1];
+      subpath.emplace_back(current_x, current_y);
+      break;
+    case OutlineVerb::line_to:
+      current_x = command.coordinates[0];
+      current_y = command.coordinates[1];
+      subpath.emplace_back(current_x, current_y);
+      break;
+    case OutlineVerb::quadratic_to: {
+      const auto cx = command.coordinates[0];
+      const auto cy = command.coordinates[1];
+      const auto tx = command.coordinates[2];
+      const auto ty = command.coordinates[3];
+      for (int step = 1; step <= 8; ++step) {
+        const auto t = static_cast<double>(step) / 8.0;
+        const auto u = 1.0 - t;
+        subpath.emplace_back(u * u * current_x + 2 * u * t * cx + t * t * tx,
+                             u * u * current_y + 2 * u * t * cy + t * t * ty);
+      }
+      current_x = tx;
+      current_y = ty;
+      break;
+    }
+    case OutlineVerb::cubic_to: {
+      const auto c1x = command.coordinates[0];
+      const auto c1y = command.coordinates[1];
+      const auto c2x = command.coordinates[2];
+      const auto c2y = command.coordinates[3];
+      const auto tx = command.coordinates[4];
+      const auto ty = command.coordinates[5];
+      for (int step = 1; step <= 8; ++step) {
+        const auto t = static_cast<double>(step) / 8.0;
+        const auto u = 1.0 - t;
+        subpath.emplace_back(u * u * u * current_x + 3 * u * u * t * c1x +
+                                 3 * u * t * t * c2x + t * t * t * tx,
+                             u * u * u * current_y + 3 * u * u * t * c1y +
+                                 3 * u * t * t * c2y + t * t * t * ty);
+      }
+      current_x = tx;
+      current_y = ty;
+      break;
+    }
+    case OutlineVerb::close:
+      flush();
+      break;
+    }
+  }
+  flush();
+}
+
 void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
                     std::uint32_t tile_top, std::uint32_t tile_rows,
-                    std::vector<std::uint8_t> &tile, RgbaColor background) {
+                    std::vector<std::uint8_t> &tile, RgbaColor background,
+                    RasterTextCache &text_cache) {
+  auto &debug = raster_export_debug_stats();
+  const auto draw_line_before = debug.draw_line_calls;
   fill_background(tile, geom.width, tile_rows, geom.channels, background);
   const auto tile_origin_y = static_cast<std::int64_t>(tile_top);
   const auto ppm = geom.pixels_per_mm;
@@ -367,6 +484,11 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
     const auto end = layer.first_interval + layer.interval_count;
     for (std::uint64_t index = layer.first_interval; index < end; ++index) {
       const auto &interval = scene.intervals()[index];
+      if (!scene_y_hits_tile(interval.rect.top.value,
+                             interval.rect.top.value + interval.rect.height.value,
+                             ppm, tile_origin_y, tile_rows, 1.0)) {
+        continue;
+      }
       const auto tl =
           to_pixel(PhysicalPoint{interval.rect.left, interval.rect.top}, ppm,
                    tile_origin_y);
@@ -390,6 +512,11 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
         1, static_cast<int>(std::lround(layer.symbol_size.value / 6.0 * ppm)));
     for (std::uint64_t index = layer.first_symbol; index < end; ++index) {
       const auto &symbol = scene.symbols()[index];
+      if (!scene_y_hits_tile(symbol.center.top.value, symbol.center.top.value,
+                             ppm, tile_origin_y, tile_rows,
+                             layer.symbol_size.value * ppm)) {
+        continue;
+      }
       if (symbol.kind == SymbolKind::cross) {
         // Stroke-only glyph: the two diagonals (same convention as the
         // marker-symbol branch).
@@ -420,6 +547,7 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
     const auto thickness = std::max(
         1, static_cast<int>(std::lround(layer.line_width.value * ppm)));
     const auto seg_end = layer.first_segment + layer.segment_count;
+    const auto pad_px = static_cast<double>(thickness + 1);
     for (std::uint64_t s = layer.first_segment; s < seg_end; ++s) {
       const auto &segment = segments[s];
       if (segment.point_count < 2) {
@@ -428,6 +556,10 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
       for (std::uint64_t p = 0; p + 1 < segment.point_count; ++p) {
         const auto &a = points[segment.first_point + p];
         const auto &b = points[segment.first_point + p + 1];
+        if (!scene_y_hits_tile(a.position.top.value, b.position.top.value, ppm,
+                               tile_origin_y, tile_rows, pad_px)) {
+          continue;
+        }
         const auto pa = to_pixel(a.position, ppm, tile_origin_y);
         const auto pb = to_pixel(b.position, ppm, tile_origin_y);
         draw_line(tile, geom.width, tile_rows, geom.channels, pa.x, pa.y, pb.x,
@@ -441,8 +573,15 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
     const auto end = layer.first_marker + layer.marker_count;
     const auto thickness = std::max(
         1, static_cast<int>(std::lround(layer.line_width.value * ppm)));
+    const auto marker_pad =
+        static_cast<double>(thickness) +
+        (layer.draw_symbols ? layer.symbol_size.value * ppm : 0.0);
     for (std::uint64_t index = layer.first_marker; index < end; ++index) {
       const auto &marker = scene.markers()[index];
+      if (!scene_y_hits_tile(marker.display_top.value, marker.display_top.value,
+                             ppm, tile_origin_y, tile_rows, marker_pad)) {
+        continue;
+      }
       // Find a track that contains this marker's depth line; fall back to full
       // scene width.
       int x0 = 0;
@@ -500,6 +639,12 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
         if (region.vertex_count < 3) {
           continue;
         }
+        if (!scene_y_hits_tile(
+                region.bounds.top.value,
+                region.bounds.top.value + region.bounds.height.value, ppm,
+                tile_origin_y, tile_rows, 1.0)) {
+          continue;
+        }
         std::vector<PhysicalPoint> outline;
         outline.reserve(static_cast<std::size_t>(region.vertex_count));
         for (std::uint64_t v = 0; v < region.vertex_count; ++v) {
@@ -526,6 +671,16 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
             primitives[static_cast<std::size_t>(index)];
         if (primitive.vertex_count == 0) {
           continue;
+        }
+        if (primitive.bounds.width.value > 0.0 ||
+            primitive.bounds.height.value > 0.0) {
+          if (!scene_y_hits_tile(
+                  primitive.bounds.top.value,
+                  primitive.bounds.top.value + primitive.bounds.height.value,
+                  ppm, tile_origin_y, tile_rows,
+                  primitive.stroke_width.value * ppm + 1.0)) {
+            continue;
+          }
         }
         const auto vertex_at = [&](std::uint64_t offset) -> PhysicalPoint {
           return cvertices[static_cast<std::size_t>(
@@ -595,32 +750,46 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
   // flattened to polygons and scanline-filled with the SAME
   // translate/rotate/scale(em, -em) transform the SVG emitter applies, so
   // raster text lands where the vector backends draw it.
+  // Outline lookup is a hashmap (issue #487's PDF fix, applied here for
+  // #605) and flattened em-contours are cached across tiles.
   {
     const auto glyphs = scene.glyphs();
-    const auto outlines = scene.glyph_outlines();
     const auto commands = scene.outline_commands();
     for (const auto &run : scene.text_runs()) {
       const auto em = run.font_size.value;
+      if (run.bounds.width.value > 0.0 || run.bounds.height.value > 0.0) {
+        if (!scene_y_hits_tile(run.bounds.top.value,
+                               run.bounds.top.value + run.bounds.height.value,
+                               ppm, tile_origin_y, tile_rows, em * ppm)) {
+          continue;
+        }
+      }
       for (std::uint64_t offset = 0; offset < run.glyph_count; ++offset) {
         const auto &glyph =
             glyphs[static_cast<std::size_t>(run.first_glyph + offset)];
-        const PreparedGlyphOutline *outline = nullptr;
-        for (const auto &candidate : outlines) {
-          if (candidate.font_index == glyph.font_index &&
-              candidate.glyph_id == glyph.glyph_id) {
-            outline = &candidate;
-            break;
-          }
-        }
-        if (outline == nullptr) {
+        if (!scene_y_hits_tile(glyph.origin.top.value, glyph.origin.top.value,
+                               ppm, tile_origin_y, tile_rows, em * ppm)) {
           continue;
+        }
+        const auto key =
+            glyph_outline_key(glyph.font_index, glyph.glyph_id);
+        const auto outline_it = text_cache.outlines.find(key);
+        if (outline_it == text_cache.outlines.end()) {
+          continue;
+        }
+        const auto *outline = outline_it->second;
+        auto flat_it = text_cache.flattened.find(key);
+        if (flat_it == text_cache.flattened.end()) {
+          FlattenedGlyph flattened;
+          flatten_glyph_em(*outline, commands, flattened);
+          flat_it = text_cache.flattened.emplace(key, std::move(flattened))
+                        .first;
         }
         const auto rot =
             glyph.rotation_degrees * 3.14159265358979323846 / 180.0;
         const auto cos_r = std::cos(rot);
         const auto sin_r = std::sin(rot);
         const auto to_scene_mm = [&](double ex, double ey) {
-          // SVG parity: translate(origin) rotate(deg) scale(em, -em).
           const auto gx = ex * em;
           const auto gy = -ey * em;
           return PhysicalPoint{
@@ -629,82 +798,16 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
               .top = Millimetres{glyph.origin.top.value + gx * sin_r +
                                  gy * cos_r}};
         };
-        // All contours of one glyph are swept in a single even-odd pass.
-        // Per-contour fills cannot subtract holes (O/A/B/e/o would paint
-        // their counters solid); pairing crossings across contours gives the
-        // SVG single-path multi-subpath semantics.
-        std::vector<PhysicalPoint> subpath;
         std::vector<std::vector<PhysicalPoint>> contours;
-        const auto flush_subpath = [&]() {
-          if (subpath.size() >= 3) {
-            contours.push_back(std::move(subpath));
+        contours.reserve(flat_it->second.contours.size());
+        for (const auto &em_contour : flat_it->second.contours) {
+          std::vector<PhysicalPoint> contour;
+          contour.reserve(em_contour.size());
+          for (const auto &[ex, ey] : em_contour) {
+            contour.push_back(to_scene_mm(ex, ey));
           }
-          subpath.clear();
-        };
-        double current_x = 0.0;
-        double current_y = 0.0;
-        for (std::uint64_t c = 0; c < outline->command_count; ++c) {
-          const auto &command =
-              commands[static_cast<std::size_t>(outline->first_command + c)];
-          switch (command.verb) {
-          case OutlineVerb::move_to:
-            flush_subpath();
-            current_x = command.coordinates[0];
-            current_y = command.coordinates[1];
-            subpath.push_back(to_scene_mm(current_x, current_y));
-            break;
-          case OutlineVerb::line_to:
-            current_x = command.coordinates[0];
-            current_y = command.coordinates[1];
-            subpath.push_back(to_scene_mm(current_x, current_y));
-            break;
-          case OutlineVerb::quadratic_to: {
-            const auto cx = command.coordinates[0];
-            const auto cy = command.coordinates[1];
-            const auto tx = command.coordinates[2];
-            const auto ty = command.coordinates[3];
-            // Flatten the quadratic to 8 segments.
-            for (int step = 1; step <= 8; ++step) {
-              const auto t = static_cast<double>(step) / 8.0;
-              const auto u = 1.0 - t;
-              const auto px = u * u * current_x + 2 * u * t * cx + t * t * tx;
-              const auto py = u * u * current_y + 2 * u * t * cy + t * t * ty;
-              subpath.push_back(to_scene_mm(px, py));
-            }
-            current_x = tx;
-            current_y = ty;
-            break;
-          }
-          case OutlineVerb::cubic_to: {
-            const auto c1x = command.coordinates[0];
-            const auto c1y = command.coordinates[1];
-            const auto c2x = command.coordinates[2];
-            const auto c2y = command.coordinates[3];
-            const auto tx = command.coordinates[4];
-            const auto ty = command.coordinates[5];
-            // Flatten the cubic to 8 segments (CFF/OTF outlines carry
-            // cubics).
-            for (int step = 1; step <= 8; ++step) {
-              const auto t = static_cast<double>(step) / 8.0;
-              const auto u = 1.0 - t;
-              const auto px = u * u * u * current_x + 3 * u * u * t * c1x +
-                              3 * u * t * t * c2x + t * t * t * tx;
-              const auto py = u * u * u * current_y + 3 * u * u * t * c1y +
-                              3 * u * t * t * c2y + t * t * t * ty;
-              subpath.push_back(to_scene_mm(px, py));
-            }
-            current_x = tx;
-            current_y = ty;
-            break;
-          }
-          case OutlineVerb::close:
-            // End the contour; the scanline fill closes subpaths implicitly
-            // (the edge loop connects the last vertex back to the first).
-            flush_subpath();
-            break;
-          }
+          contours.push_back(std::move(contour));
         }
-        flush_subpath();
         if (!contours.empty()) {
           fill_polygons(tile, geom.width, tile_rows, geom.channels, contours,
                         0.0, 0.0, ppm, tile_origin_y, run.color);
@@ -712,6 +815,12 @@ void rasterize_tile(const PreparedScene &scene, const OutputGeometry &geom,
       }
     }
   }
+
+  const auto walked = debug.draw_line_calls - draw_line_before;
+  if (debug.tiles_completed < debug.first_tiles_draw_line_calls.size()) {
+    debug.first_tiles_draw_line_calls[debug.tiles_completed] = walked;
+  }
+  ++debug.tiles_completed;
 }
 
 // --- PNG streaming ----------------------------------------------------------
@@ -892,6 +1001,15 @@ render_export(const PreparedScene &scene, const ExportSnapshot &snapshot,
     std::vector<std::uint8_t> tile(
         static_cast<std::size_t>(geom.width) * geom.tile_height * geom.channels);
     std::uint64_t peak_tile_bytes = tile.size();
+    reset_raster_export_debug_stats();
+    RasterTextCache text_cache;
+    const auto outlines = scene.glyph_outlines();
+    text_cache.outlines.reserve(outlines.size());
+    for (const auto &candidate : outlines) {
+      text_cache.outlines.emplace(
+          glyph_outline_key(candidate.font_index, candidate.glyph_id),
+          &candidate);
+    }
 
     auto written = write_file_atomic(request.path, [&](std::ostream &out) -> bool {
       if (request.format == RasterImageFormat::png) {
@@ -948,7 +1066,8 @@ render_export(const PreparedScene &scene, const ExportSnapshot &snapshot,
           const auto rows = std::min(geom.tile_height, geom.height - y0);
           tile.resize(static_cast<std::size_t>(geom.width) * rows *
                       geom.channels);
-          rasterize_tile(scene, geom, y0, rows, tile, request.background);
+          rasterize_tile(scene, geom, y0, rows, tile, request.background,
+                         text_cache);
           peak_tile_bytes =
               std::max<std::uint64_t>(peak_tile_bytes, tile.size());
           for (std::uint32_t row = 0; row < rows; ++row) {
@@ -1037,7 +1156,8 @@ render_export(const PreparedScene &scene, const ExportSnapshot &snapshot,
         const auto rows = std::min(geom.tile_height, geom.height - y0);
         tile.resize(static_cast<std::size_t>(geom.width) * rows *
                     geom.channels);
-        rasterize_tile(scene, geom, y0, rows, tile, request.background);
+        rasterize_tile(scene, geom, y0, rows, tile, request.background,
+                       text_cache);
         peak_tile_bytes =
             std::max<std::uint64_t>(peak_tile_bytes, tile.size());
 
