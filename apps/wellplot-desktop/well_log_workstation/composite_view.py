@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -202,7 +203,12 @@ class CompositeView(QWidget):
         )
         try:
             doc = load_plot_document(self._workspace, self._active_plot_id)
-        except Exception:
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "保存布局",
+                f"无法读取当前综合图，布局未保存。\n{exc}",
+            )
             return
         doc.panels = [
             PanelRef(**panel)
