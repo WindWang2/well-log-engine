@@ -429,6 +429,81 @@ void missing_glyphs_flow_into_session_diagnostics() {
   require(found_missing, "missing-glyph diagnostic must be published");
 }
 
+void text_issues_are_not_republished_on_every_frame() {
+  // #754: missing_glyphs is a property of the document+fonts, not of a
+  // rebuild. Re-preparing the same presentation (the sync stand-in for
+  // pan/zoom frame completion) must not grow diagnostics().
+  WellLogSession session;
+  session.set_text_engine(make_engine());
+  auto builder = WellLogDocumentBuilder(document_id, DocumentRevision{3});
+  auto depths = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{1000.0, 1010.0});
+  auto values = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{1.0, 2.0});
+  builder.add_sampling_axis(SamplingAxis{
+      .id = axis_id,
+      .coordinates = BufferView::from_vector(depths),
+      .domain = DepthDomain::measured_depth,
+      .unit = "m",
+      .direction = AxisDirection::increasing,
+  });
+  builder.add_curve(Curve{
+      .id = curve_id,
+      .mnemonic = "GR",
+      .display_name = "Gamma Ray",
+      .unit = "API",
+      .sampling_axis_id = axis_id,
+      .values = BufferView::from_vector(values),
+      .nulls = {},
+  });
+  builder.add_annotation(TextAnnotation{
+      .id = missing_id,
+      .anchor = AnnotationAnchor::reference_depth,
+      .reference_depth = 1005.0,
+      .track_fraction = 0.5,
+      .track_id = {},
+      .depth_fraction = 0.0,
+      .horizontal_fraction = 0.0,
+      .scene_point = {},
+      .text = "A\xF4\x8F\xBF\xBE",
+      .language = "en",
+      .orientation = TextOrientation::horizontal,
+      .rotation_degrees = 0.0,
+      .font_size = Millimetres{4.0},
+  });
+  require(session.execute(SetDocumentCommand{builder.build()}).has_value(),
+          "document must be accepted");
+  auto presentation = base_presentation();
+  presentation.add_text_layer(TextLayerSpec{
+      .id = text_layer_id,
+      .track_id = track_id,
+      .z_order = 0,
+      .color = RgbaColor{0, 0, 0, 255},
+  });
+  const auto built = presentation.build();
+  require(session.execute(SetPresentationCommand{built}).has_value(),
+          "presentation must be accepted");
+
+  const auto count_missing = [&session] {
+    std::size_t n = 0;
+    for (const auto &diagnostic : session.diagnostics()) {
+      if (diagnostic.code == DiagnosticCode::missing_glyphs &&
+          diagnostic.entity_id == missing_id) {
+        ++n;
+      }
+    }
+    return n;
+  };
+  const auto first = count_missing();
+  require(first == 1, "first prepare publishes one missing-glyph diagnostic");
+  for (int i = 0; i < 20; ++i) {
+    require(session.execute(SetPresentationCommand{built}).has_value(),
+            "re-prepare must be accepted");
+  }
+  require(count_missing() == first,
+          "re-prepare must not republish the same text issue");
+}
+
 void text_layers_without_an_engine_prepare_empty_with_a_diagnostic() {
   WellLogSession session;
   require(session.execute(SetDocumentCommand{text_document()}).has_value(),
@@ -520,6 +595,7 @@ int main() {
   horizontal_rotated_and_vertical_runs_prepare_positions();
   interval_and_marker_labels_share_the_text_pipeline();
   missing_glyphs_flow_into_session_diagnostics();
+  text_issues_are_not_republished_on_every_frame();
   text_layers_without_an_engine_prepare_empty_with_a_diagnostic();
   preparation_is_deterministic_across_identical_presentations();
   std::cout << "PASS: text preparation in the scene\n";

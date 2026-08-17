@@ -1296,6 +1296,23 @@ struct WellLogSession::Impl {
     return diagnostic_id;
   }
 
+  // True when this (document, revision, entity, code) was already published.
+  // Frame-invariant text/value issues must not append a new Diagnostic on
+  // every completed frame (#754).
+  [[nodiscard]] bool already_published(EntityId document_id,
+                                       DocumentRevision revision,
+                                       EntityId entity_id,
+                                       DiagnosticCode code) const noexcept {
+    for (const auto &diagnostic : diagnostics) {
+      if (diagnostic.document_id == document_id &&
+          diagnostic.document_revision == revision &&
+          diagnostic.entity_id == entity_id && diagnostic.code == code) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // Publishes prepared-scene value issues (non-positive log-scale
   // samples, scale readability hints) into the diagnostic stream.
   void publish_value_issues(EntityId document_id, DocumentRevision revision,
@@ -1308,6 +1325,10 @@ struct WellLogSession::Impl {
           break;
         }
         const auto mapping = resolve(issue.code);
+        if (already_published(document_id, revision, issue.entity_id,
+                              mapping.code)) {
+          continue;
+        }
         publish_one_diagnostic(document_id, revision, issue.entity_id,
                                issue.occurrence_count, mapping.code,
                                mapping.message, ErrorCode::diagnostic_warning,
@@ -1332,6 +1353,10 @@ struct WellLogSession::Impl {
           break;
         }
         const auto mapping = resolve(issue.code);
+        if (already_published(document_id, revision, issue.entity_id,
+                              mapping.code)) {
+          continue;
+        }
         const auto published = publish_one_diagnostic(
             document_id, revision, issue.entity_id, issue.occurrence_count,
             mapping.code, mapping.message, ErrorCode::invalid_font,

@@ -4,8 +4,13 @@
 #include <welllog/qtwidgets/well_log_view.hpp>
 
 #include <QApplication>
+#include <QByteArray>
 #include <QColor>
 #include <QImage>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 #include <QSignalSpy>
 #include <QTest>
 #include <QVBoxLayout>
@@ -293,10 +298,22 @@ void ContextLifecycleStressTest::
   view.update();
   QTest::qWait(32);
   const auto json = view.export_chrome_trace_json();
-  // May be empty if no samples captured, but must not throw / corrupt.
-  QVERIFY(json.empty() || json.find('[') != std::string::npos ||
-          json.find('{') != std::string::npos);
+  QVERIFY(!json.empty());
+  QJsonParseError parse_error{};
+  const auto document = QJsonDocument::fromJson(
+      QByteArray::fromStdString(json), &parse_error);
+  QVERIFY2(parse_error.error == QJsonParseError::NoError,
+           qPrintable(parse_error.errorString()));
+  QVERIFY(document.isObject());
+  const auto events = document.object().value(QStringLiteral("traceEvents"));
+  QVERIFY(events.isArray());
+  QVERIFY(!events.toArray().isEmpty());
   view.clear_chrome_trace();
+  const auto cleared = QJsonDocument::fromJson(
+      QByteArray::fromStdString(view.export_chrome_trace_json()));
+  QVERIFY(cleared.isObject());
+  QCOMPARE(cleared.object().value(QStringLiteral("traceEvents")).toArray().size(),
+           0);
   view.set_chrome_trace_enabled(false);
   QVERIFY(center_not_white(view));
 }

@@ -356,13 +356,21 @@ std::string inflate_content_stream(std::string_view bytes) {
   require(!compressed.empty(), "the embedded content stream must be non-empty");
   z_stream stream{};
   require(inflateInit(&stream) == Z_OK, "inflateInit must succeed");
-  std::string sink(compressed.size() * 8 + 4096, '\0');
+  std::string sink(compressed.size() < 2048 ? 4096 : compressed.size() * 2,
+                   '\0');
   stream.next_in =
       reinterpret_cast<Bytef *>(const_cast<char *>(compressed.data()));
   stream.avail_in = static_cast<uInt>(compressed.size());
-  stream.next_out = reinterpret_cast<Bytef *>(sink.data());
-  stream.avail_out = static_cast<uInt>(sink.size());
-  const auto rc = inflate(&stream, Z_FINISH);
+  int rc = Z_OK;
+  do {
+    if (stream.total_out >= sink.size()) {
+      sink.resize(sink.size() * 2, '\0');
+    }
+    stream.next_out =
+        reinterpret_cast<Bytef *>(sink.data() + stream.total_out);
+    stream.avail_out = static_cast<uInt>(sink.size() - stream.total_out);
+    rc = inflate(&stream, Z_FINISH);
+  } while (rc == Z_BUF_ERROR || (rc == Z_OK && stream.avail_out == 0));
   inflateEnd(&stream);
   require(rc == Z_STREAM_END, "the embedded stream must inflate cleanly");
   return std::string(sink.data(), stream.total_out);

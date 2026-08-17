@@ -108,6 +108,7 @@ pdf_scene_error(ErrorCode code, MessageKey message) noexcept {
 // export_layout header (ADR 0047: both backends share one geometric truth).
 using export_layout::clip_line_to_tile;
 using export_layout::compute_page_windows;
+using export_layout::legend_band_height_mm;
 using export_layout::printable_depth_height_mm;
 using export_layout::printable_height;
 using export_layout::printable_width;
@@ -1385,11 +1386,19 @@ PdfSceneExporter::write(const PreparedScene &scene,
 
       PageResources resources;
       if (window.clip) {
-        // Page depth-window clip in scene mm: the [window_top, window_bottom]
-        // band, which the flipped page cm maps onto the printable area.
+        // Page depth-window clip in scene mm. The printable area's bottom
+        // legend band is reserved (same 4 mm/entry as SVG) so curve geometry
+        // is not painted under the legend (#745).
+        const auto reserved_scene_mm = legend_band_height_mm(scene, page) / scale;
+        const auto clip_bottom = std::max(
+            window.window_top_mm,
+            std::min(window.window_bottom_mm,
+                     window.window_top_mm +
+                         printable_depth_height_mm(scene, page) -
+                         reserved_scene_mm));
         stream.save_state();
         stream.rect(0.0, window.window_top_mm, scene.physical_width().value,
-                    window.window_bottom_mm - window.window_top_mm)
+                    clip_bottom - window.window_top_mm)
             .clip_nonzero()
             .end_path_no_paint();
       }
