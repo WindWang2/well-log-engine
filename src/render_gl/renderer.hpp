@@ -43,6 +43,23 @@ struct GlUploadProgress {
   bool completed{};
 };
 
+// Observability for atlas reuse tests (issue #606). Counters live in this
+// header so a stashed renderer.cpp still links; they stay zero unless
+// queue_upload / upload_next increment them.
+struct GlAtlasDebugStats {
+  std::uint64_t atlas_bytes_copied{};
+  std::uint64_t tex_image_2d_calls{};
+};
+
+inline GlAtlasDebugStats &gl_atlas_debug_stats() noexcept {
+  static GlAtlasDebugStats stats{};
+  return stats;
+}
+
+inline void reset_gl_atlas_debug_stats() noexcept {
+  gl_atlas_debug_stats() = {};
+}
+
 class WELLLOG_RENDER_GL_API GlRenderer {
 public:
   GlRenderer();

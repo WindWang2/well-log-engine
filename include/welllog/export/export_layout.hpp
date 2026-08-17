@@ -105,6 +105,38 @@ compute_page_windows(const PreparedScene &scene,
   return windows;
 }
 
+// Inclusive y-range vs a page window. `pad_mm` expands the window so strokes
+// and symbols that straddle the cut still emit (the page clip finishes the
+// job). A null / unclipped window matches everything — continuous export
+// and the single-scene SVG emitter pass that.
+[[nodiscard]] inline bool range_intersects_window(const PageWindow *window,
+                                                  double top_mm,
+                                                  double bottom_mm,
+                                                  double pad_mm = 0.0) noexcept {
+  if (window == nullptr || !window->clip) {
+    return true;
+  }
+  const auto lo = std::min(top_mm, bottom_mm);
+  const auto hi = std::max(top_mm, bottom_mm);
+  return hi >= window->window_top_mm - pad_mm &&
+         lo <= window->window_bottom_mm + pad_mm;
+}
+
+[[nodiscard]] inline bool y_intersects_window(const PageWindow *window,
+                                              double y_mm,
+                                              double pad_mm = 0.0) noexcept {
+  return range_intersects_window(window, y_mm, y_mm, pad_mm);
+}
+
+// An edge between two scene-y samples intersects the window (used to keep
+// the one sample on each side of a page cut so the clipped stroke is
+// continuous).
+[[nodiscard]] inline bool edge_intersects_window(const PageWindow *window,
+                                                 double y0_mm,
+                                                 double y1_mm) noexcept {
+  return range_intersects_window(window, y0_mm, y1_mm, 0.0);
+}
+
 // Clips a tile-local segment to the pattern tile rect (Liang-Barsky). Pure
 // geometry, backend-neutral — the single source of truth both SVG and PDF
 // pattern emission use, so adjacent tiles connect identically (ADR 0020).

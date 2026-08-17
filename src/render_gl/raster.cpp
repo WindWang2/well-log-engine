@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <utility>
+#include <vector>
 
 namespace welllog::detail {
 namespace {
@@ -279,39 +280,58 @@ GlyphRaster rasterize_glyph_outline(std::span<const OutlineCommand> commands,
       polygon.push_back(to_pixel(point));
     }
   }
-  // Nonzero winding fill with 2x2 supersampling.
+  // Nonzero winding fill with 2x2 supersampling. Per-row active crossings
+  // replace the previous O(W*H*4*E) per-pixel edge walk (issue #607) while
+  // using the same half-open y-test and intersection-left-of-sample rule,
+  // so occupancy matches the old winding fill for simple fixtures.
   constexpr std::array<double, 2> offsets{0.25, 0.75};
+  struct Crossing {
+    double x{};
+    int delta{};
+  };
+  std::vector<Crossing> crossings;
+  std::vector<std::uint8_t> covered(width, 0);
   for (std::uint32_t row = 0; row < height; ++row) {
-    for (std::uint32_t column = 0; column < width; ++column) {
-      std::uint32_t covered = 0;
-      for (const auto offset_y : offsets) {
-        const auto y = static_cast<double>(row) + offset_y;
+    std::fill(covered.begin(), covered.end(), 0);
+    for (const auto offset_y : offsets) {
+      const auto y = static_cast<double>(row) + offset_y;
+      crossings.clear();
+      for (const auto &polygon : polygons) {
+        for (std::size_t index = 0; index + 1 < polygon.size(); ++index) {
+          const auto &from = polygon[index];
+          const auto &to = polygon[index + 1];
+          if ((from.y <= y) == (to.y <= y)) {
+            continue;
+          }
+          const auto intersection =
+              from.x + (y - from.y) / (to.y - from.y) * (to.x - from.x);
+          crossings.push_back(Crossing{
+              .x = intersection,
+              .delta = to.y > from.y ? 1 : -1,
+          });
+        }
+      }
+      std::sort(crossings.begin(), crossings.end(),
+                [](const Crossing &a, const Crossing &b) { return a.x < b.x; });
+      auto winding = 0;
+      std::size_t next = 0;
+      for (std::uint32_t column = 0; column < width; ++column) {
         for (const auto offset_x : offsets) {
           const auto x = static_cast<double>(column) + offset_x;
-          auto winding = 0;
-          for (const auto &polygon : polygons) {
-            for (std::size_t index = 0; index + 1 < polygon.size();
-                 ++index) {
-              const auto &from = polygon[index];
-              const auto &to = polygon[index + 1];
-              if ((from.y <= y) == (to.y <= y)) {
-                continue;
-              }
-              const auto intersection =
-                  from.x + (y - from.y) / (to.y - from.y) * (to.x - from.x);
-              if (intersection < x) {
-                winding += to.y > from.y ? 1 : -1;
-              }
-            }
+          while (next < crossings.size() && crossings[next].x < x) {
+            winding += crossings[next].delta;
+            ++next;
           }
           if (winding != 0) {
-            ++covered;
+            ++covered[column];
           }
         }
       }
+    }
+    for (std::uint32_t column = 0; column < width; ++column) {
       raster.alpha[static_cast<std::size_t>(row) * width + column] =
           static_cast<std::uint8_t>(std::lround(
-              static_cast<double>(covered) / 4.0 * 255.0));
+              static_cast<double>(covered[column]) / 4.0 * 255.0));
     }
   }
   return raster;

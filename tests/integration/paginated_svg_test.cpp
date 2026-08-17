@@ -12,6 +12,8 @@
 #include <welllog/session/session.hpp>
 
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -552,6 +554,194 @@ void depth_ruler_emits_authoritative_ticks() {
           "ruler labels must sit in the left margin strip");
 }
 
+[[nodiscard]] std::string format_export_number(double value) {
+  if (value == 0.0) {
+    return "0";
+  }
+  std::array<char, 64> buffer{};
+  const auto result =
+      std::to_chars(buffer.data(), buffer.data() + buffer.size(), value,
+                    std::chars_format::general);
+  require(result.ec == std::errc{}, "to_chars must format a finite y");
+  return std::string(buffer.data(), result.ptr);
+}
+
+[[nodiscard]] std::vector<std::string_view>
+split_svg_documents(std::string_view text) {
+  std::vector<std::string_view> pages;
+  std::size_t pos = 0;
+  while (pos < text.size()) {
+    const auto start = text.find("<svg ", pos);
+    if (start == std::string_view::npos) {
+      break;
+    }
+    const auto end = text.find("</svg>", start);
+    require(end != std::string_view::npos, "each page <svg> must close");
+    const auto stop = end + std::strlen("</svg>");
+    pages.push_back(text.substr(start, stop - start));
+    pos = stop;
+  }
+  return pages;
+}
+
+[[nodiscard]] std::string_view page_curve_path(std::string_view page) {
+  const auto body = page.find("data-export-role=\"body\"");
+  require(body != std::string_view::npos, "page must carry a body group");
+  const auto d = page.find(" d=\"", body);
+  require(d != std::string_view::npos, "body must carry a curve path");
+  const auto start = d + std::strlen(" d=\"");
+  const auto stop = page.find('"', start);
+  require(stop != std::string_view::npos, "path d= must terminate");
+  return page.substr(start, stop - start);
+}
+
+// 201 samples over 400 mm so each prepared point has a distinct scene-y
+// (issue #604: page N must not re-emit page 1's samples).
+std::shared_ptr<const PreparedScene> prepare_dense_tall_scene() {
+  const auto document_id = id("60000000-0000-4000-8000-000000000011");
+  const auto axis_id = id("60000000-0000-4000-8000-000000000012");
+  const auto curve_id = id("60000000-0000-4000-8000-000000000013");
+  const auto track_id = id("60000000-0000-4000-8000-000000000014");
+  const auto scale_id = id("60000000-0000-4000-8000-000000000015");
+  const auto layer_id = id("60000000-0000-4000-8000-000000000016");
+
+  constexpr int n = 201;
+  std::vector<double> depth_values;
+  std::vector<double> sample_values;
+  depth_values.reserve(static_cast<std::size_t>(n));
+  sample_values.reserve(static_cast<std::size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    depth_values.push_back(1000.0 + static_cast<double>(i) * 4.0);
+    sample_values.push_back(static_cast<double>(i % 100));
+  }
+  auto depths =
+      std::make_shared<const std::vector<double>>(std::move(depth_values));
+  auto values =
+      std::make_shared<const std::vector<double>>(std::move(sample_values));
+
+  WellLogDocumentBuilder document_builder(document_id, DocumentRevision{7});
+  document_builder.add_sampling_axis(SamplingAxis{
+      .id = axis_id,
+      .coordinates = BufferView::from_vector(depths),
+      .domain = DepthDomain::measured_depth,
+      .unit = "m",
+      .direction = AxisDirection::increasing,
+  });
+  document_builder.add_curve(Curve{
+      .id = curve_id,
+      .mnemonic = "GR",
+      .display_name = "Gamma Ray",
+      .unit = "API",
+      .sampling_axis_id = axis_id,
+      .values = BufferView::from_vector(values),
+      .nulls = {},
+  });
+
+  WellLogSession session;
+  require(
+      session.execute(SetDocumentCommand{document_builder.build()}).has_value(),
+      "dense-scene document must be accepted");
+
+  ScenePresentationBuilder presentation_builder(
+      document_id,
+      ReferenceDepthRange{
+          .domain = DepthDomain::measured_depth,
+          .unit = "m",
+          .top = 1000.0,
+          .bottom = 1800.0,
+      },
+      Millimetres{400.0}, "font-fixture-v1");
+  presentation_builder.set_presentation_version(PresentationVersion{42});
+  presentation_builder.set_depth_transform_version(3);
+  presentation_builder.add_track(TrackSpec{
+      .id = track_id,
+      .width = Millimetres{80.0},
+      .z_order = 10,
+      .header = TrackHeaderSpec{.height = Millimetres{6.0},
+                                .font_size = Millimetres{2.5}},
+  });
+  presentation_builder.add_scale(TrackScaleSpec{
+      .id = scale_id,
+      .track_id = track_id,
+      .mode = ScaleMode::linear,
+      .minimum = 0.0,
+      .maximum = 100.0,
+      .direction = ScaleDirection::left_to_right,
+      .unit = "API",
+  });
+  presentation_builder.add_curve_layer(CurveLayerSpec{
+      .id = layer_id,
+      .track_id = track_id,
+      .curve_id = curve_id,
+      .scale_id = scale_id,
+      .color = RgbaColor{.red = 0x11, .green = 0x22, .blue = 0x33, .alpha = 0xff},
+      .line_width = Millimetres{0.25},
+      .z_order = 20,
+      .visible = true,
+  });
+  require(session.execute(SetPresentationCommand{presentation_builder.build()})
+              .has_value(),
+          "dense presentation must prepare a scene");
+  const auto scene = session.prepared_scene(document_id);
+  require(scene != nullptr && scene->curve_points().size() >= 50,
+          "dense presentation must publish many curve points");
+  return scene;
+}
+
+void fixed_pages_omit_out_of_window_curve_points() {
+  const auto scene = prepare_dense_tall_scene();
+  auto snapshot = make_snapshot(PaginationMode::fixed, Millimetres{50.0});
+  snapshot.document_id = scene->document_id();
+  const auto result = PaginatedSvgExporter::write(*scene, snapshot);
+  require(result.has_value(), "dense fixed export must succeed");
+  const auto text = std::string{result.value().text()};
+  const auto pages = split_svg_documents(text);
+  require(pages.size() >= 4, "dense tall scene must paginate into several pages");
+
+  const auto points = scene->curve_points();
+  require(points.size() >= 8, "dense scene must carry curve samples");
+  // Full "x y" tokens — a lone "0" y would match unrelated zeros.
+  const auto point_token = [](const PreparedCurvePoint &point) {
+    return format_export_number(point.position.left.value) + " " +
+           format_export_number(point.position.top.value);
+  };
+  const auto first_token = point_token(points[3]);
+  const auto last_token = point_token(points[points.size() - 4]);
+  require(first_token != last_token, "end samples must have distinct tokens");
+
+  const auto first_path = page_curve_path(pages.front());
+  const auto last_path = page_curve_path(pages.back());
+  require(first_path.find(first_token) != std::string_view::npos,
+          "page 1 must still emit an in-window sample");
+  require(last_path.find(first_token) == std::string_view::npos,
+          "last page must not contain page 1's curve point (issue #604)");
+  require(last_path.find(last_token) != std::string_view::npos,
+          "last page must still emit its own window's sample");
+  require(first_path.find(last_token) == std::string_view::npos,
+          "page 1 must not contain the last page's curve point (issue #604)");
+
+  // Same prepared point set, more pages: unculled emit is O(pages × points);
+  // windowed emit stays ~O(points).
+  auto four = snapshot;
+  four.page.page_height = Millimetres{120.0};
+  auto eight = snapshot;
+  eight.page.page_height = Millimetres{70.0};
+  const auto four_text =
+      std::string{PaginatedSvgExporter::write(*scene, four).value().text()};
+  const auto eight_text =
+      std::string{PaginatedSvgExporter::write(*scene, eight).value().text()};
+  const auto four_pages = count_occurrences(four_text, "<svg ");
+  const auto eight_pages = count_occurrences(eight_text, "<svg ");
+  require(eight_pages > four_pages,
+          "shorter pages must produce more fixed pages");
+  const auto four_lineto = count_occurrences(four_text, " L ");
+  const auto eight_lineto = count_occurrences(eight_text, " L ");
+  require(four_lineto > 20 && eight_lineto > 20,
+          "dense export must emit many path vertices");
+  require(eight_lineto < four_lineto * 2,
+          "vertex count must not scale with page count (issue #604)");
+}
+
 void depth_ruler_off_by_default() {
   // Backward compatibility: existing exports are unchanged unless the option
   // is explicitly enabled.
@@ -578,6 +768,7 @@ int main() {
   prepare_for_export_returns_scene_and_preserves_interactive();
   depth_ruler_emits_authoritative_ticks();
   depth_ruler_off_by_default();
+  fixed_pages_omit_out_of_window_curve_points();
   std::cout << "PASS: paginated SVG behavior\n";
   return EXIT_SUCCESS;
 }

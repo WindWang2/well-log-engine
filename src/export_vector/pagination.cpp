@@ -385,7 +385,13 @@ void append_fixed_page(std::string &output, const PreparedScene &scene,
   output.push_back(' ');
   append_number(output, scale);
   output += ")\" data-export-role=\"body\">";
-  append_layer_body(output, scene);
+  const export_layout::PageWindow page_window{
+      .window_top_mm = window_top_mm,
+      .window_bottom_mm = window_bottom_mm,
+      .clip = true,
+      .height_mm = page.page_height.value,
+  };
+  append_layer_body(output, scene, &page_window);
   output += "</g>";
 
   output += "</svg>";

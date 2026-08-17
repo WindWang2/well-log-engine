@@ -1201,6 +1201,148 @@ void depth_ruler_emits_and_changes_output() {
           "the depth ruler must add geometry to the PDF");
 }
 
+[[nodiscard]] std::string format_export_number(double value) {
+  if (value == 0.0) {
+    return "0";
+  }
+  std::array<char, 48> buffer{};
+  const auto result =
+      std::to_chars(buffer.data(), buffer.data() + buffer.size(), value,
+                    std::chars_format::general);
+  require(result.ec == std::errc{}, "to_chars must format a finite y");
+  return std::string(buffer.data(), result.ptr);
+}
+
+void fixed_pdf_pages_omit_out_of_window_curve_points() {
+  const auto doc_id = id("80000000-0000-4000-8000-000000000021");
+  const auto ax_id = id("80000000-0000-4000-8000-000000000022");
+  const auto cu_id = id("80000000-0000-4000-8000-000000000023");
+  const auto tr_id = id("80000000-0000-4000-8000-000000000024");
+  const auto sc_id = id("80000000-0000-4000-8000-000000000025");
+  const auto ly_id = id("80000000-0000-4000-8000-000000000026");
+
+  constexpr int n = 201;
+  std::vector<double> depth_values;
+  std::vector<double> sample_values;
+  depth_values.reserve(static_cast<std::size_t>(n));
+  sample_values.reserve(static_cast<std::size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    depth_values.push_back(1000.0 + static_cast<double>(i) * 4.0);
+    sample_values.push_back(static_cast<double>(i % 100));
+  }
+  auto depths =
+      std::make_shared<const std::vector<double>>(std::move(depth_values));
+  auto values =
+      std::make_shared<const std::vector<double>>(std::move(sample_values));
+
+  WellLogDocumentBuilder document_builder(doc_id, DocumentRevision{5});
+  document_builder.add_sampling_axis(SamplingAxis{
+      .id = ax_id,
+      .coordinates = BufferView::from_vector(depths),
+      .domain = DepthDomain::measured_depth,
+      .unit = "m",
+      .direction = AxisDirection::increasing,
+  });
+  document_builder.add_curve(Curve{
+      .id = cu_id,
+      .mnemonic = "GR",
+      .display_name = "Gamma Ray",
+      .unit = "API",
+      .sampling_axis_id = ax_id,
+      .values = BufferView::from_vector(values),
+      .nulls = {},
+  });
+  WellLogSession session;
+  require(session.execute(SetDocumentCommand{document_builder.build()}).has_value(),
+          "dense PDF document must be accepted");
+  ScenePresentationBuilder presentation_builder(
+      doc_id,
+      ReferenceDepthRange{
+          .domain = DepthDomain::measured_depth,
+          .unit = "m",
+          .top = 1000.0,
+          .bottom = 1800.0,
+      },
+      Millimetres{400.0}, "font-fixture-v1");
+  presentation_builder.add_track(
+      TrackSpec{.id = tr_id, .width = Millimetres{80.0}, .z_order = 1});
+  presentation_builder.add_scale(TrackScaleSpec{
+      .id = sc_id,
+      .track_id = tr_id,
+      .mode = ScaleMode::linear,
+      .minimum = 0.0,
+      .maximum = 100.0,
+      .direction = ScaleDirection::left_to_right,
+      .unit = "API",
+  });
+  presentation_builder.add_curve_layer(CurveLayerSpec{
+      .id = ly_id,
+      .track_id = tr_id,
+      .curve_id = cu_id,
+      .scale_id = sc_id,
+      .color = RgbaColor{20, 120, 20, 255},
+      .line_width = Millimetres{0.25},
+      .z_order = 1,
+      .visible = true,
+  });
+  require(session.execute(SetPresentationCommand{presentation_builder.build()})
+              .has_value(),
+          "dense PDF presentation must prepare");
+  const auto scene = session.prepared_scene(doc_id);
+  require(scene != nullptr && scene->curve_points().size() >= 50,
+          "dense PDF scene must publish many curve points");
+
+  ExportSnapshot snapshot{
+      .document_id = doc_id,
+      .document_revision = DocumentRevision{5},
+      .presentation_version = PresentationVersion{1},
+      .depth_transform =
+          DepthTransformDescriptor{
+              .domain = DepthDomain::measured_depth,
+              .unit = "m",
+              .reference_top = 1000.0,
+              .reference_bottom = 1800.0,
+              .version = 1,
+          },
+      .font_asset_fingerprint = "font-fixture-v1",
+      .page =
+          ExportPageSpec{
+              .mode = PaginationMode::fixed,
+              .page_width = Millimetres{120.0},
+              .page_height = Millimetres{50.0},
+              .margins = ExportPageMargins{.top = Millimetres{10.0},
+                                           .right = Millimetres{10.0},
+                                           .bottom = Millimetres{10.0},
+                                           .left = Millimetres{10.0}},
+              .dpi = 300,
+              .well_name = "PDF-604",
+          },
+  };
+  auto engine = make_engine();
+  const auto result = PdfSceneExporter::write(*scene, snapshot, {}, engine.get());
+  require(result.has_value(), "dense fixed PDF must build");
+  const auto bytes = std::string{result.value().bytes()};
+  const auto streams = inflate_all_streams(bytes);
+  require(streams.size() >= 4, "fixed PDF must contain several page streams");
+
+  const auto points = scene->curve_points();
+  require(points.size() >= 8, "dense PDF scene must carry curve samples");
+  const auto point_token = [](const PreparedCurvePoint &point) {
+    return format_export_number(point.position.left.value) + " " +
+           format_export_number(point.position.top.value);
+  };
+  const auto first_token = point_token(points[3]);
+  const auto last_token = point_token(points[points.size() - 4]);
+  require(streams.front().find(first_token) != std::string::npos,
+          "first PDF page stream must emit an in-window sample");
+  require(streams.back().find(first_token) == std::string::npos,
+          "last PDF page stream must not contain page 1's curve point (#604)");
+  require(streams.back().find(last_token) != std::string::npos,
+          "last PDF page stream must emit its own window's sample");
+  require(streams.front().find(last_token) == std::string::npos,
+          "first PDF page stream must not contain the last page's curve point");
+}
+
 } // namespace
 
 int main() {
@@ -1216,6 +1358,7 @@ int main() {
   two_images_rgba_first_resource_dict_numbers_align();
   output_is_byte_deterministic();
   depth_ruler_emits_and_changes_output();
+  fixed_pdf_pages_omit_out_of_window_curve_points();
   std::cout << "welllog.pdf-scene-full: all cases passed\n";
   return EXIT_SUCCESS;
 }

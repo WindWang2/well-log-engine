@@ -596,27 +596,65 @@ void append_marker_symbol(std::string &output, const PreparedMarker &marker,
 }
 
 void append_path_data(std::string &output, const PreparedScene &scene,
-                      const PreparedCurveLayer &layer) {
+                      const PreparedCurveLayer &layer,
+                      const export_layout::PageWindow *window) {
   const auto segments = scene.curve_segments();
   const auto points = scene.curve_points();
-  bool first_segment = true;
+  if (window == nullptr || !window->clip) {
+    bool first_segment = true;
+    for (std::uint64_t segment_offset = 0; segment_offset < layer.segment_count;
+         ++segment_offset) {
+      const auto &segment = segments[static_cast<std::size_t>(
+          layer.first_segment + segment_offset)];
+      if (!first_segment && segment.point_count > 0) {
+        output.push_back(' ');
+      }
+      for (std::uint64_t point_offset = 0; point_offset < segment.point_count;
+           ++point_offset) {
+        const auto &point = points[static_cast<std::size_t>(
+            segment.first_point + point_offset)];
+        output += point_offset == 0 ? "M " : " L ";
+        append_number(output, point.position.left.value);
+        output.push_back(' ');
+        append_number(output, point.position.top.value);
+      }
+      first_segment = false;
+    }
+    return;
+  }
+  bool first_command = true;
+  const auto emit_point = [&](const PreparedCurvePoint &point, bool move) {
+    if (!first_command) {
+      output.push_back(' ');
+    }
+    output += move ? "M " : "L ";
+    append_number(output, point.position.left.value);
+    output.push_back(' ');
+    append_number(output, point.position.top.value);
+    first_command = false;
+  };
   for (std::uint64_t segment_offset = 0; segment_offset < layer.segment_count;
        ++segment_offset) {
     const auto &segment = segments[static_cast<std::size_t>(
         layer.first_segment + segment_offset)];
-    if (!first_segment && segment.point_count > 0) {
-      output.push_back(' ');
-    }
-    for (std::uint64_t point_offset = 0; point_offset < segment.point_count;
+    bool subpath_open = false;
+    for (std::uint64_t point_offset = 0; point_offset + 1 < segment.point_count;
          ++point_offset) {
-      const auto &point =
+      const auto &from =
           points[static_cast<std::size_t>(segment.first_point + point_offset)];
-      output += point_offset == 0 ? "M " : " L ";
-      append_number(output, point.position.left.value);
-      output.push_back(' ');
-      append_number(output, point.position.top.value);
+      const auto &to = points[static_cast<std::size_t>(segment.first_point +
+                                                       point_offset + 1)];
+      if (!export_layout::edge_intersects_window(
+              window, from.position.top.value, to.position.top.value)) {
+        subpath_open = false;
+        continue;
+      }
+      if (!subpath_open) {
+        emit_point(from, true);
+        subpath_open = true;
+      }
+      emit_point(to, false);
     }
-    first_segment = false;
   }
 }
 
@@ -688,9 +726,16 @@ void append_defs(std::string &output, const PreparedScene &scene) {
 // crossover fills, image tiles, custom primitives and text runs. Each track's
 // <g> is clipped to its own track clip. This is the single geometric emitter
 // shared by SvgExporter::write and the paginated exporter (ADR 0048); the
-// paginated exporter wraps it in an additional per-page depth-window clip.
-void append_layer_body(std::string &output, const PreparedScene &scene) {
+// paginated exporter wraps it in an additional per-page depth-window clip and
+// (issue #604) passes that window so out-of-range samples are not serialized.
+void append_layer_body(std::string &output, const PreparedScene &scene,
+                       const export_layout::PageWindow *window) {
   for (const auto &track : scene.tracks()) {
+    if (!export_layout::range_intersects_window(
+            window, track.clip.top.value,
+            track.clip.top.value + track.clip.height.value)) {
+      continue;
+    }
     output += "<g id=\"track-";
     output += track.id.to_string();
     output += "\" clip-path=\"url(#clip-";
@@ -705,6 +750,11 @@ void append_layer_body(std::string &output, const PreparedScene &scene) {
       for (std::uint64_t offset = 0; offset < layer.interval_count; ++offset) {
         const auto &interval = scene.intervals()[static_cast<std::size_t>(
             layer.first_interval + offset)];
+        if (!export_layout::range_intersects_window(
+                window, interval.rect.top.value,
+                interval.rect.top.value + interval.rect.height.value)) {
+          continue;
+        }
         output += "<rect id=\"interval-";
         output += interval.interval_id.to_string();
         output += "\" data-layer-id=\"";
@@ -741,9 +791,15 @@ void append_layer_body(std::string &output, const PreparedScene &scene) {
         continue;
       }
       const auto right = track.clip.left.value + track.clip.width.value;
+      const auto marker_pad = layer.line_width.value +
+                              (layer.draw_symbols ? layer.symbol_size.value : 0.0);
       for (std::uint64_t offset = 0; offset < layer.marker_count; ++offset) {
         const auto &marker = scene.markers()[static_cast<std::size_t>(
             layer.first_marker + offset)];
+        if (!export_layout::y_intersects_window(window, marker.display_top.value,
+                                                marker_pad)) {
+          continue;
+        }
         output += "<line id=\"marker-";
         output += marker.marker_id.to_string();
         output += "\" data-layer-id=\"";
@@ -778,6 +834,10 @@ void append_layer_body(std::string &output, const PreparedScene &scene) {
       for (std::uint64_t offset = 0; offset < layer.symbol_count; ++offset) {
         const auto &symbol = scene.symbols()[static_cast<std::size_t>(
             layer.first_symbol + offset)];
+        if (!export_layout::y_intersects_window(
+                window, symbol.center.top.value, layer.symbol_size.value)) {
+          continue;
+        }
         append_symbol(output, symbol, layer);
       }
     }
@@ -800,7 +860,7 @@ void append_layer_body(std::string &output, const PreparedScene &scene) {
       output += "\" stroke-width=\"";
       append_number(output, layer.line_width.value);
       output += "\" d=\"";
-      append_path_data(output, scene, layer);
+      append_path_data(output, scene, layer, window);
       output += "\"/>";
     }
     // Crossover fill regions (rendering.md section 6): each region's
@@ -814,6 +874,11 @@ void append_layer_body(std::string &output, const PreparedScene &scene) {
            ++offset) {
         const auto &region = scene.fill_regions()[static_cast<std::size_t>(
             fill_layer.first_region + offset)];
+        if (!export_layout::range_intersects_window(
+                window, region.bounds.top.value,
+                region.bounds.top.value + region.bounds.height.value)) {
+          continue;
+        }
         output += "<path id=\"fill-";
         output += fill_layer.id.to_string();
         output += "\" data-upper-curve-layer-id=\"";
@@ -849,6 +914,11 @@ void append_layer_body(std::string &output, const PreparedScene &scene) {
       for (std::uint64_t offset = 0; offset < image_layer.tile_count; ++offset) {
         const auto &tile = scene.image_tiles()[static_cast<std::size_t>(
             image_layer.first_tile + offset)];
+        if (!export_layout::range_intersects_window(
+                window, tile.rect.top.value,
+                tile.rect.top.value + tile.rect.height.value)) {
+          continue;
+        }
         output += "<image id=\"image-";
         output += image_layer.id.to_string();
         output += "\" data-image-source-id=\"";
@@ -891,6 +961,14 @@ void append_layer_body(std::string &output, const PreparedScene &scene) {
         const auto &primitive =
             scene.custom_primitives()[static_cast<std::size_t>(
                 custom_layer.first_primitive + offset)];
+        if (primitive.bounds.width.value > 0.0 ||
+            primitive.bounds.height.value > 0.0) {
+          if (!export_layout::range_intersects_window(
+                  window, primitive.bounds.top.value,
+                  primitive.bounds.top.value + primitive.bounds.height.value)) {
+            continue;
+          }
+        }
         output += "<path data-custom-layer-id=\"";
         output += custom_layer.id.to_string();
         output += "\" data-custom-source-id=\"";
@@ -997,6 +1075,14 @@ void append_layer_body(std::string &output, const PreparedScene &scene) {
       if (!run_track.has_value() || *run_track != track.id) {
         continue;
       }
+      if (run.bounds.width.value > 0.0 || run.bounds.height.value > 0.0) {
+        if (!export_layout::range_intersects_window(
+                window, run.bounds.top.value,
+                run.bounds.top.value + run.bounds.height.value,
+                run.font_size.value)) {
+          continue;
+        }
+      }
       output += "<g id=\"run-";
       output += run.source_entity_id.to_string();
       output += "\" data-layer-id=\"";
@@ -1011,6 +1097,10 @@ void append_layer_body(std::string &output, const PreparedScene &scene) {
       for (std::uint64_t offset = 0; offset < run.glyph_count; ++offset) {
         const auto &glyph = glyphs[static_cast<std::size_t>(run.first_glyph +
                                                             offset)];
+        if (!export_layout::y_intersects_window(
+                window, glyph.origin.top.value, run.font_size.value)) {
+          continue;
+        }
         output += "<use href=\"#g";
         append_integer(output, glyph.font_index);
         output.push_back('-');
@@ -1048,8 +1138,9 @@ namespace svg_internal {
 void append_defs(std::string &output, const PreparedScene &scene) {
   welllog::append_defs(output, scene);
 }
-void append_layer_body(std::string &output, const PreparedScene &scene) {
-  welllog::append_layer_body(output, scene);
+void append_layer_body(std::string &output, const PreparedScene &scene,
+                       const export_layout::PageWindow *window) {
+  welllog::append_layer_body(output, scene, window);
 }
 } // namespace svg_internal
 
@@ -1101,7 +1192,7 @@ Result<SvgDocument> SvgExporter::write(const PreparedScene &scene) noexcept {
     output += "\">";
 
     append_defs(output, scene);
-    append_layer_body(output, scene);
+    append_layer_body(output, scene, nullptr);
     output += "</svg>";
     return SvgDocument{std::move(output)};
   } catch (const std::bad_alloc &) {
