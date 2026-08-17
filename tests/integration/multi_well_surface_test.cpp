@@ -63,6 +63,8 @@ struct WellFixture {
   EntityId annotation_id;
   EntityId symbol_layer_id;
   EntityId text_layer_id;
+  EntityId marker_id;
+  EntityId marker_layer_id;
   WellLogDocument document;
 };
 
@@ -81,6 +83,8 @@ WellFixture make_well(std::string_view doc, std::string_view axis,
   f.annotation_id = sibling_id(f.document_id, 8);
   f.symbol_layer_id = sibling_id(f.document_id, 9);
   f.text_layer_id = sibling_id(f.document_id, 10);
+  f.marker_id = sibling_id(f.document_id, 11);
+  f.marker_layer_id = sibling_id(f.document_id, 12);
   auto depths = std::make_shared<const std::vector<double>>(
       std::vector<double>{1000.0, 1001.0, 1002.0});
   auto values = std::make_shared<const std::vector<double>>(
@@ -123,6 +127,12 @@ WellFixture make_well(std::string_view doc, std::string_view axis,
       .orientation = TextOrientation::horizontal,
       .rotation_degrees = 0.0,
       .font_size = Millimetres{4.0},
+  });
+  builder.add_marker(Marker{
+      .id = f.marker_id,
+      .reference_depth = 1001.0,
+      .semantic = MarkerSemantic::formation_top,
+      .label = std::string{"Top-"} + std::to_string(static_cast<int>(gr0)),
   });
   f.document = builder.build();
   require(!f.document.id().is_nil(), "document builds");
@@ -170,6 +180,16 @@ void load_well(WellLogSession &session, const WellFixture &well) {
       .track_id = well.track_id,
       .z_order = 3,
       .color = RgbaColor{10, 10, 10, 255},
+  });
+  presentation.add_marker_layer(MarkerLayerSpec{
+      .id = well.marker_layer_id,
+      .track_id = well.track_id,
+      .z_order = 4,
+      .line_color = RgbaColor{200, 40, 40, 255},
+      .line_width = Millimetres{0.4},
+      .draw_labels = true,
+      .label_font_size = Millimetres{3.0},
+      .label_color = RgbaColor{20, 20, 20, 255},
   });
   require(session.execute(SetPresentationCommand{presentation.build()}).has_value(),
           "set presentation");
@@ -406,10 +426,16 @@ void compose_remaps_text_and_symbol_indices() {
   require(sa && sb, "both prepared");
   // Per-well scenes must actually carry the crossover content, otherwise the
   // merge path stays uncovered.
-  require(sa->text_layers().size() == 1 && sa->text_runs().size() == 1,
-          "well A prepares one text layer with one run");
-  require(sb->text_layers().size() == 1 && sb->text_runs().size() == 1,
-          "well B prepares one text layer with one run");
+  require(sa->text_layers().size() == 1 && sa->text_runs().size() >= 2,
+          "well A prepares annotation + marker-label runs");
+  require(sb->text_layers().size() == 1 && sb->text_runs().size() >= 2,
+          "well B prepares annotation + marker-label runs");
+  require(sa->markers().size() == 1 &&
+              sa->markers().front().label_run_index != no_text_run,
+          "well A marker has a label run");
+  require(sb->markers().size() == 1 &&
+              sb->markers().front().label_run_index != no_text_run,
+          "well B marker has a label run");
   require(sa->symbol_layers().size() == 1 && sa->symbols().size() == 1,
           "well A prepares one symbol layer with one symbol");
   require(sb->symbol_layers().size() == 1 && sb->symbols().size() == 1,
@@ -509,6 +535,33 @@ void compose_remaps_text_and_symbol_indices() {
               "symbol owned by its layer");
     }
   }
+
+  // #753: marker.label_run_index must be remapped by run_base so well B's
+  // label does not read well A's text_runs.
+  require(surface.markers().size() == 2, "both well markers merged");
+  const auto *marker_a = &surface.markers().front();
+  const auto *marker_b = &surface.markers().back();
+  require(marker_a->marker_id == a.marker_id, "first merged marker is well A");
+  require(marker_b->marker_id == b.marker_id, "second merged marker is well B");
+  require(marker_a->label_run_index != no_text_run &&
+              marker_b->label_run_index != no_text_run,
+          "merged markers keep label runs");
+  require(marker_a->label_run_index < surface.text_runs().size(),
+          "well A marker label in range");
+  require(marker_b->label_run_index < surface.text_runs().size(),
+          "well B marker label in range");
+  require(surface.text_runs()[static_cast<std::size_t>(marker_a->label_run_index)]
+                  .source_entity_id == a.marker_id,
+          "well A marker label resolves to well A");
+  require(surface.text_runs()[static_cast<std::size_t>(marker_b->label_run_index)]
+                  .source_entity_id == b.marker_id,
+          "well B marker label resolves to well B");
+  require(surface.text_runs()[static_cast<std::size_t>(marker_a->label_run_index)]
+                  .text == "Top-5",
+          "well A marker label text");
+  require(surface.text_runs()[static_cast<std::size_t>(marker_b->label_run_index)]
+                  .text == "Top-8",
+          "well B marker label text");
 }
 
 } // namespace

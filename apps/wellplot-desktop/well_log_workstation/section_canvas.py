@@ -239,6 +239,19 @@ class SectionCanvas(QWidget):
         self.depth_range_changed.emit(d0, d1)
         self.update()
 
+    def depth_at_y(self, y: float) -> float | None:
+        """Map widget Y to depth in the current viewport."""
+        if self._d0 is None or self._d1 is None:
+            return None
+        top, bottom = 36, self.height() - 24
+        if bottom <= top:
+            return None
+        if y < top or y > bottom:
+            return None
+        t = (y - top) / (bottom - top)
+        t = max(0.0, min(1.0, t))
+        return self._d0 + t * (self._d1 - self._d0)
+
     def _fit_depth(self) -> None:
         mins: list[float] = []
         maxs: list[float] = []
@@ -267,9 +280,16 @@ class SectionCanvas(QWidget):
             return
         span = self._d1 - self._d0
         factor = 0.9 if delta > 0 else 1.1
-        mid = 0.5 * (self._d0 + self._d1)
         new_span = max(span * factor, 1e-3)
-        self.set_depth_range(mid - new_span / 2, mid + new_span / 2)
+        y = float(event.position().y())
+        anchor = self.depth_at_y(y)
+        if anchor is None or span <= 0:
+            mid = 0.5 * (self._d0 + self._d1)
+            self.set_depth_range(mid - new_span / 2, mid + new_span / 2)
+        else:
+            above = anchor - self._d0
+            new_d0 = anchor - above * (new_span / span)
+            self.set_depth_range(new_d0, new_d0 + new_span)
         event.accept()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802

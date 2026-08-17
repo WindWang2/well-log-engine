@@ -181,8 +181,13 @@ private:
     } else if (codepoint <= 0x7ff) {
       output.push_back(static_cast<char>(0xc0 | (codepoint >> 6)));
       output.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
-    } else {
+    } else if (codepoint <= 0xffff) {
       output.push_back(static_cast<char>(0xe0 | (codepoint >> 12)));
+      output.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+      output.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+    } else {
+      output.push_back(static_cast<char>(0xf0 | (codepoint >> 18)));
+      output.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3f)));
       output.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
       output.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
     }
@@ -237,18 +242,38 @@ private:
         result.push_back('\t');
         break;
       case 'u': {
-        if (position_ + 4 > input_.size()) {
-          fail("short unicode escape");
-        }
-        std::uint32_t codepoint{};
-        const auto [end, error] =
-            std::from_chars(input_.data() + position_,
-                            input_.data() + position_ + 4, codepoint, 16);
-        if (error != std::errc{} || end != input_.data() + position_ + 4 ||
-            (codepoint >= 0xd800 && codepoint <= 0xdfff)) {
+        const auto parse_hex4 = [this]() -> std::uint32_t {
+          if (position_ + 4 > input_.size()) {
+            fail("short unicode escape");
+          }
+          std::uint32_t value{};
+          const auto [end, error] =
+              std::from_chars(input_.data() + position_,
+                              input_.data() + position_ + 4, value, 16);
+          if (error != std::errc{} || end != input_.data() + position_ + 4) {
+            fail("invalid unicode escape");
+          }
+          position_ += 4;
+          return value;
+        };
+        std::uint32_t codepoint = parse_hex4();
+        if (codepoint >= 0xd800 && codepoint <= 0xdbff) {
+          if (position_ + 6 > input_.size() || input_[position_] != '\\' ||
+              input_[position_ + 1] != 'u') {
+            fail("invalid unicode escape");
+          }
+          position_ += 2;
+          const auto low = parse_hex4();
+          if (low < 0xdc00 || low > 0xdfff) {
+            fail("invalid unicode escape");
+          }
+          codepoint = 0x10000 + ((codepoint - 0xd800) << 10) + (low - 0xdc00);
+        } else if (codepoint >= 0xdc00 && codepoint <= 0xdfff) {
           fail("invalid unicode escape");
         }
-        position_ += 4;
+        if (codepoint > 0x10ffff) {
+          fail("invalid unicode escape");
+        }
         append_utf8(result, codepoint);
         break;
       }

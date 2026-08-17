@@ -16,6 +16,8 @@ instead of crashing.
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
@@ -39,6 +41,7 @@ class PlaneMapView(QWidget):
         self._placeholder.setWordWrap(True)
         layout.addWidget(self._placeholder)
         self._coordinate: CoordinateReference | None = None
+        self._plot_diagnostics: list[str] = []
 
     # -- capability -----------------------------------------------------
 
@@ -74,20 +77,23 @@ class PlaneMapView(QWidget):
     ) -> list[dict]:
         """Filter catalog wells to entries with complete lng/lat/crs.
 
-        Wells missing coordinates are deliberately excluded from the drawn
-        set (T2: listed but not drawn). Returns ``{"name", "lng", "lat"}``
-        dicts in catalog order.
+        Wells missing coordinates or CRS are deliberately excluded from the
+        drawn set (T2: listed but not drawn). Returns
+        ``{"name", "lng", "lat", "crs"}`` dicts in catalog order.
         """
         out: list[dict] = []
         for w in wells:
             if w.lng is None or w.lat is None:
+                continue
+            crs = (w.crs or "").strip()
+            if not crs:
                 continue
             try:
                 lng = float(w.lng)
                 lat = float(w.lat)
             except (TypeError, ValueError):
                 continue
-            out.append({"name": w.name, "lng": lng, "lat": lat})
+            out.append({"name": w.name, "lng": lng, "lat": lat, "crs": crs})
         return out
 
     def set_plot_data(
@@ -100,22 +106,33 @@ class PlaneMapView(QWidget):
         if canvas is None:
             return
         drawn = self.filter_wells_with_coords(wells)
-        # Draw-time reprojection (T2): coerce from source CRS to the project
-        # CRS the canvas renders in (Plate Carrée identity on project CRS).
-        target_crs = (self._coordinate.project_crs
-                      if self._coordinate is not None else "EPSG:4326")
+        self._plot_diagnostics = []
+        # Draw-time reprojection (T2): coerce each source CRS group to the
+        # project CRS the canvas renders in (Plate Carrée identity).
         if drawn:
             try:
                 from geoviz import coerce_to_project_crs
-                src_crs = (
-                    wells[0].crs or "EPSG:4326"
-                ) if wells else "EPSG:4326"
-                pts = coerce_to_project_crs(
-                    [[w["lng"], w["lat"]] for w in drawn], src_crs
-                )
+            except ImportError:
+                coerce_to_project_crs = None  # type: ignore[assignment]
+            if coerce_to_project_crs is not None:
+                groups: dict[str, list[int]] = defaultdict(list)
                 for i, w in enumerate(drawn):
-                    w["lng"], w["lat"] = float(pts[i][0]), float(pts[i][1])
-            except Exception:
-                # Fallback: keep raw lng/lat (project CRS == WGS84 identity).
-                pass
+                    groups[str(w["crs"])].append(i)
+                failed: set[int] = set()
+                for src_crs, idxs in groups.items():
+                    try:
+                        pts = coerce_to_project_crs(
+                            [[drawn[i]["lng"], drawn[i]["lat"]] for i in idxs],
+                            src_crs,
+                        )
+                        for j, i in enumerate(idxs):
+                            drawn[i]["lng"] = float(pts[j][0])
+                            drawn[i]["lat"] = float(pts[j][1])
+                    except (TypeError, ValueError, RuntimeError) as exc:
+                        self._plot_diagnostics.append(
+                            f"reproject {src_crs}: {exc}"
+                        )
+                        failed.update(idxs)
+                if failed:
+                    drawn = [w for i, w in enumerate(drawn) if i not in failed]
         canvas.load_features(features or [], wells=drawn)

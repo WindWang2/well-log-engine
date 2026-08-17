@@ -213,3 +213,30 @@ def test_viewport_window_keeps_in_view_spike_only():
     # Peak at 50_050 maps to the right edge (v=1).
     peak = [v for v in verts if v[2] == 50_050]
     assert peak and peak[0][0] == pytest.approx(100.0)
+
+
+def test_intra_block_null_run_starts_new_subpath() -> None:
+    """#736: a 3-sample null inside a min/max block must break the stroke."""
+    n = 10_000
+    depth = np.arange(n, dtype=np.float64)
+    vals = np.ones(n, dtype=np.float64)
+    null = np.zeros(n, dtype=bool)
+    null[5000:5003] = True
+    verts, _win = curve_stroke_vertices(
+        depth,
+        vals,
+        null,
+        0.0,
+        float(n - 1),
+        vmin=0.0,
+        vmax=1.0,
+        x0=0.0,
+        y0=0.0,
+        tw=100.0,
+        th=100.0,
+    )
+    assert verts
+    starts = [v for v in verts if v[3]]
+    assert len(starts) >= 2
+    after_gap = [v for v in verts if v[2] > 5002 and v[3]]
+    assert after_gap, "gap inside a stride block must start a new subpath"

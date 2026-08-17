@@ -181,6 +181,82 @@ def test_set_top_depth_dirty_well_gates_correlation_refresh(
     assert submits == []
 
 
+def test_paint_builds_interwell_bands_once(qtbot, monkeypatch) -> None:
+    """#733: one paintEvent must call build_interwell_fill_bands exactly once."""
+    import numpy as np
+    from PySide6.QtGui import QImage
+
+    import well_log_workstation.correlation_canvas as cc_mod
+    from well_log_workstation.correlation_canvas import CorrelationCanvas
+    from well_log_workstation.template_model import (
+        BoundCurveLayer,
+        BoundTrack,
+        HostPresentation,
+        ScaleSpec,
+    )
+    from well_log_workstation.tops_model import FormationTop
+
+    depth = np.array([1000.0, 1005.0, 1010.0])
+    vals = np.array([10.0, 20.0, 30.0])
+    pres = HostPresentation(
+        template_id="t",
+        template_name="T",
+        well_document_id="w1",
+        well_name="W1",
+        depth=depth,
+        depth_unit="m",
+        tracks=[
+            BoundTrack(
+                id="c",
+                role="curve",
+                title="GR",
+                width_fraction=1.0,
+                scale=ScaleSpec(min=0.0, max=100.0, mode="linear", unit="API"),
+                layers=[
+                    BoundCurveLayer(
+                        mnemonic="GR",
+                        color="#1f77b4",
+                        unit="API",
+                        values=vals,
+                        null_mask=np.zeros(3, dtype=bool),
+                    )
+                ],
+            )
+        ],
+    )
+    canvas = CorrelationCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(600, 480)
+    canvas.set_columns([pres, pres])
+    canvas.set_tops_per_column(
+        [
+            [
+                FormationTop(name="T1", depth=1001.0, id="a"),
+                FormationTop(name="T2", depth=1003.0, id="b"),
+            ],
+            [
+                FormationTop(name="T1", depth=1001.5, id="c"),
+                FormationTop(name="T2", depth=1003.5, id="d"),
+            ],
+        ]
+    )
+    canvas.set_show_interwell_fill(True)
+    canvas.set_depth_range(999.0, 1011.0)
+
+    real = cc_mod.build_interwell_fill_bands
+    calls: list[int] = []
+
+    def _spy(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cc_mod, "build_interwell_fill_bands", _spy)
+    img = QImage(canvas.size(), QImage.Format.Format_ARGB32)
+    img.fill(0)
+    canvas.render(img)
+    assert len(calls) == 1
+
+
 def test_t9_fill_toggle_persists_and_paints(qtbot, tmp_path: Path) -> None:
     """Interwell fill checkbox persists and enables canvas fill (#297)."""
     ws = create_workspace(tmp_path / "ws2", name="Fill")

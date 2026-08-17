@@ -29,14 +29,56 @@ def test_filter_wells_with_coords_keeps_only_complete():
         _entry("B"),  # no coords -> excluded
         _entry("C", lng=117.0, lat=31.0),
         _entry("D", lng="bad", lat=31.0),  # invalid -> excluded
+        _entry("E", lng=118.0, lat=32.0, crs=None),  # no crs -> excluded
+        _entry("F", lng=119.0, lat=33.0, crs=""),
     ]
     out = PlaneMapView.filter_wells_with_coords(wells)
     assert [w["name"] for w in out] == ["A", "C"]
-    assert out[0] == {"name": "A", "lng": 116.0, "lat": 30.0}
+    assert out[0]["lng"] == 116.0
+    assert out[0]["lat"] == 30.0
+    assert out[0]["crs"] == "EPSG:4326"
 
 
 def test_filter_wells_with_coords_empty():
     assert PlaneMapView.filter_wells_with_coords([]) == []
+
+
+def test_set_plot_data_reprojects_each_well_with_its_own_crs(monkeypatch):
+    """#740: mixed-CRS catalog must not reuse wells[0].crs for every point."""
+    import sys
+    import types
+
+    calls: list[tuple[list, str]] = []
+
+    def coerce(pts, src_crs):
+        calls.append(([list(p) for p in pts], str(src_crs)))
+        # Distinct offset per CRS so positions cannot be confused.
+        dx = 1.0 if src_crs == "EPSG:4326" else 100.0
+        return [[p[0] + dx, p[1] + dx] for p in pts]
+
+    fake = types.ModuleType("geoviz")
+    fake.coerce_to_project_crs = coerce
+    monkeypatch.setitem(sys.modules, "geoviz", fake)
+
+    class _Canvas:
+        def __init__(self) -> None:
+            self.wells = None
+
+        def load_features(self, features, wells=None):
+            self.wells = wells
+
+    view = PlaneMapView()
+    canvas = _Canvas()
+    view._canvas = canvas
+    wells = [
+        _entry("geo", lng=116.0, lat=30.0, crs="EPSG:4326"),
+        _entry("utm", lng=500000.0, lat=3500000.0, crs="EPSG:32650"),
+    ]
+    view.set_plot_data(wells)
+    assert {src for _pts, src in calls} == {"EPSG:4326", "EPSG:32650"}
+    by_name = {w["name"]: w for w in canvas.wells}
+    assert by_name["geo"]["lng"] == pytest.approx(117.0)
+    assert by_name["utm"]["lng"] == pytest.approx(500100.0)
 
 
 def test_plane_map_view_constructs_without_mapping():

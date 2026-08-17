@@ -838,7 +838,7 @@ class MultiTrackCanvas(QWidget):
                     )
                     or 1.0
                 )
-                usable_w = max(40, self.width() - 8 - 8)
+                usable_w = max(40, self._plot_width() - 8 - 8)
                 frac = max(
                     0.05, min(1.0, tw_new * total_frac / usable_w)
                 )
@@ -851,7 +851,7 @@ class MultiTrackCanvas(QWidget):
         # (header-centre boundaries), update the indicator, no depth pan.
         if self._drag_track_index is not None and self._presentation is not None:
             entries, _band = track_header_rects(
-                self._presentation, self.width(), self.height()
+                self._presentation, self._plot_width(), self.height()
             )
             x = float(event.position().x())
             target = len(entries)
