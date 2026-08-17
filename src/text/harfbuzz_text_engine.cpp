@@ -242,6 +242,8 @@ struct HarfBuzzTextEngine::Impl {
   // remembered so shape() stops re-scanning every font directory for them.
   // Loading any new font invalidates the negative cache.
   std::optional<std::vector<std::filesystem::path>> system_font_candidates;
+  std::size_t system_scan_offset{};
+  std::set<char32_t> scan_in_progress;
   std::set<char32_t> uncovered_code_points;
 
   Impl() = default;
@@ -272,6 +274,8 @@ struct HarfBuzzTextEngine::Impl {
     face->builtin = true;
     fonts.push_back(std::move(face));
     uncovered_code_points.clear();
+    scan_in_progress.clear();
+    system_scan_offset = 0;
     builtin_index = static_cast<std::uint32_t>(fonts.size() - 1);
     return *builtin_index;
   }
@@ -398,15 +402,34 @@ struct HarfBuzzTextEngine::Impl {
       candidates.erase(std::unique(candidates.begin(), candidates.end()),
                        candidates.end());
       system_font_candidates = std::move(candidates);
+      system_scan_offset = 0;
     }
     const auto &candidates = *system_font_candidates;
 
-    std::size_t scanned = 0;
-    for (const auto &path : candidates) {
-      if (unresolved.empty() || fonts.size() >= maximum_fonts ||
-          scanned >= maximum_system_faces_per_scan) {
+    bool restart = false;
+    for (const auto code_point : unresolved) {
+      if (scan_in_progress.find(code_point) == scan_in_progress.end()) {
+        restart = true;
         break;
       }
+    }
+    if (restart) {
+      system_scan_offset = 0;
+      scan_in_progress.insert(unresolved.begin(), unresolved.end());
+    }
+
+    std::size_t scanned = 0;
+    bool hit_cap = false;
+    for (; system_scan_offset < candidates.size(); ++system_scan_offset) {
+      if (unresolved.empty()) {
+        break;
+      }
+      if (fonts.size() >= maximum_fonts ||
+          scanned >= maximum_system_faces_per_scan) {
+        hit_cap = true;
+        break;
+      }
+      const auto &path = candidates[system_scan_offset];
       std::error_code error;
       const auto file_size = std::filesystem::file_size(path, error);
       if (error || file_size == 0 || file_size > maximum_font_file_bytes) {
@@ -452,9 +475,14 @@ struct HarfBuzzTextEngine::Impl {
         }
       }
     }
-    // Whatever a full scan could not cover stays uncovered until a new font
-    // is loaded (which clears the negative cache).
-    uncovered_code_points.insert(unresolved.begin(), unresolved.end());
+    // Negative-cache only after a full walk of every candidate. A cap stop
+    // (64 fonts / 512 faces) must leave the remainder searchable (#609).
+    if (!hit_cap) {
+      uncovered_code_points.insert(unresolved.begin(), unresolved.end());
+      for (const auto code_point : unresolved) {
+        scan_in_progress.erase(code_point);
+      }
+    }
   }
 
   [[nodiscard]] Result<ShapedRun> shape(const TextShapeRequest &request) {
@@ -825,6 +853,8 @@ HarfBuzzTextEngine::add_project_font(std::string_view path) noexcept {
     auto adopted = impl_->adopt_file_face(std::move(bytes), 0);
     if (adopted.has_value()) {
       ++impl_->project_font_count;
+      impl_->scan_in_progress.clear();
+      impl_->system_scan_offset = 0;
     }
     return adopted;
   } catch (const std::bad_alloc &) {
@@ -844,6 +874,10 @@ void HarfBuzzTextEngine::add_system_font_directory(
     std::string_view path) noexcept {
   try {
     impl_->system_directories.emplace_back(path);
+    impl_->system_font_candidates.reset();
+    impl_->system_scan_offset = 0;
+    impl_->scan_in_progress.clear();
+    impl_->uncovered_code_points.clear();
   } catch (...) {
   }
 }

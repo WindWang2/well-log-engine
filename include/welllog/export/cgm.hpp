@@ -51,12 +51,14 @@ struct WELLLOG_EXPORT_CGM_API CgmExportDiagnostics {
   std::uint32_t intervals_emitted{0};
   std::uint32_t fill_regions_emitted{0};
   std::uint32_t pictures_emitted{0};
+  std::uint32_t vdc_coordinates_clamped{0};
   std::vector<std::string> notes;
 
   [[nodiscard]] bool empty() const noexcept {
     return patterns_flattened_to_solid == 0 &&
            patterns_hatch_approximated == 0 && alpha_flattened_to_opaque == 0 &&
-           non_latin_text_dropped == 0 && notes.empty();
+           non_latin_text_dropped == 0 && vdc_coordinates_clamped == 0 &&
+           notes.empty();
   }
 
   [[nodiscard]] std::string summary() const;

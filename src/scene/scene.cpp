@@ -6,7 +6,9 @@
 #include <charconv>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <set>
+#include <stop_token>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -796,7 +798,7 @@ collect_layer_samples(std::span<const PreparedCurveSegment> segments,
 [[nodiscard]] std::optional<double>
 interpolate_left_at_depth(const std::vector<AlignedSample> &lower,
                           std::size_t run_begin, std::size_t run_end,
-                          double depth) {
+                          std::size_t &cursor, double depth) {
   if (run_begin >= run_end || run_end > lower.size()) {
     return std::nullopt;
   }
@@ -804,24 +806,35 @@ interpolate_left_at_depth(const std::vector<AlignedSample> &lower,
       depth > lower[run_end - 1].reference_depth) {
     return std::nullopt;
   }
-  for (std::size_t i = run_begin; i + 1 < run_end; ++i) {
-    const auto &a = lower[i];
-    const auto &b = lower[i + 1];
-    if (depth >= a.reference_depth && depth <= b.reference_depth) {
-      // Do not interpolate across a missing-value gap: the bracketing pair
-      // must belong to the same run.
-      if (a.run != b.run) {
-        return std::nullopt;
-      }
-      const auto span = b.reference_depth - a.reference_depth;
-      if (span <= 0.0) {
-        return a.left; // repeated depth: take the lower sample
-      }
-      const auto t = (depth - a.reference_depth) / span;
-      return a.left + t * (b.left - a.left);
-    }
+  if (cursor < run_begin) {
+    cursor = run_begin;
   }
-  return std::nullopt;
+  // Both arrays are depth-sorted: advance monotonically to the last sample
+  // whose next neighbour is still strictly shallower than `depth`.
+  while (cursor + 1 < run_end &&
+         lower[cursor + 1].reference_depth < depth) {
+    ++cursor;
+  }
+  if (cursor + 1 >= run_end) {
+    // A single-sample run has no bracketing pair (same as the linear scan).
+    return std::nullopt;
+  }
+  const auto &a = lower[cursor];
+  const auto &b = lower[cursor + 1];
+  if (depth < a.reference_depth || depth > b.reference_depth) {
+    return std::nullopt;
+  }
+  // Do not interpolate across a missing-value gap: the bracketing pair
+  // must belong to the same run.
+  if (a.run != b.run) {
+    return std::nullopt;
+  }
+  const auto span = b.reference_depth - a.reference_depth;
+  if (span <= 0.0) {
+    return a.left; // repeated depth: take the lower sample
+  }
+  const auto t = (depth - a.reference_depth) / span;
+  return a.left + t * (b.left - a.left);
 }
 
 // One closed region between two crossings: the upper polyline samples
@@ -836,15 +849,17 @@ struct CrossoverRegion {
 // depth grid; `lower` is interpolated onto it. A region is emitted wherever
 // the upper-left-minus-lower-left stays non-negative between crossings
 // (CrossoverFillRule::upper_minus_lower).
-[[nodiscard]] std::vector<CrossoverRegion>
+[[nodiscard]] std::optional<std::vector<CrossoverRegion>>
 build_crossover_regions(const std::vector<AlignedSample> &upper,
-                        const std::vector<AlignedSample> &lower) {
+                        const std::vector<AlignedSample> &lower,
+                        std::stop_token stop_token) {
   std::vector<CrossoverRegion> regions;
   if (upper.empty() || lower.empty()) {
     return regions;
   }
   const auto lower_run_begin = std::size_t{0};
   const auto lower_run_end = lower.size();
+  auto lower_cursor = lower_run_begin;
 
   struct RingPoint {
     PhysicalPoint position{};
@@ -878,9 +893,14 @@ build_crossover_regions(const std::vector<AlignedSample> &upper,
     lower_run.clear();
   };
 
-  for (const auto &u : upper) {
+  for (std::size_t ui = 0; ui < upper.size(); ++ui) {
+    if ((ui & 4095U) == 0U && stop_token.stop_requested()) {
+      return std::nullopt;
+    }
+    const auto &u = upper[ui];
     const auto lower_left = interpolate_left_at_depth(lower, lower_run_begin,
                                                       lower_run_end,
+                                                      lower_cursor,
                                                       u.reference_depth);
     if (!lower_left.has_value()) {
       if (!upper_run.empty()) {
@@ -2612,8 +2632,12 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         const auto lower_samples =
             collect_layer_samples(scene->curve_segments, scene->curve_points,
                                   *lower_layer);
-        const auto regions = build_crossover_regions(upper_samples, lower_samples);
-        for (const auto &region : regions) {
+        const auto regions = build_crossover_regions(
+            upper_samples, lower_samples, stop_token);
+        if (!regions.has_value()) {
+          return cancellation_error();
+        }
+        for (const auto &region : *regions) {
           if (stop_token.stop_requested()) {
             return cancellation_error();
           }

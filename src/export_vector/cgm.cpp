@@ -200,6 +200,11 @@ std::string CgmExportDiagnostics::summary() const {
     s += std::to_string(non_latin_text_dropped);
     s += "; ";
   }
+  if (vdc_coordinates_clamped > 0) {
+    s += "vdc_coordinates_clamped=";
+    s += std::to_string(vdc_coordinates_clamped);
+    s += "; ";
+  }
   s += "pictures=";
   s += std::to_string(pictures_emitted);
   s += " intervals=";
@@ -220,6 +225,43 @@ cgm_scene_to_vdc(double scene_x_mm, double scene_y_mm, double window_top_mm,
   return {clamp_i16(scene_x_mm * k_cgm_vdc_per_mm),
           clamp_i16((window_height_mm - local_y) * k_cgm_vdc_per_mm)};
 }
+
+namespace {
+
+constexpr double k_int16_max_vdc = 32767.0;
+constexpr double k_int16_min_vdc = -32768.0;
+
+[[nodiscard]] double vdc_scale_for_window(double width_mm,
+                                          double height_mm) noexcept {
+  const auto max_mm = std::max(width_mm, height_mm);
+  if (!(max_mm > 0.0) || !std::isfinite(max_mm)) {
+    return k_cgm_vdc_per_mm;
+  }
+  const auto at_default = max_mm * k_cgm_vdc_per_mm;
+  if (at_default <= k_int16_max_vdc) {
+    return k_cgm_vdc_per_mm;
+  }
+  return k_int16_max_vdc / max_mm;
+}
+
+[[nodiscard]] std::int16_t
+clamp_i16_counted(double v, std::uint32_t &clamped) noexcept {
+  if (!std::isfinite(v) || v > k_int16_max_vdc || v < k_int16_min_vdc) {
+    ++clamped;
+  }
+  return clamp_i16(v);
+}
+
+[[nodiscard]] std::pair<std::int16_t, std::int16_t>
+scene_to_vdc_scaled(double scene_x_mm, double scene_y_mm, double window_top_mm,
+                    double window_height_mm, double scale,
+                    std::uint32_t &clamped) noexcept {
+  const auto local_y = scene_y_mm - window_top_mm;
+  return {clamp_i16_counted(scene_x_mm * scale, clamped),
+          clamp_i16_counted((window_height_mm - local_y) * scale, clamped)};
+}
+
+} // namespace
 
 struct CgmBinaryWriter::Impl {
   std::string bytes;
@@ -524,12 +566,12 @@ void emit_hatch(CgmBinaryWriter &w,
                                                                    double)>
                     to_vdc,
                 double left, double top, double width, double height,
-                double step_mm, RgbaColor fg) {
+                double step_mm, RgbaColor fg, double scale) {
   if (!(width > 0.0) || !(height > 0.0) || !(step_mm > 0.0)) {
     return;
   }
   w.line_colour(fg.red, fg.green, fg.blue);
-  w.line_width(std::max<std::int16_t>(5, clamp_i16(0.15 * k_cgm_vdc_per_mm)));
+  w.line_width(std::max<std::int16_t>(1, clamp_i16(0.15 * scale)));
   // Diagonal family: y - x = c
   const auto c_min = top - (left + width);
   const auto c_max = (top + height) - left;
@@ -594,12 +636,6 @@ CgmSceneExporter::write(const PreparedScene &scene,
                        MessageKey::presentation_invalid);
     }
 
-    const auto vdc_w = clamp_i16(width_mm * k_cgm_vdc_per_mm);
-    if (vdc_w <= 0) {
-      return cgm_error(ErrorCode::invalid_presentation,
-                       MessageKey::presentation_invalid);
-    }
-
     const auto windows = build_depth_windows(height_mm, options);
     const auto hatch_step =
         options.hatch_step_mm > 0.0 ? options.hatch_step_mm : 2.0;
@@ -627,12 +663,17 @@ CgmSceneExporter::write(const PreparedScene &scene,
 
     for (std::size_t pi = 0; pi < windows.size(); ++pi) {
       const auto &win = windows[pi];
-      const auto vdc_h = clamp_i16(win.height_mm * k_cgm_vdc_per_mm);
-      if (vdc_h <= 0) {
+      const auto scale = vdc_scale_for_window(width_mm, win.height_mm);
+      const auto vdc_w = clamp_i16_counted(width_mm * scale,
+                                           diag.vdc_coordinates_clamped);
+      const auto vdc_h = clamp_i16_counted(win.height_mm * scale,
+                                           diag.vdc_coordinates_clamped);
+      if (vdc_w <= 0 || vdc_h <= 0) {
         continue;
       }
       const auto to_vdc = [&](double sx, double sy) {
-        return cgm_scene_to_vdc(sx, sy, win.top_mm, win.height_mm);
+        return scene_to_vdc_scaled(sx, sy, win.top_mm, win.height_mm, scale,
+                                   diag.vdc_coordinates_clamped);
       };
       const auto in_window = [&](double sy) {
         return sy >= win.top_mm - 1e-9 && sy <= win.bottom_mm + 1e-9;
@@ -681,7 +722,8 @@ CgmSceneExporter::write(const PreparedScene &scene,
                        iv.rect.width.value, iv.rect.height.value, hatch_step,
                        RgbaColor{static_cast<std::uint8_t>(col.red / 2),
                                  static_cast<std::uint8_t>(col.green / 2),
-                                 static_cast<std::uint8_t>(col.blue / 2), 255});
+                                 static_cast<std::uint8_t>(col.blue / 2), 255},
+                       scale);
           }
           diag.intervals_emitted += 1;
         }
@@ -724,7 +766,8 @@ CgmSceneExporter::write(const PreparedScene &scene,
                        region.bounds.height.value, hatch_step,
                        RgbaColor{static_cast<std::uint8_t>(col.red / 2),
                                  static_cast<std::uint8_t>(col.green / 2),
-                                 static_cast<std::uint8_t>(col.blue / 2), 255});
+                                 static_cast<std::uint8_t>(col.blue / 2), 255},
+                       scale);
           }
           diag.fill_regions_emitted += 1;
         }
@@ -747,13 +790,13 @@ CgmSceneExporter::write(const PreparedScene &scene,
         const auto rh =
             static_cast<std::int16_t>(std::abs(br.second - tl.second));
         w.line_colour(180, 180, 180);
-        w.line_width(10);
+        w.line_width(std::max<std::int16_t>(1, clamp_i16(0.10 * scale)));
         w.rectangle_polyline(x, y, rw, rh);
       }
 
       // Headers only on first picture (continuous) or every picture.
       w.text_colour(40, 40, 40);
-      w.character_height(300);
+      w.character_height(std::max<std::int16_t>(1, clamp_i16(3.0 * scale)));
       for (const auto &entry : scene.track_header_entries()) {
         double sx = 2.0;
         double sy = win.top_mm + 5.0;
@@ -785,7 +828,7 @@ CgmSceneExporter::write(const PreparedScene &scene,
         }
         w.line_colour(layer.color.red, layer.color.green, layer.color.blue);
         w.line_width(std::max<std::int16_t>(
-            5, clamp_i16(layer.line_width.value * k_cgm_vdc_per_mm)));
+            1, clamp_i16(layer.line_width.value * scale)));
         for (std::uint64_t seg_i = 0; seg_i < layer.segment_count; ++seg_i) {
           const auto &segment =
               segments[static_cast<std::size_t>(layer.first_segment + seg_i)];
@@ -830,6 +873,9 @@ CgmSceneExporter::write(const PreparedScene &scene,
     }
     if (diag.pictures_emitted > 1) {
       diag.notes.push_back("multi-PICTURE pagination (B1.CGM.3)");
+    }
+    if (diag.vdc_coordinates_clamped > 0) {
+      diag.notes.push_back("VDC coordinates clamped to int16");
     }
 
     w.end_metafile();

@@ -1016,6 +1016,11 @@ if(WELLLOG_BUILD_TESTS)
     )
     target_compile_features(welllog_session_tests PRIVATE cxx_std_20)
     welllog_enable_warnings(welllog_session_tests)
+    target_compile_definitions(
+        welllog_session_tests
+        PRIVATE
+            "WELLLOG_SESSION_SOURCE=\"${CMAKE_CURRENT_SOURCE_DIR}/src/session/session.cpp\""
+    )
     target_link_libraries(welllog_session_tests PRIVATE WellLog::Session)
     add_test(NAME welllog.session COMMAND welllog_session_tests)
 

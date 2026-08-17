@@ -314,6 +314,179 @@ void multi_picture_pagination() {
   require(cgm_has_metafile_delimiters(bytes), "delimiters");
 }
 
+[[nodiscard]] std::int16_t read_i16_be(std::string_view bytes,
+                                       std::size_t offset) {
+  require(offset + 2 <= bytes.size(), "CGM i16 read stays in range");
+  const auto hi = static_cast<std::uint8_t>(bytes[offset]);
+  const auto lo = static_cast<std::uint8_t>(bytes[offset + 1]);
+  return static_cast<std::int16_t>(
+      static_cast<std::uint16_t>((hi << 8) | lo));
+}
+
+// Decode one command header the same way the writer encodes it (short or
+// long-form). Returns false at the end of the stream.
+[[nodiscard]] bool next_cgm_command(std::string_view bytes, std::size_t &offset,
+                                    std::uint8_t &cls, std::uint8_t &id,
+                                    std::size_t &param_start,
+                                    std::size_t &param_len) {
+  if (offset + 2 > bytes.size()) {
+    return false;
+  }
+  const auto header = static_cast<std::uint16_t>(
+      (static_cast<std::uint8_t>(bytes[offset]) << 8) |
+      static_cast<std::uint8_t>(bytes[offset + 1]));
+  cls = static_cast<std::uint8_t>((header >> 12) & 0x0F);
+  id = static_cast<std::uint8_t>((header >> 5) & 0x7F);
+  auto plen = static_cast<std::size_t>(header & 0x1FU);
+  auto pstart = offset + 2;
+  if (plen == 31) {
+    if (offset + 4 > bytes.size()) {
+      return false;
+    }
+    const auto l0 = static_cast<std::uint8_t>(bytes[offset + 2]);
+    const auto l1 = static_cast<std::uint8_t>(bytes[offset + 3]);
+    plen = static_cast<std::size_t>(((l0 & 0x7FU) << 8) | l1);
+    pstart = offset + 4;
+  }
+  if (pstart + plen > bytes.size()) {
+    return false;
+  }
+  param_start = pstart;
+  param_len = plen;
+  auto end = pstart + plen;
+  if ((end & 1U) != 0U) {
+    ++end;
+  }
+  offset = end;
+  return true;
+}
+
+// Issue #603: a continuous picture taller than 327.67 mm used to clamp every
+// VDC y at ±32767, flattening the top ~672 mm of the page onto one line.
+// Per-picture scaling must keep distinct scene depths as distinct VDC y.
+void tall_continuous_picture_does_not_clamp_vdc() {
+  const auto document_id = id("20000000-0000-4000-8000-000000000011");
+  const auto axis_id = id("20000000-0000-4000-8000-000000000012");
+  const auto curve_id = id("20000000-0000-4000-8000-000000000013");
+  const auto track_id = id("20000000-0000-4000-8000-000000000014");
+  const auto scale_id = id("20000000-0000-4000-8000-000000000015");
+  const auto layer_id = id("20000000-0000-4000-8000-000000000016");
+
+  auto depths = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{1000.0, 1040.0, 1080.0});
+  auto values = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{10.0, 40.0, 70.0});
+  auto nulls = std::make_shared<const std::vector<std::uint8_t>>(
+      std::initializer_list<std::uint8_t>{0});
+
+  WellLogDocumentBuilder document_builder(document_id, DocumentRevision{1});
+  document_builder.add_sampling_axis(SamplingAxis{
+      .id = axis_id,
+      .coordinates = BufferView::from_vector(depths),
+      .domain = DepthDomain::measured_depth,
+      .unit = "m",
+      .direction = AxisDirection::increasing,
+  });
+  document_builder.add_curve(Curve{
+      .id = curve_id,
+      .mnemonic = "GR",
+      .display_name = "Gamma Ray",
+      .unit = "API",
+      .sampling_axis_id = axis_id,
+      .values = BufferView::from_vector(values),
+      .nulls = NullBitmapView::from_raw(nulls->data(), values->size(),
+                                        nulls->size(), SharedOwner{nulls}),
+  });
+
+  WellLogSession session;
+  require(
+      session.execute(SetDocumentCommand{document_builder.build()}).has_value(),
+      "tall-scene document must be accepted");
+
+  constexpr double height_mm = 800.0;
+  ScenePresentationBuilder presentation_builder(
+      document_id,
+      ReferenceDepthRange{
+          .domain = DepthDomain::measured_depth,
+          .unit = "m",
+          .top = 1000.0,
+          .bottom = 1080.0,
+      },
+      Millimetres{height_mm}, "font-fixture-v1");
+  presentation_builder.add_track(TrackSpec{
+      .id = track_id,
+      .width = Millimetres{30.0},
+      .z_order = 10,
+  });
+  presentation_builder.add_scale(TrackScaleSpec{
+      .id = scale_id,
+      .track_id = track_id,
+      .mode = ScaleMode::linear,
+      .minimum = 0.0,
+      .maximum = 80.0,
+      .direction = ScaleDirection::left_to_right,
+      .unit = "API",
+  });
+  presentation_builder.add_curve_layer(CurveLayerSpec{
+      .id = layer_id,
+      .track_id = track_id,
+      .curve_id = curve_id,
+      .scale_id = scale_id,
+      .color =
+          RgbaColor{.red = 0x12, .green = 0x34, .blue = 0x56, .alpha = 0xff},
+      .line_width = Millimetres{0.25},
+      .z_order = 20,
+      .visible = true,
+  });
+  require(session.execute(SetPresentationCommand{presentation_builder.build()})
+              .has_value(),
+          "tall-scene presentation must be accepted");
+  const auto scene = session.prepared_scene(document_id);
+  require(scene != nullptr, "tall scene must prepare");
+  require(scene->physical_height().value > 327.67,
+          "fixture must exceed the unscaled int16 VDC window");
+
+  CgmExportDiagnostics diag;
+  const auto cgm = CgmSceneExporter::write(*scene, CgmExportOptions{}, &diag);
+  require(cgm.has_value(), "tall continuous CGM must succeed");
+  const auto bytes = cgm.value().bytes();
+  require(cgm_count_pictures(bytes) == 1, "continuous export is one PICTURE");
+
+  bool saw_extent = false;
+  std::int16_t extent_y1 = 0;
+  std::vector<std::pair<std::int16_t, std::int16_t>> curve_pts;
+  std::size_t offset = 0;
+  std::uint8_t cls = 0;
+  std::uint8_t id = 0;
+  std::size_t pstart = 0;
+  std::size_t plen = 0;
+  while (next_cgm_command(bytes, offset, cls, id, pstart, plen)) {
+    if (cls == 2 && id == 6 && plen >= 8) {
+      extent_y1 = read_i16_be(bytes, pstart + 6);
+      saw_extent = true;
+    }
+    if (cls == 4 && id == 1 && plen == 12) {
+      curve_pts.clear();
+      for (std::size_t i = 0; i < 3; ++i) {
+        curve_pts.emplace_back(read_i16_be(bytes, pstart + i * 4),
+                               read_i16_be(bytes, pstart + i * 4 + 2));
+      }
+    }
+  }
+  require(saw_extent, "VDC EXTENT must be present");
+  require(extent_y1 > 0, "scaled VDC height must be a positive int16 extent");
+  require(curve_pts.size() == 3, "the 3-sample curve must emit 3 VDC points");
+  // Unscaled 100 VDC/mm maps 0 mm and 400 mm both onto 32767. Distinct
+  // depths on an 800 mm page must remain distinct after scaling.
+  require(curve_pts[0].second != curve_pts[1].second,
+          "top and mid depths must not collapse onto the int16 VDC edge");
+  require(curve_pts[1].second != curve_pts[2].second,
+          "mid and bottom depths must stay distinct in VDC");
+  require(curve_pts[0].second > curve_pts[1].second &&
+              curve_pts[1].second > curve_pts[2].second,
+          "y-up VDC must decrease down the page");
+}
+
 void vdc_geometry_within_half_mm() {
   // ADR 0054: CGM entry golden 0.5 mm → 50 VDC units.
   const auto p = cgm_scene_to_vdc(/*x*/ 16.0, /*y*/ 0.0, /*wtop*/ 0.0,
@@ -379,6 +552,7 @@ int main() {
   diagnostics_report_pattern_flattening();
   multi_picture_pagination();
   vdc_geometry_within_half_mm();
+  tall_continuous_picture_does_not_clamp_vdc();
   std::cout << "welllog.cgm-spike: all cases passed\n";
   return 0;
 }
