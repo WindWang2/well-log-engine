@@ -517,6 +517,56 @@ void fill_requires_exactly_one_of_color_or_pattern() {
           "a fill with neither color nor pattern must be rejected");
   require(neither_result.error().code == ErrorCode::invalid_presentation,
           "missing fill style must use the presentation error code");
+
+  // #757: the name and comment promise the both-set arm of
+  // (color_set == pattern_set); only the neither-set fixture existed.
+  auto both = ScenePresentationBuilder(
+      document_id,
+      ReferenceDepthRange{.domain = DepthDomain::measured_depth, .unit = "m",
+                          .top = 1000.0, .bottom = 1002.0},
+      Millimetres{100.0}, "font-fixture-v1");
+  both.add_track(TrackSpec{
+      .id = track_id, .width = Millimetres{40.0}, .z_order = 0, .header = {}});
+  both.add_scale(TrackScaleSpec{
+      .id = upper_scale_id, .track_id = track_id, .mode = ScaleMode::linear,
+      .minimum = 0.0, .maximum = 100.0,
+      .direction = ScaleDirection::left_to_right, .unit = "API"});
+  both.add_scale(TrackScaleSpec{
+      .id = lower_scale_id, .track_id = track_id, .mode = ScaleMode::linear,
+      .minimum = 0.0, .maximum = 100.0,
+      .direction = ScaleDirection::left_to_right, .unit = "API"});
+  both.add_curve_layer(CurveLayerSpec{
+      .id = upper_layer_id, .track_id = track_id, .curve_id = upper_curve_id,
+      .scale_id = upper_scale_id, .color = RgbaColor{20, 120, 20, 255},
+      .line_width = Millimetres{0.5}, .z_order = 0, .visible = true});
+  both.add_curve_layer(CurveLayerSpec{
+      .id = lower_layer_id, .track_id = track_id, .curve_id = lower_curve_id,
+      .scale_id = lower_scale_id, .color = RgbaColor{200, 30, 30, 255},
+      .line_width = Millimetres{0.5}, .z_order = 1, .visible = true});
+  both.add_pattern(PatternDefinition{
+      .id = pattern_id, .tile_width = Millimetres{4.0},
+      .tile_height = Millimetres{4.0}, .rotation_degrees = 0.0,
+      .foreground = RgbaColor{0, 0, 0, 255},
+      .background = RgbaColor{255, 255, 0, 255},
+      .stroke_width = Millimetres{0.3},
+      .scene_anchor = PhysicalPoint{},
+      .primitives = {PatternLine{
+          .from = PhysicalPoint{},
+          .to = PhysicalPoint{.left = Millimetres{4.0},
+                              .top = Millimetres{4.0}}}}});
+  both.add_crossover_fill_layer(CrossoverFillLayerSpec{
+      .id = fill_layer_id, .track_id = track_id, .z_order = 2,
+      .upper_curve_layer_id = upper_layer_id,
+      .lower_curve_layer_id = lower_layer_id,
+      .rule = CrossoverFillRule::upper_minus_lower,
+      .fill_color = RgbaColor{255, 200, 0, 255}, .pattern_id = pattern_id,
+      .visible = true});
+  const auto both_result =
+      session.execute(SetPresentationCommand{both.build()});
+  require(!both_result.has_value(),
+          "a fill with both color and pattern must be rejected");
+  require(both_result.error().code == ErrorCode::invalid_presentation,
+          "dual fill style must use the presentation error code");
 }
 
 // A fill region is pickable and returns both dependent curve ids + a depth.

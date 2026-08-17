@@ -333,6 +333,32 @@ class WellLogViewEmbeddingTest(unittest.TestCase):
             pdf.startswith(b"%PDF-"),
             f"unexpected PDF header: {pdf[:16]!r}",
         )
+        # #769: a truncated binding payload (header only) used to pass.
+        self.assertIn(b"startxref", pdf, "PDF must contain the xref pointer")
+        self.assertIn(
+            b"%%EOF",
+            pdf[-64:],
+            "PDF must end with %%EOF (truncated PyBytes must fail)",
+        )
+
+        # Binding option surface (searchable / layered / ruler) must accept
+        # kwargs without TypeError and change the emitted bytes.
+        pdf_opts = view.export_scene_pdf(
+            "10000000-0000-4000-8000-000000000001",
+            searchable_text=True,
+            crop_marks=False,
+            layered_pdf=True,
+            show_depth_ruler=True,
+        )
+        self.assertTrue(pdf_opts.startswith(b"%PDF-"), pdf_opts[:16])
+        self.assertIn(b"startxref", pdf_opts)
+        self.assertIn(b"%%EOF", pdf_opts[-64:])
+        self.assertIn(
+            b"/OCProperties",
+            pdf_opts,
+            "layered_pdf=True must emit OCG properties",
+        )
+        self.assertNotEqual(pdf, pdf_opts)
 
         # Error path mirrors the SVG binding.
         with self.assertRaises(WellLogValidationError) as raised:

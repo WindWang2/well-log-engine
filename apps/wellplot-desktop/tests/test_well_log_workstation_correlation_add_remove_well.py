@@ -11,9 +11,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import pytest
-
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtWidgets import QDialog, QListWidget
 
 from well_log_workstation.las_import import import_las_into_workspace
 from well_log_workstation.plot_document import load_plot_document
@@ -107,9 +109,23 @@ def test_add_well_cancel_is_noop(qtbot, tmp_path: Path) -> None:
 def test_pick_single_well_lists_only_absent(qtbot, tmp_path: Path) -> None:
     """The add-well picker must exclude wells already on the plot."""
     win, ws, plot, (id1, id2, id3) = _three_wells(qtbot, tmp_path)
-    # Replicate the picker's availability filter and assert only C remains.
-    available = [w for w in win._workspace.wells if w.id not in plot.well_ids]
-    assert [w.id for w in available] == [id3]
+    seen: list[str] = []
+
+    def _accept_picker() -> None:
+        dlg = win.findChild(QDialog, "Dialog_PickWellToAdd")
+        assert dlg is not None
+        lst = dlg.findChild(QListWidget, "List_WellToAdd")
+        assert lst is not None
+        seen.extend(
+            lst.item(i).data(Qt.ItemDataRole.UserRole) for i in range(lst.count())
+        )
+        dlg.accept()
+
+    QTimer.singleShot(0, _accept_picker)
+    picked = win._pick_single_well_to_add(list(plot.well_ids))
+    assert seen == [id3]
+    assert picked == id3
+    assert id1 not in seen and id2 not in seen
 
 
 # -- remove well -----------------------------------------------------

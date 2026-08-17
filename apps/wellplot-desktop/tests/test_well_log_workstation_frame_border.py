@@ -31,8 +31,11 @@ def test_draw_qt_frame_border_paints_without_crash() -> None:
     assert img.width() == 400
     # The frame draws a black border inside the margins; confirm some non-white
     # pixels now exist near the margin edge (border was drawn).
-    border_pixel = img.pixelColor(45, 5)  # ~10mm*4px/mm = 40px from left edge
-    assert border_pixel.red() < 256  # painted (black-ish line present)
+    # Frame is inset by 10mm * 4 px/mm = 40px; sample the top edge, not (45, 5)
+    # which sits in the unpainted margin (where red()<256 is a tautology).
+    border_pixel = img.pixelColor(45, 40)
+    assert border_pixel.red() < 240
+    assert border_pixel.green() < 240
 
 
 def test_draw_qt_frame_border_default_off_keeps_blank() -> None:

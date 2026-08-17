@@ -105,10 +105,15 @@ def test_three_d_bridge_probe_returns_capability():
     )
     reset_3d_capability_cache()
     cap = probe_3d()
-    # On this (broken-env) machine pyqtgraph may or may not be importable;
-    # the contract is: returns a ThreeDCapability with a bool + detail.
-    assert isinstance(cap.available, bool)
-    assert isinstance(cap.detail, str)
+    assert isinstance(cap.detail, str) and cap.detail
+    try:
+        import pyqtgraph.opengl as gl  # noqa: F401
+        from geoviz import generate_fence_mesh  # noqa: F401
+    except Exception:
+        assert cap.available is False
+    else:
+        assert cap.available is True
+        assert cap.gl_view_cls is gl.GLViewWidget
 
 
 def test_three_d_bridge_disable_env():

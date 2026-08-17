@@ -525,6 +525,28 @@ void over_limit_image_and_empty_custom_sources_rejected() {
   require(dpi_result.error().code == ErrorCode::invalid_image,
           "invalid-dpi image must return invalid_image");
 
+  // #749: widthPx/dpi must be range-checked as uint64. Narrowing first
+  // lets 2^32+N wrap into a legal small value and bypass ADR 0042.
+  auto wrapped_width = std::string{encoded.value().text()};
+  wrapped_width.replace(wrapped_width.find("\"widthPx\":2048"),
+                        std::string_view{"\"widthPx\":2048"}.size(),
+                        "\"widthPx\":4294967396");
+  const auto wrap_w = ManifestCodec::read(wrapped_width, resolvers);
+  require(!wrap_w.has_value(),
+          "widthPx = 2^32+100 must be rejected, not wrapped to 100");
+  require(wrap_w.error().code == ErrorCode::invalid_image,
+          "wrapped widthPx must return invalid_image");
+
+  auto wrapped_dpi = std::string{encoded.value().text()};
+  wrapped_dpi.replace(wrapped_dpi.find("\"dpi\":300"),
+                      std::string_view{"\"dpi\":300"}.size(),
+                      "\"dpi\":4294967297");
+  const auto wrap_dpi = ManifestCodec::read(wrapped_dpi, resolvers);
+  require(!wrap_dpi.has_value(),
+          "dpi = 2^32+1 must be rejected, not wrapped to 1");
+  require(wrap_dpi.error().code == ErrorCode::invalid_image,
+          "wrapped dpi must return invalid_image");
+
   // Empty custom source: a document with a CustomLayerSource carrying an empty
   // primitives vector serializes, but the reader rejects it (ADR 0042 non-empty
   // rule, custom_source_empty).

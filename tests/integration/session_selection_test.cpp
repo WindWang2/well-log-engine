@@ -53,6 +53,7 @@ const auto document_id = id("66000000-0000-4000-8000-000000000001");
 const auto axis_a_id = id("66000000-0000-4000-8000-000000000002");
 const auto axis_b_id = id("66000000-0000-4000-8000-000000000003");
 const auto curve_gr_id = id("66000000-0000-4000-8000-000000000004");
+const auto curve_rhob_id = id("66000000-0000-4000-8000-000000000005");
 
 // Axis A: increasing [1000, 1000.5, 1001, 1001.5, 1002]. A depth range over it
 // resolves by lower/upper bound. Axis B (decreasing) is added by callers that
@@ -267,12 +268,36 @@ void unknown_document_or_axis_rejected_with_distinct_codes() {
 // document holds exactly one selection). This locks the one-per-document
 // intent (a Spec-review question — confirmed by the user).
 void one_selection_per_document_evicts_other_axis() {
-  auto session = make_session();
-  // Axis A is on the fixture document. Add a second axis B with a curve.
-  // (Rebuild the document with both axes via a fresh builder would change the
-  // fixture; instead exercise eviction on the single-axis fixture by selecting
-  // the same axis twice and confirming overwrite, plus the documented contract
-  // that a second SetSelection replaces the first.)
+  // #764: the previous fixture only selected axis_a twice (same-axis
+  // overwrite). Build a real two-axis document and evict A with B.
+  auto depths_a = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{1000.0, 1000.5, 1001.0, 1001.5, 1002.0});
+  auto gr = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{10.0, 20.0, 30.0, 40.0, 50.0});
+  auto depths_b = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{2000.0, 2000.5, 2001.0, 2001.5, 2002.0});
+  auto rhob = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{2.1, 2.2, 2.3, 2.4, 2.5});
+  WellLogDocumentBuilder builder(document_id, DocumentRevision{1});
+  builder.add_sampling_axis(SamplingAxis{
+      .id = axis_a_id, .coordinates = BufferView::from_vector(depths_a),
+      .domain = DepthDomain::measured_depth, .unit = "m",
+      .direction = AxisDirection::increasing});
+  builder.add_sampling_axis(SamplingAxis{
+      .id = axis_b_id, .coordinates = BufferView::from_vector(depths_b),
+      .domain = DepthDomain::measured_depth, .unit = "m",
+      .direction = AxisDirection::increasing});
+  builder.add_curve(Curve{
+      .id = curve_gr_id, .mnemonic = "GR", .display_name = "Gamma Ray",
+      .unit = "API", .sampling_axis_id = axis_a_id,
+      .values = BufferView::from_vector(gr), .nulls = {}});
+  builder.add_curve(Curve{
+      .id = curve_rhob_id, .mnemonic = "RHOB", .display_name = "Bulk Density",
+      .unit = "g/cm3", .sampling_axis_id = axis_b_id,
+      .values = BufferView::from_vector(rhob), .nulls = {}});
+  WellLogSession session;
+  require(session.execute(SetDocumentCommand{builder.build()}).has_value(),
+          "two-axis document must be accepted");
   require(session
               .execute(SetSelectionCommand{
                   .document_id = document_id,
@@ -280,25 +305,29 @@ void one_selection_per_document_evicts_other_axis() {
                   .reference_depth_range = {.top = 1000.0, .bottom = 1000.5},
               })
               .has_value(),
-          "first selection must be accepted");
+          "axis-A selection must be accepted");
   auto sel = session.selection(document_id);
-  // Axis [1000,1000.5,1001,1001.5,1002]; range [1000,1000.5] → rows [0,2).
-  require(sel.has_value() && sel->first_row == 0 && sel->last_row == 2,
-          "first selection must resolve to rows [0,2)");
-  // A second selection on the same document replaces the first.
+  require(sel.has_value() && sel->sampling_axis_id == axis_a_id &&
+              sel->first_row == 0 && sel->last_row == 2,
+          "first selection must be on axis A, rows [0,2)");
+  session.clear_events();
   require(session
               .execute(SetSelectionCommand{
                   .document_id = document_id,
-                  .sampling_axis_id = axis_a_id,
-                  .reference_depth_range = {.top = 1001.0, .bottom = 1001.5},
+                  .sampling_axis_id = axis_b_id,
+                  .reference_depth_range = {.top = 2001.0, .bottom = 2001.5},
               })
               .has_value(),
-          "second selection must be accepted");
+          "axis-B selection must be accepted");
   sel = session.selection(document_id);
   require(sel.has_value(), "the document still has exactly one selection");
-  // range [1001,1001.5] → rows [2,4).
+  require(sel->sampling_axis_id == axis_b_id,
+          "selecting axis B must evict the axis-A selection");
   require(sel->first_row == 2 && sel->last_row == 4,
-          "second selection must replace the first (rows [2,4))");
+          "axis-B range [2001,2001.5] must map to rows [2,4)");
+  require(!session.events().empty() &&
+              session.events().back().kind == ViewEventKind::selection_changed,
+          "cross-axis eviction must publish selection_changed");
 }
 
 // Clear removes the selection and publishes selection_changed.
