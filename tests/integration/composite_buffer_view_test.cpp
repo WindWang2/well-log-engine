@@ -7,11 +7,13 @@
 
 #include <welllog/core/document.hpp>
 
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -156,6 +158,54 @@ void heterogeneous_and_empty_input_rejected() {
   require(homo.length() == 4, "homogeneous float32 composite length 4");
 }
 
+// Issue #602: random access must not walk every preceding segment. A linear
+// scan is O(segments) per lookup; 80k last-index reads of an 80k-segment
+// composite is then ~6e9 visits and cannot finish in a tight budget.
+void many_segment_tail_lookups_are_sublinear() {
+  constexpr std::uint64_t segment_count = 80'000;
+  auto values = std::make_shared<std::vector<double>>(segment_count);
+  for (std::uint64_t i = 0; i < segment_count; ++i) {
+    (*values)[i] = static_cast<double>(i);
+  }
+  const auto *data = values->data();
+  const SharedOwner owner{std::shared_ptr<const std::vector<double>>(values)};
+  std::vector<BufferView> segments;
+  segments.reserve(segment_count);
+  for (std::uint64_t i = 0; i < segment_count; ++i) {
+    segments.push_back(BufferView::from_raw(
+        data + i, 1, sizeof(double), ScalarType::float64, sizeof(double),
+        owner));
+  }
+  const auto composite =
+      CompositeBufferView::from_segments(std::move(segments));
+  require(composite.length() == segment_count,
+          "many-segment composite length must be the segment count");
+  require_near(composite.value_as_double(0).value_or(-1.0), 0.0,
+               "index 0 must read the first segment");
+  require_near(composite.value_as_double(segment_count / 2).value_or(-1.0),
+               static_cast<double>(segment_count / 2),
+               "mid index must land in the corresponding segment");
+  require_near(composite.value_as_double(segment_count - 1).value_or(-1.0),
+               static_cast<double>(segment_count - 1),
+               "last index must read the final segment");
+
+  constexpr int lookups = 20'000;
+  const auto started = std::chrono::steady_clock::now();
+  double sink = 0.0;
+  for (int i = 0; i < lookups; ++i) {
+    sink += composite.value_as_double(segment_count - 1).value_or(0.0);
+  }
+  const auto elapsed_ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - started)
+                              .count();
+  require(sink == static_cast<double>(lookups) * (segment_count - 1),
+          "repeated tail lookups must keep returning the last element");
+  if (elapsed_ms >= 150.0) {
+    fail(std::string{"prefix-sum lookup must stay sub-linear; tail reads took "} +
+         std::to_string(elapsed_ms) + " ms");
+  }
+}
+
 } // namespace
 
 int main() {
@@ -164,6 +214,7 @@ int main() {
   segment_owners_keep_blocks_alive_independently();
   out_of_range_index_yields_nullopt();
   heterogeneous_and_empty_input_rejected();
+  many_segment_tail_lookups_are_sublinear();
   std::cout << "welllog.composite-buffer-view: all cases passed\n";
   return EXIT_SUCCESS;
 }

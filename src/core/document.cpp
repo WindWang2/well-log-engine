@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 
 namespace welllog {
 namespace {
@@ -239,12 +240,14 @@ BufferView::value_as_double(std::uint64_t index) const noexcept {
 
 // --- CompositeBufferView (#196) --------------------------------------------
 // A logical buffer spanning N immutable BufferView segments. Random access
-// walks the segments to locate the one holding element `index`, then delegates
-// to that segment's value_as_double (reusing its proven bounds/capacity
-// checks). No contiguous copy is ever made; each segment's SharedOwner keeps
-// its physical block alive independently.
+// binary-searches a prefix-sum of segment lengths, then delegates to that
+// segment's value_as_double (reusing its proven bounds/capacity checks). No
+// contiguous copy is ever made; each segment's SharedOwner keeps its physical
+// block alive independently.
 struct CompositeBufferView::Impl {
   std::vector<BufferView> segments;
+  // prefix[i] = sum of lengths of segments[0, i). prefix.back() == total.
+  std::vector<std::uint64_t> prefix;
   std::uint64_t total_length{};
   ScalarType scalar_type{ScalarType::float64};
 };
@@ -280,6 +283,11 @@ CompositeBufferView CompositeBufferView::from_segments(
     }
     auto impl = std::make_shared<Impl>();
     impl->segments = std::move(segments);
+    impl->prefix.resize(impl->segments.size() + 1);
+    impl->prefix[0] = 0;
+    for (std::size_t i = 0; i < impl->segments.size(); ++i) {
+      impl->prefix[i + 1] = impl->prefix[i] + impl->segments[i].length();
+    }
     impl->total_length = total;
     impl->scalar_type = type;
     return CompositeBufferView{std::move(impl)};
@@ -302,20 +310,20 @@ std::uint64_t CompositeBufferView::length() const noexcept {
 
 std::optional<double>
 CompositeBufferView::value_as_double(std::uint64_t index) const noexcept {
-  if (impl_ == nullptr || index >= impl_->total_length) {
+  if (impl_ == nullptr || index >= impl_->total_length ||
+      impl_->prefix.size() < 2) {
     return std::nullopt;
   }
-  // Walk segments to find the one holding this element, decrementing the
-  // index by each skipped segment's length.
-  std::uint64_t remaining = index;
-  for (const auto &segment : impl_->segments) {
-    const auto seg_len = segment.length();
-    if (remaining < seg_len) {
-      return segment.value_as_double(remaining);
-    }
-    remaining -= seg_len;
+  // First prefix entry strictly greater than index is the end of the
+  // owning segment; the previous entry is that segment's base.
+  const auto begin = impl_->prefix.begin() + 1;
+  const auto it = std::upper_bound(begin, impl_->prefix.end(), index);
+  if (it == impl_->prefix.end()) {
+    return std::nullopt;
   }
-  return std::nullopt;
+  const auto seg =
+      static_cast<std::size_t>(std::distance(impl_->prefix.begin(), it)) - 1;
+  return impl_->segments[seg].value_as_double(index - impl_->prefix[seg]);
 }
 
 std::span<const BufferView> CompositeBufferView::segments() const noexcept {

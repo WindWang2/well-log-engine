@@ -1,9 +1,13 @@
 #include <welllog/text/harfbuzz_text_engine.hpp>
 
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
+#include <string>
 #include <string_view>
+#include <system_error>
 
 namespace {
 
@@ -214,6 +218,69 @@ void rotated_cjk_shaping_uses_harfbuzz_clusters() {
   require(pen > 4.0, "mixed text must accumulate plausible advances");
 }
 
+// Issue #609: a scan that stops at the 512-face cap must not write the
+// remaining code points into the negative cache. The covering font sits
+// just past the cap; a second shape() must resume and resolve it.
+void capped_system_scan_does_not_poison_negative_cache() {
+  const auto latin = std::filesystem::path{test_font_path};
+  const auto cjk = std::filesystem::path{test_cjk_font_path};
+  require(std::filesystem::exists(latin), "bundled Latin font must exist");
+  require(std::filesystem::exists(cjk), "bundled CJK subset font must exist");
+
+  // Sort before /usr/share/fonts so the first 512 candidates are ours.
+  const auto root = std::filesystem::temp_directory_path() /
+                    "000-wle-font-scan-cap";
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+  require(std::filesystem::create_directories(root, error),
+          "scan-cap fixture directory must be created");
+
+  constexpr int dummy_faces = 512;
+  for (int i = 0; i < dummy_faces; ++i) {
+    char name[16]{};
+    std::snprintf(name, sizeof(name), "%04d.ttf", i);
+    const auto dummy = root / name;
+    std::error_code link_error;
+    std::filesystem::create_hard_link(latin, dummy, link_error);
+    if (link_error) {
+      std::filesystem::create_symlink(latin, dummy, link_error);
+    }
+    require(!link_error, "dummy Latin face must be linked into the scan dir");
+  }
+  const auto covering = root / "0512.otf";
+  {
+    std::error_code link_error;
+    std::filesystem::create_hard_link(cjk, covering, link_error);
+    if (link_error) {
+      std::filesystem::create_symlink(cjk, covering, link_error);
+    }
+    require(!link_error, "covering CJK face must be linked just past the cap");
+  }
+
+  HarfBuzzTextEngine engine;
+  engine.add_system_font_directory(root.string());
+  const TextShapeRequest request{
+      .text = "\xE7\xA0\x82", // 砂, not in the Latin dummy faces
+      .language = "zh-Hans",
+      .direction = TextDirection::left_to_right,
+  };
+  const auto first = engine.shape(request);
+  require(first.has_value(), "first capped scan must still shape");
+  require(code_point_missing(first.value(), 0x7802),
+          "the 512-face cap must stop before the covering CJK font");
+
+  const auto second = engine.shape(request);
+  require(second.has_value(), "second scan must still shape");
+  require(!code_point_missing(second.value(), 0x7802),
+          "a capped scan must not negative-cache the still-searchable code point");
+  require(!second.value().glyphs.empty(), "resolved CJK must produce a glyph");
+  require(engine.font_fingerprint(second.value().glyphs.front().font_index) !=
+              "builtin:font5x7:v1",
+          "the resumed scan must adopt the covering CJK font");
+
+  std::filesystem::remove_all(root, error);
+}
+
 void invalid_input_is_rejected() {
   HarfBuzzTextEngine engine;
   const auto bad_text = engine.shape(TextShapeRequest{
@@ -246,6 +313,7 @@ int main() {
   built_in_fallback_covers_ascii_without_font_files();
   vertical_typesetting_uses_uax50_orientation();
   rotated_cjk_shaping_uses_harfbuzz_clusters();
+  capped_system_scan_does_not_poison_negative_cache();
   invalid_input_is_rejected();
   std::cout << "PASS: Unicode text pipeline\n";
   return EXIT_SUCCESS;

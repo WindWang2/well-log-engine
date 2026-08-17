@@ -8,6 +8,7 @@
 #include <optional>
 #include "png_decode.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -839,6 +840,90 @@ void raster_export_draws_crossover_fill() {
           "the raster export must contain crossover fill pixels");
 }
 
+// Issue #608: interpolate_left_at_depth used to restart a linear scan of the
+// lower samples for every upper sample (O(U×L)). Both arrays are depth-sorted,
+// so a monotonic sweep must stay near-linear. Oscillating upper vs flat lower
+// yields many tiny regions so triangulation does not dominate the budget.
+void dense_heterogeneous_sweep_stays_linear() {
+  constexpr std::size_t upper_count = 80'000;
+  constexpr std::size_t lower_count = 80'000;
+  auto upper_depths = std::make_shared<std::vector<double>>();
+  auto upper_values = std::make_shared<std::vector<double>>();
+  auto lower_depths = std::make_shared<std::vector<double>>();
+  auto lower_values = std::make_shared<std::vector<double>>();
+  upper_depths->reserve(upper_count);
+  upper_values->reserve(upper_count);
+  lower_depths->reserve(lower_count);
+  lower_values->reserve(lower_count);
+  for (std::size_t i = 0; i < upper_count; ++i) {
+    upper_depths->push_back(1000.0 + static_cast<double>(i) * 0.2);
+    // Two samples per band so a region can flush with ≥2 vertices.
+    upper_values->push_back(((i / 2U) % 2U) == 0U ? 80.0 : 20.0);
+  }
+  for (std::size_t i = 0; i < lower_count; ++i) {
+    lower_depths->push_back(1000.0 + static_cast<double>(i) * 0.2);
+    lower_values->push_back(50.0);
+  }
+  const auto bottom = 1000.0 + static_cast<double>(upper_count - 1) * 0.2;
+  WellLogSession session(PerformanceBudgets{
+      .maximum_cpu_derived_bytes = 64ULL * 1024ULL * 1024ULL,
+      .asynchronous_sample_threshold = 1'000'000,
+  });
+  const auto document = heterogeneous_axis_document(
+      upper_depths, upper_values, lower_depths, lower_values);
+  require(session.execute(SetDocumentCommand{document}).has_value(),
+          "dense crossover document must be accepted");
+  auto builder = ScenePresentationBuilder(
+      document_id,
+      ReferenceDepthRange{
+          .domain = DepthDomain::measured_depth,
+          .unit = "m",
+          .top = 1000.0,
+          .bottom = bottom,
+      },
+      Millimetres{100.0}, "font-fixture-v1");
+  builder.add_track(TrackSpec{
+      .id = track_id, .width = Millimetres{40.0}, .z_order = 0, .header = {}});
+  builder.add_scale(TrackScaleSpec{
+      .id = upper_scale_id, .track_id = track_id, .mode = ScaleMode::linear,
+      .minimum = 0.0, .maximum = 100.0,
+      .direction = ScaleDirection::left_to_right, .unit = "API"});
+  builder.add_scale(TrackScaleSpec{
+      .id = lower_scale_id, .track_id = track_id, .mode = ScaleMode::linear,
+      .minimum = 0.0, .maximum = 100.0,
+      .direction = ScaleDirection::left_to_right, .unit = "API"});
+  builder.add_curve_layer(CurveLayerSpec{
+      .id = upper_layer_id, .track_id = track_id, .curve_id = upper2_curve_id,
+      .scale_id = upper_scale_id, .color = RgbaColor{20, 120, 20, 255},
+      .line_width = Millimetres{0.5}, .z_order = 0, .visible = true});
+  builder.add_curve_layer(CurveLayerSpec{
+      .id = lower_layer_id, .track_id = track_id, .curve_id = lower_curve_id,
+      .scale_id = lower_scale_id, .color = RgbaColor{200, 30, 30, 255},
+      .line_width = Millimetres{0.5}, .z_order = 1, .visible = true});
+  builder.add_crossover_fill_layer(CrossoverFillLayerSpec{
+      .id = fill_layer_id, .track_id = track_id, .z_order = 2,
+      .upper_curve_layer_id = upper_layer_id,
+      .lower_curve_layer_id = lower_layer_id,
+      .rule = CrossoverFillRule::upper_minus_lower,
+      .fill_color = RgbaColor{255, 200, 0, 255}, .pattern_id = std::nullopt,
+      .visible = true});
+  const auto started = std::chrono::steady_clock::now();
+  require(session.execute(SetPresentationCommand{builder.build()}).has_value(),
+          "dense crossover presentation must be accepted");
+  const auto scene = session.prepared_scene(document_id);
+  const auto elapsed_ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - started)
+                              .count();
+  require(scene != nullptr, "dense crossover scene must prepare");
+  require(scene->fill_layers().size() == 1, "one fill layer expected");
+  require(scene->fill_layers().front().region_count >= 1'000,
+          "oscillating dense curves must produce many fill regions");
+  if (elapsed_ms >= 1500.0) {
+    fail(std::string{"crossover sweep must stay linear in sample count; took "} +
+         std::to_string(elapsed_ms) + " ms");
+  }
+}
+
 } // namespace
 
 int main() {
@@ -854,6 +939,7 @@ int main() {
   repeated_depth_handles_degenerate_segments();
   interior_null_breaks_the_fill_region();
   pattern_fill_resolves_in_both_backends();
+  dense_heterogeneous_sweep_stays_linear();
   std::cout << "PASS: cross-scale curve crossover fill\n";
   return EXIT_SUCCESS;
 }

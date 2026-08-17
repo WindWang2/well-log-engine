@@ -880,7 +880,7 @@ struct FrameTask {
     std::shared_ptr<const detail::ScenePreparer::ImagePyramidMap>
         image_pyramids,
     ImagePyramidQuery image_query, std::shared_ptr<TextEngine> text_engine,
-    std::mutex *text_engine_mutex) {
+    std::shared_ptr<std::mutex> text_engine_mutex) {
   auto state = std::make_shared<FrameTaskState>();
   auto task = std::make_unique<FrameTask>();
   task->document_id = document_id;
@@ -911,16 +911,26 @@ struct FrameTask {
             };
             {
               // Text engines are single-threaded; serialize shaping across
-              // concurrent frame preparations.
-              const auto text_guard =
-                  text_engine == nullptr
-                      ? std::unique_lock<std::mutex>{}
-                      : std::unique_lock<std::mutex>{*text_engine_mutex};
-              prepared = detail::ScenePreparer::prepare(
-                  *document, presentation, *pyramids, query,
-                  image_pyramids ? *image_pyramids
-                                 : detail::ScenePreparer::ImagePyramidMap{},
-                  image_query, stop_token, text_engine.get());
+              // concurrent frame preparations. The mutex is owned by
+              // shared_ptr so it outlives this job if Impl starts tearing
+              // down the pool (#610).
+              if (stop_token.stop_requested()) {
+                output.cancelled = true;
+              } else {
+                const auto text_guard =
+                    text_engine == nullptr || text_engine_mutex == nullptr
+                        ? std::unique_lock<std::mutex>{}
+                        : std::unique_lock<std::mutex>{*text_engine_mutex};
+                if (stop_token.stop_requested()) {
+                  output.cancelled = true;
+                } else {
+                  prepared = detail::ScenePreparer::prepare(
+                      *document, presentation, *pyramids, query,
+                      image_pyramids ? *image_pyramids
+                                     : detail::ScenePreparer::ImagePyramidMap{},
+                      image_query, stop_token, text_engine.get());
+                }
+              }
             }
             if (stop_token.stop_requested()) {
               output.cancelled = true;
@@ -1131,14 +1141,18 @@ struct WellLogSession::Impl {
   std::unordered_map<EntityId, PendingLodReuse, EntityIdHash>
       pending_lod_reuse;
   std::unordered_map<EntityId, std::uint64_t, EntityIdHash> frame_generations;
+  // Declared before task_executor: members destroy in reverse order, so the
+  // text engine and its mutex outlive pool join (#610). The mutex is also
+  // shared_ptr-owned so in-flight frame lambdas keep it alive.
+  std::shared_ptr<TextEngine> text_engine;
+  std::shared_ptr<std::mutex> text_engine_mutex{
+      std::make_shared<std::mutex>()};
   TaskExecutor task_executor{2};
   std::vector<std::unique_ptr<LodTask>> lod_tasks;
   std::vector<std::unique_ptr<FrameTask>> frame_tasks;
   std::vector<ViewEvent> events;
   std::vector<Diagnostic> diagnostics;
   std::unordered_map<std::uint64_t, Error> diagnostic_errors;
-  std::shared_ptr<TextEngine> text_engine;
-  std::mutex text_engine_mutex;
   ViewEventObserverId next_observer_id{1};
   std::unordered_map<ViewEventObserverId, ViewEventObserver> observers;
 
@@ -1425,14 +1439,14 @@ WellLogSession &WellLogSession::operator=(WellLogSession &&other) noexcept {
 void WellLogSession::set_text_engine(
     std::shared_ptr<TextEngine> text_engine) noexcept {
   try {
-    const auto guard = std::lock_guard{impl_->text_engine_mutex};
+    const auto guard = std::lock_guard{*impl_->text_engine_mutex};
     impl_->text_engine = std::move(text_engine);
   } catch (...) {
   }
 }
 
 std::shared_ptr<TextEngine> WellLogSession::text_engine() const noexcept {
-  const auto guard = std::lock_guard{impl_->text_engine_mutex};
+  const auto guard = std::lock_guard{*impl_->text_engine_mutex};
   return impl_->text_engine;
 }
 
@@ -1953,7 +1967,7 @@ WellLogSession::execute(const SetPresentationCommand &command) {
                 .pixel_height = static_cast<double>(default_frame_pixel_height),
                 .prefetch_viewports = impl_->budgets.prefetch_viewports,
             },
-            impl_->text_engine, &impl_->text_engine_mutex);
+            impl_->text_engine, impl_->text_engine_mutex);
       }
       const auto next_state_version = impl_->state_version + 1;
       std::vector<ViewEvent> pending_events{
@@ -2027,7 +2041,7 @@ WellLogSession::execute(const SetPresentationCommand &command) {
       const auto text_guard =
           impl_->text_engine == nullptr
               ? std::unique_lock<std::mutex>{}
-              : std::unique_lock<std::mutex>{impl_->text_engine_mutex};
+              : std::unique_lock<std::mutex>{*impl_->text_engine_mutex};
       prepared = detail::ScenePreparer::prepare(
           *document->second, command.presentation, impl_->text_engine.get());
     }
@@ -2679,7 +2693,7 @@ WellLogSession::execute(const SetViewportMetricsCommand &command) {
               .pixel_height = static_cast<double>(command.pixel_height),
               .prefetch_viewports = impl_->budgets.prefetch_viewports,
           },
-          impl_->text_engine, &impl_->text_engine_mutex);
+          impl_->text_engine, impl_->text_engine_mutex);
     }
     const auto next_state_version = impl_->state_version + 1;
     const auto revision = document->second->revision();
@@ -4527,7 +4541,7 @@ void WellLogSession::poll_async() noexcept {
                           static_cast<double>(viewport_pixel_height->second),
                       .prefetch_viewports = impl_->budgets.prefetch_viewports,
                   },
-                  impl_->text_engine, &impl_->text_engine_mutex);
+                  impl_->text_engine, impl_->text_engine_mutex);
               impl_->frame_tasks.reserve(impl_->frame_tasks.size() + 1);
               impl_->frame_generations.reserve(impl_->frame_generations.size() +
                                                1);
@@ -4786,7 +4800,7 @@ Result<PreparedScene> WellLogSession::prepare_for_export(
       const auto text_guard =
           impl_->text_engine == nullptr
               ? std::unique_lock<std::mutex>{}
-              : std::unique_lock<std::mutex>{impl_->text_engine_mutex};
+              : std::unique_lock<std::mutex>{*impl_->text_engine_mutex};
       if (lods_ready) {
         // Prepare at the requested export density using the document's LOD
         // pyramids so fixed-page pagination resolves the correct per-page
