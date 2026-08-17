@@ -247,7 +247,7 @@ def test_erosion_surface_dialog_drops_short_rows(qtbot) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_section_canvas_surface_truncation_changes_render(qtbot) -> None:
+def test_section_canvas_surface_truncation_changes_render(qtbot, pixel_bytes) -> None:
     from PySide6.QtGui import QImage
 
     from well_log_workstation.section_canvas import SectionCanvas
@@ -292,7 +292,8 @@ def test_section_canvas_surface_truncation_changes_render(qtbot) -> None:
 
     plain = grab([])
     truncated = grab([_surface("erosion", {0: 1050.0, 1: 1050.0})])
-    assert truncated.constBits() != plain.constBits()
+    assert truncated.size() == plain.size()
+    assert pixel_bytes(truncated) != pixel_bytes(plain)
 
 
 def test_section_canvas_surface_line_renders(qtbot) -> None:

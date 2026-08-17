@@ -95,7 +95,7 @@ Python **3.12** and **3.13** wheel smoke: `welllog.python.qt-embedding` + lifecy
 | `welllog.fuzz-*` | #172 |
 | `welllog.container-security` | #171 |
 | `welllog.async-lrw-stress` | #173 |
-| `welllog.qt-context-lifecycle-stress` | #173 |
+| `welllog.qt-context-lifecycle-api` | #173 / #611 |
 
 ## SBOM / licenses / toolchain
 

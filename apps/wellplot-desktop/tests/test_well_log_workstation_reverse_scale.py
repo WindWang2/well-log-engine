@@ -20,7 +20,7 @@ import math
 import numpy as np
 import pytest
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtGui import QColor, QImage, QPainter
 
 from well_log_workstation.template_model import (
     BoundCurveLayer,
@@ -444,6 +444,111 @@ def test_reverse_with_baseline_fill_paint_smoke(qtbot) -> None:
     canvas.set_presentation(pres)
     img = canvas.grab()
     assert img.width() == 600
+
+
+# -- production paint_curve: reverse puts vmax on the left (#614) ---
+
+
+def _dark_in_x_band(img: QImage, x_lo: int, x_hi: int) -> bool:
+    for y in range(img.height()):
+        for x in range(x_lo, x_hi):
+            if img.pixelColor(x, y).lightness() < 200:
+                return True
+    return False
+
+
+def test_curve_stroke_vertices_reverse_puts_vmax_on_left() -> None:
+    """Production mapping (not a test-local formula) places v=vmax at x0."""
+    from well_log_workstation.curve_paint import curve_stroke_vertices
+
+    depth = np.array([0.0, 1.0, 2.0])
+    vals = np.array([150.0, 150.0, 150.0])
+    reversed_verts, _ = curve_stroke_vertices(
+        depth, vals, None, 0.0, 2.0,
+        vmin=0.0, vmax=150.0, reverse=True,
+        x0=10.0, y0=0.0, tw=180.0, th=100.0,
+    )
+    normal_verts, _ = curve_stroke_vertices(
+        depth, vals, None, 0.0, 2.0,
+        vmin=0.0, vmax=150.0, reverse=False,
+        x0=10.0, y0=0.0, tw=180.0, th=100.0,
+    )
+    assert reversed_verts and normal_verts
+    assert all(abs(x - 10.0) < 1e-6 for x, _y, _i, _s in reversed_verts)
+    assert all(abs(x - 190.0) < 1e-6 for x, _y, _i, _s in normal_verts)
+
+
+def test_paint_curve_reverse_puts_vmax_on_the_left() -> None:
+    """#614: MultiTrackCanvas._paint_curve + paint_curve map v=vmax to x0."""
+    from PySide6.QtWidgets import QApplication
+
+    from well_log_workstation.multi_track_canvas import MultiTrackCanvas
+
+    QApplication.instance() or QApplication([])
+    canvas = MultiTrackCanvas()
+    img = QImage(200, 200, QImage.Format.Format_ARGB32)
+    img.fill(0xFFFFFFFF)
+    painter = QPainter(img)
+    depth = np.array([0.0, 50.0, 100.0])
+    vals = np.array([150.0, 150.0, 150.0])
+    canvas._paint_curve(
+        painter,
+        x0=10,
+        y0=10,
+        tw=180,
+        th=180,
+        depth=depth,
+        d0=0.0,
+        d1=100.0,
+        values=vals,
+        null_mask=np.zeros(3, bool),
+        vmin=0.0,
+        vmax=150.0,
+        mode="linear",
+        color=QColor("#000000"),
+        reverse=True,
+    )
+    painter.end()
+    # reverse=True: v=vmax → t=0 → x=10. Pen 1.5px → columns ~8-13.
+    assert _dark_in_x_band(img, 7, 16), "vmax must paint on the left when reversed"
+    # Un-reversed vmax would sit at x=190; that edge must stay white.
+    assert not _dark_in_x_band(img, 175, 195), (
+        "reversed vmax must not paint the right (normal) edge"
+    )
+
+
+def test_export_paint_curve_reverse_puts_vmax_on_the_left() -> None:
+    """#614: export _paint_curve uses the same reverse mapping."""
+    from PySide6.QtWidgets import QApplication
+
+    from well_log_workstation.export_plot import _paint_curve as export_paint_curve
+
+    QApplication.instance() or QApplication([])
+    img = QImage(200, 200, QImage.Format.Format_ARGB32)
+    img.fill(0xFFFFFFFF)
+    painter = QPainter(img)
+    depth = np.array([0.0, 50.0, 100.0])
+    vals = np.array([150.0, 150.0, 150.0])
+    export_paint_curve(
+        painter,
+        x0=10,
+        y0=10,
+        tw=180,
+        th=180,
+        depth=depth,
+        d0=0.0,
+        d1=100.0,
+        values=vals,
+        null_mask=np.zeros(3, bool),
+        vmin=0.0,
+        vmax=150.0,
+        mode="linear",
+        color=QColor("#000000"),
+        reverse=True,
+    )
+    painter.end()
+    assert _dark_in_x_band(img, 7, 16), "export reverse must put vmax on the left"
+    assert not _dark_in_x_band(img, 175, 195)
 
 
 # -- shell track-props checkbox -------------------------------------

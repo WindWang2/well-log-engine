@@ -200,14 +200,27 @@ jobs:
           MESA_GLSL_VERSION_OVERRIDE: "330"
           QT_OPENGL: software
         run: |
-          # FBO readback / multi-pass render tests need a fuller GL stack than
-          # GHA's software Mesa currently provides (white center pixels). Keep
-          # non-GL Qt tests (table model, unavailable context, selection sync)
-          # and package-consumer on the critical path; GPU pixel tests are
-          # exercised by the dense-curve benchmark smoke and local GPU hosts.
+          # FBO readback / multi-pass pixel goldens fail on GHA software Mesa
+          # (white center pixels). Keep non-GL Qt tests (table model,
+          # unavailable context, selection sync), the non-pixel WellLogView
+          # API/lifecycle subset (welllog.qt-widget-api,
+          # welllog.qt-context-lifecycle-api), and package-consumer. The
+          # dense-curve benchmark drives GlRenderer directly and is NOT a
+          # WellLogView substitute (#611).
+          listed=$(ctest --test-dir build/well-log-engine-qt -N \
+            --exclude-regex 'welllog[.]qt-widget$|welllog[.]qt-context-lifecycle-stress$')
+          echo "$listed"
+          echo "$listed" | grep -q 'welllog.qt-widget-api' || {
+            echo "welllog.qt-widget-api must run on the Mesa Qt job" >&2
+            exit 1
+          }
+          echo "$listed" | grep -q 'welllog.qt-context-lifecycle-api' || {
+            echo "welllog.qt-context-lifecycle-api must run on the Mesa Qt job" >&2
+            exit 1
+          }
           xvfb-run -a ctest --test-dir build/well-log-engine-qt \
             --output-on-failure --parallel 2 \
-            --exclude-regex 'welllog[.]qt-widget$|welllog[.]qt-context-lifecycle-stress'
+            --exclude-regex 'welllog[.]qt-widget$|welllog[.]qt-context-lifecycle-stress$'
 
   python-wheel:
     name: ${{ matrix.os }} / Python ${{ matrix.python-version }} wheel
@@ -270,6 +283,11 @@ jobs:
         env:
           QT_QPA_PLATFORM: minimal
         run: python tests/python/test_qt_embedding.py
+
+      - name: Test Python lifecycle / thread-affinity contracts
+        env:
+          QT_QPA_PLATFORM: minimal
+        run: python tests/python/test_qt_lifecycle_stress.py
 
       # #515/#587 (workbench): the desktop workstation suite is the ONLY
       # end-to-end coverage of the native engine path (WellLogView

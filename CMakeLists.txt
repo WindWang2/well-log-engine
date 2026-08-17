@@ -1912,9 +1912,19 @@ if(WELLLOG_BUILD_TESTS)
             welllog.qt-unavailable
             PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=minimal"
         )
+        # #611 — non-pixel WellLogView API/lifecycle subset. FBO goldens in
+        # welllog.qt-widget stay gated; these slots do not read back pixels.
+        add_test(
+            NAME welllog.qt-widget-api
+            COMMAND
+                welllog_qt_widget_tests
+                asynchronous_failures_keep_their_diagnostic_identity
+                cross_thread_public_mutations_are_queued_to_gui
+        )
         if(UNIX AND NOT APPLE)
             set_tests_properties(
                 welllog.qt-widget
+                welllog.qt-widget-api
                 PROPERTIES ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1"
             )
         endif()
@@ -1938,9 +1948,16 @@ if(WELLLOG_BUILD_TESTS)
             NAME welllog.qt-context-lifecycle-stress
             COMMAND welllog_qt_context_lifecycle_stress_tests
         )
+        add_test(
+            NAME welllog.qt-context-lifecycle-api
+            COMMAND
+                welllog_qt_context_lifecycle_stress_tests
+                create_destroy_churn_keeps_session_without_pixel_readback
+        )
         if(UNIX AND NOT APPLE)
             set_tests_properties(
                 welllog.qt-context-lifecycle-stress
+                welllog.qt-context-lifecycle-api
                 PROPERTIES ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1"
             )
         endif()
@@ -2082,9 +2099,11 @@ if(WELLLOG_BUILD_TESTS)
             set_property(TEST ${_t} APPEND PROPERTY LABELS release-gate)
         endif()
     endforeach()
-    if(TEST welllog.qt-context-lifecycle-stress)
+    # Pixel-golden lifecycle stress is excluded from Mesa CI; label the
+    # non-pixel subset that the Qt job actually executes (#611).
+    if(TEST welllog.qt-context-lifecycle-api)
         set_property(
-            TEST welllog.qt-context-lifecycle-stress
+            TEST welllog.qt-context-lifecycle-api
             APPEND PROPERTY LABELS release-gate
         )
     endif()

@@ -25,6 +25,7 @@ class ContextLifecycleStressTest final : public QObject {
 
 private slots:
   void create_show_hide_destroy_churn();
+  void create_destroy_churn_keeps_session_without_pixel_readback();
   void reparent_and_hide_show_recovers_gpu();
   void multi_view_failure_isolates_current_view();
   void chrome_trace_toggle_during_document_replace();
@@ -163,6 +164,33 @@ void ContextLifecycleStressTest::create_show_hide_destroy_churn() {
     host.close();
   }
   // Session still holds prepared scene after view churn.
+  QVERIFY(fixture.session->prepared_scene(fixture.document_id) != nullptr);
+}
+
+void ContextLifecycleStressTest::
+    create_destroy_churn_keeps_session_without_pixel_readback() {
+  // Mesa llvmpipe FBO readback is white-center on GHA; this slot still
+  // exercises WellLogView create/show/hide/destroy + session lifetime.
+  auto fixture = make_fixture();
+  constexpr int kRounds = 20;
+  for (int i = 0; i < kRounds; ++i) {
+    QWidget host;
+    auto *layout = new QVBoxLayout(&host);
+    auto *view = new WellLogView(fixture.session, &host);
+    view->set_document_id(fixture.document_id);
+    layout->addWidget(view);
+    host.resize(160, 120);
+    host.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&host));
+    QTRY_VERIFY_WITH_TIMEOUT(view->capability_report().initialization_complete,
+                             5000);
+    QVERIFY(view->document_id() == fixture.document_id);
+    view->hide();
+    QTest::qWait(2);
+    view->show();
+    QTest::qWait(2);
+    host.close();
+  }
   QVERIFY(fixture.session->prepared_scene(fixture.document_id) != nullptr);
 }
 

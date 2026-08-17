@@ -123,13 +123,27 @@ def test_make_qbrush_returns_textured_brush() -> None:
     assert tex.width() > 0 and tex.height() > 0
 
 
-def test_different_patterns_yield_different_pixmaps() -> None:
+def test_different_patterns_yield_different_pixmaps(pixel_bytes) -> None:
     pats = load_builtin_patterns()
     b1 = make_qbrush(pats["syt-sandstone"])
     b2 = make_qbrush(pats["syt-mudstone"])
     img1, img2 = b1.texture().toImage(), b2.texture().toImage()
     # Different patterns must rasterize to different pixel data.
-    assert img1.constBits() != img2.constBits()
+    assert img1.size() == img2.size()
+    assert pixel_bytes(img1) != pixel_bytes(img2)
+
+
+def test_pixel_bytes_compares_content_not_constbits_pointers(pixel_bytes) -> None:
+    """#613 canary: helper matches on identical pixels and fails on a fill change."""
+    from PySide6.QtGui import QImage
+
+    a = QImage(8, 8, QImage.Format.Format_ARGB32)
+    b = QImage(8, 8, QImage.Format.Format_ARGB32)
+    a.fill(0xFF112233)
+    b.fill(0xFF112233)
+    assert pixel_bytes(a) == pixel_bytes(b)
+    b.fill(0xFF445566)
+    assert pixel_bytes(a) != pixel_bytes(b)
 
 
 def test_make_qbrush_empty_pattern_falls_back_to_color() -> None:

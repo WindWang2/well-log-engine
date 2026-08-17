@@ -4,8 +4,32 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 # Must be set before QApplication is created.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+
+def qimage_pixel_bytes(image) -> bytes:
+    """Copy ARGB32 pixels so tests compare content, not ``constBits()`` pointers.
+
+    ``QImage.constBits()`` is a live buffer view. Comparing two views with
+    ``!=`` is heap-pointer inequality and is true for any two distinct
+    images (#613). ``bytes(...)`` snapshots the pixels.
+    """
+    from PySide6.QtGui import QImage
+
+    if image is None or image.isNull():
+        return b""
+    converted = image.convertToFormat(QImage.Format.Format_ARGB32)
+    data = bytes(converted.constBits())
+    nbytes = int(converted.sizeInBytes())
+    return data[:nbytes]
+
+
+@pytest.fixture
+def pixel_bytes():
+    return qimage_pixel_bytes
 
 
 # Round-2 review (K-F3): port the monorepo's deferred-delete cleanup so the

@@ -240,6 +240,50 @@ def test_section_canvas_fill_paint_smoke(qtbot) -> None:
     assert img.width() == 600
 
 
+# -- production paint: fill reaches the high-value edge (#614) ------
+
+
+def test_paint_curve_baseline_fill_reaches_right_edge() -> None:
+    """#614: _paint_curve fill (threshold above) must tint the right edge."""
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QApplication
+
+    from well_log_workstation.multi_track_canvas import MultiTrackCanvas
+
+    QApplication.instance() or QApplication([])
+    canvas = MultiTrackCanvas()
+    img = QImage(200, 200, QImage.Format.Format_ARGB32)
+    img.fill(0xFFFFFFFF)
+    painter = QPainter(img)
+    depth = np.array([0.0, 50.0, 100.0])
+    vals = np.array([90.0, 90.0, 90.0])
+    canvas._paint_curve(
+        painter,
+        x0=10,
+        y0=10,
+        tw=180,
+        th=180,
+        depth=depth,
+        d0=0.0,
+        d1=100.0,
+        values=vals,
+        null_mask=np.zeros(3, bool),
+        vmin=0.0,
+        vmax=100.0,
+        mode="linear",
+        color=QColor("#1a6fb5"),
+        fill_threshold=80.0,
+        fill_direction="above",
+        reverse=False,
+    )
+    painter.end()
+    # v=90 → x = 10 + 0.9*180 = 172; fill closes to x=190. Sample mid-fill.
+    sample = img.pixelColor(185, 100)
+    assert sample != QColor("#ffffff"), "baseline fill must tint the right (high-value) edge"
+    # Left of the curve (x≈20) stays the white backdrop.
+    assert img.pixelColor(20, 100) == QColor("#ffffff")
+
+
 # -- shell wiring ----------------------------------------------------
 
 

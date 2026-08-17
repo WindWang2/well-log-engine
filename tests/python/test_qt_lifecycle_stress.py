@@ -12,12 +12,12 @@ import unittest
 import weakref
 
 import numpy as np
-from PySide6.QtCore import QCoreApplication, QEvent, QThread
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 from shiboken6 import Shiboken
 
-from welllog import WellLogView
+from welllog import WellLogThreadError, WellLogView
 
 
 def _app() -> QApplication:
@@ -143,10 +143,11 @@ class QtLifecycleStressTest(unittest.TestCase):
 
         threading.Thread(target=off_thread).start()
         self.assertTrue(done.wait(5.0))
-        # Either raises WellLogThreadError or similar — must not hang/crash.
-        self.assertTrue(
-            len(errors) >= 1 or QThread.currentThread() is not None
-        )
+        # Must reject (not silently accept) an off-GUI-thread submit.
+        # QThread.currentThread() is never None — do not use it as a fallback.
+        self.assertTrue(errors, "off-thread submit_curve must raise")
+        self.assertIsInstance(errors[0], WellLogThreadError)
+        self.assertEqual(getattr(errors[0], "code", ""), "thread_violation")
         view.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
         self.app.processEvents()
