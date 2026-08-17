@@ -122,6 +122,23 @@ class CorrelationCanvas(QWidget):
         t = max(0.0, min(1.0, t))
         return self._d0 + t * (self._d1 - self._d0) / ve if ve > 0 else self._d0
 
+    def _column_layout(self) -> tuple[int, int]:
+        """(col_w, gap) used by BOTH painting and hit testing (#589).
+
+        The depth-ruler strip reserves the left margin, so the usable width
+        is ``w - 16 - RULER_WIDTH``. The hit tests previously omitted the
+        RULER_WIDTH term, drifting picks right of the painted geometry by
+        ``i*RULER_WIDTH/n`` px per column and attributing boundary clicks to
+        the neighbouring well.
+        """
+        n = len(self._columns)
+        gap = self._column_gap
+        w = self.width()
+        col_w = (
+            max(40, (w - 16 - RULER_WIDTH - gap * (n - 1)) // n) if n else 40
+        )
+        return col_w, gap
+
     def _x_well(self, i: int, col_w: int, gap: int) -> float:
         """X-centre (px) of well column ``i``.
 
@@ -289,9 +306,8 @@ class CorrelationCanvas(QWidget):
         if self._d0 is None or self._d1 is None or not self._columns:
             return None
         n = len(self._columns)
-        w, h = self.width(), self.height()
-        gap = self._column_gap
-        col_w = max(40, (w - 16 - gap * (n - 1)) // n) if n else 40
+        h = self.height()
+        col_w, gap = self._column_layout()
         top_band, bottom = 36, h - 24
         if y < top_band or y > bottom or bottom <= top_band:
             return None
@@ -339,9 +355,8 @@ class CorrelationCanvas(QWidget):
         if self._d0 is None or self._d1 is None or not self._links or not self._columns:
             return None
         n = len(self._columns)
-        w, h = self.width(), self.height()
-        gap = self._column_gap
-        col_w = max(40, (w - 16 - gap * (n - 1)) // n) if n else 40
+        h = self.height()
+        col_w, gap = self._column_layout()
         top_band, bottom = 36, h - 24
         if bottom <= top_band:
             return None
@@ -561,7 +576,7 @@ class CorrelationCanvas(QWidget):
         super().paintEvent(event)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
+        h = self.height()
         if not self._columns or self._d0 is None or self._d1 is None:
             p.setPen(QColor("#888"))
             p.drawText(
@@ -573,8 +588,7 @@ class CorrelationCanvas(QWidget):
             return
 
         n = len(self._columns)
-        gap = self._column_gap
-        col_w = max(40, (w - 16 - RULER_WIDTH - gap * (n - 1)) // n) if n else 40
+        col_w, gap = self._column_layout()
         top, bottom = 36, h - 24
         d0, d1 = self._d0, self._d1
 

@@ -108,9 +108,12 @@ def _link_mid_px(canvas) -> tuple[float, float]:
     d0, d1 = canvas._d0, canvas._d1
     top, bottom = 36, canvas.height() - 24
     y = top + ((1001.0 - d0) / (d1 - d0)) * (bottom - top)
-    col_w = max(40, (600 - 16 - 6) // 2)
-    lx = canvas._x_well(0, col_w, 6) + col_w / 2 - 4
-    rx = canvas._x_well(1, col_w, 6) - col_w / 2 + 2
+    # Painted geometry (#589): the shared _column_layout reserves the
+    # depth-ruler strip; the old hardcoded (600-16-6)//2 encoded the
+    # ruler-less drift the fix removed.
+    col_w, gap = canvas._column_layout()
+    lx = canvas._x_well(0, col_w, gap) + col_w / 2 - 4
+    rx = canvas._x_well(1, col_w, gap) - col_w / 2 + 2
     return (lx + rx) / 2, y
 
 

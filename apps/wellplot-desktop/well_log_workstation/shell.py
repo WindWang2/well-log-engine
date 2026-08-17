@@ -3121,34 +3121,37 @@ class WellLogWorkstationWindow(QMainWindow):
         ]
         spacing_m = sum(dists) / len(dists) if dists else 0.0
 
-        offsets: list[float] = []
-        trajectories: list[np.ndarray | None] = []
+        # Single ordered pass (#598): the previous two-pass fill appended
+        # all survey-less wells first and all surveyed wells second, so any
+        # mixed availability reordered offsets/trajectories against
+        # presentations — the canvas then indexed well A's trajectory onto
+        # well B. Trajectories are computed once here; polylines wait for
+        # the max closure (degenerate-spacing fallback) but stay in order.
+        trajs: list = []
         max_closure = 0.0
-        for well_id, pres in zip(plot.well_ids, presentations, strict=False):
+        for pres in presentations:
             stations = surveys.get(pres.well_name) or []
             if not stations:
-                offsets.append(0.0)
-                trajectories.append(None)
+                trajs.append(None)
                 continue
             traj = compute_trajectory(stations)
             closure = float(traj.closure_dist[-1]) if traj.closure_dist.size else 0.0
             max_closure = max(max_closure, closure)
-        # Second pass once the max closure is known (for degenerate spacing).
-        for well_id, pres in zip(plot.well_ids, presentations, strict=False):
-            stations = surveys.get(pres.well_name) or []
-            if not stations:
+            trajs.append(traj)
+
+        offsets: list[float] = []
+        trajectories: list[np.ndarray | None] = []
+        for pres, traj in zip(presentations, trajs, strict=False):
+            if traj is None:
+                offsets.append(0.0)
+                trajectories.append(None)
                 continue
-            traj = compute_trajectory(stations)
             eff_spacing = spacing_m or (max_closure or 1.0)
             pl = section_trajectory_polyline(
                 traj, azimuth_deg, eff_spacing, shift=shifts.get(pres.well_name, 0.0)
             )
             trajectories.append(pl)
             offsets.append(float(pl[-1, 0]) if pl.shape[0] else 0.0)
-        # Pad any well that had no survey (already appended in first pass).
-        while len(offsets) < len(presentations):
-            offsets.append(0.0)
-            trajectories.append(None)
         return offsets, trajectories
 
     def _collect_section_ornaments(

@@ -106,15 +106,31 @@ def build_table_projections(
     document: ImportedWellDocument,
     display_set: set[str] | frozenset[str],
     template: PlotTemplate,
+    *,
+    cancel_flag: list[bool] | None = None,
+    on_progress: Any | None = None,
 ) -> list[TableProjection]:
     """Build projection(s) for the Display Set.
 
     Same sampling axis (shared document depth) → one wide table.
     Curves whose length differs from the depth axis are placed on a **split**
     projection keyed by length (no implicit resample).
+
+    ``cancel_flag`` (single-element ``[False]``; set ``[True]`` to abort) and
+    ``on_progress(done, total)`` are honored at real build milestones (per
+    composed track, per built table): raise ``InterruptedError`` when
+    cancelled. This is the production path — the T6 cancel button must work
+    without any test hook (#597).
     """
+
+    def _checkpoint() -> None:
+        if cancel_flag is not None and cancel_flag and cancel_flag[0]:
+            raise InterruptedError("表格投影构建已取消")
+
     leaves = leaves_from_document(document)
     styled: list[StyledTrackDescriptor] = compose(leaves, display_set, template)
+    total_steps = len(styled) + 2  # tracks + depth/grouping + tables
+    done = 0
     if not styled:
         return [
             TableProjection(
@@ -133,6 +149,10 @@ def build_table_projections(
     groups: dict[int, list[CurveColumn]] = {}
     per_axis_tables: list[TableProjection] = []
     for desc in styled:
+        _checkpoint()
+        done += 1
+        if on_progress is not None:
+            on_progress(done, total_steps)
         curve = document.curve_by_mnemonic(desc.mnemonic)
         if curve is None:
             continue
@@ -177,7 +197,14 @@ def build_table_projections(
         ]
 
     out: list[TableProjection] = list(per_axis_tables)
+    done += 1
+    if on_progress is not None:
+        on_progress(done, total_steps)
     for n, cols in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        _checkpoint()
+        done += 1
+        if on_progress is not None:
+            on_progress(done, total_steps)
         if n == depth.size:
             axis_depth = depth
             axis_id = "md"
@@ -355,7 +382,13 @@ def build_table_projections_guarded(
     hooks: ProjectionBuildHooks | None = None,
     on_progress: Any | None = None,
 ) -> list[TableProjection]:
-    """Like ``build_table_projections`` with cancel/progress/failure hooks (T6)."""
+    """Like ``build_table_projections`` with cancel/progress/failure hooks (T6).
+
+    Cancel and progress are honored by the REAL build milestones
+    (build_table_projections); ``delay_steps`` remains a pure test hook for
+    injecting latency so mid-build cancellation is deterministically
+    reachable in tests — production never sets it (#597).
+    """
     h = hooks if hooks is not None else PROJECTION_BUILD_HOOKS
     if h.force_fail:
         raise RuntimeError("表格投影构建失败（注入/错误）")
@@ -365,4 +398,10 @@ def build_table_projections_guarded(
             raise InterruptedError("表格投影构建已取消")
         if on_progress is not None:
             on_progress(i + 1, steps)
-    return build_table_projections(document, display_set, template)
+    projections = build_table_projections(
+        document, display_set, template,
+        cancel_flag=h.cancel_flag, on_progress=on_progress,
+    )
+    if on_progress is not None:
+        on_progress(steps + 1, steps + 1)
+    return projections
