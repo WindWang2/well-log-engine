@@ -81,18 +81,26 @@ def despike(
         return vals, mask
     half = max(1, int(window) // 2)
     th = max(float(threshold), 0.0)
-    for i in range(n):
-        if mask[i]:
-            continue
-        lo, hi = max(0, i - half), min(n, i + half + 1)
-        nb = vals[lo:hi][~mask[lo:hi]]
-        if nb.size < 3:
-            continue
-        med = float(np.median(nb))
-        mad = float(np.median(np.abs(nb - med)))
-        scale = max(mad, _EPS)
-        if abs(float(vals[i]) - med) > th * scale:
-            vals[i] = med
+    win = 2 * half + 1
+    work = vals.copy()
+    work[mask] = np.nan
+    padded = np.empty(n + 2 * half, dtype=np.float64)
+    padded[:half] = np.nan
+    padded[half : half + n] = work
+    padded[half + n :] = np.nan
+    windows = np.lib.stride_tricks.sliding_window_view(padded, win)
+    valid_count = np.sum(np.isfinite(windows), axis=1)
+    with np.errstate(all="ignore"):
+        med = np.nanmedian(windows, axis=1)
+        mad = np.nanmedian(np.abs(windows - med[:, None]), axis=1)
+    scale = np.maximum(mad, _EPS)
+    replace = (
+        (~mask)
+        & (valid_count >= 3)
+        & np.isfinite(med)
+        & (np.abs(vals - med) > th * scale)
+    )
+    vals[replace] = med[replace]
     return vals, mask
 
 
@@ -132,12 +140,9 @@ def apply_freehand(
     ds = np.array([p[0] for p in pts], dtype=np.float64)
     vs = np.array([p[1] for p in pts], dtype=np.float64)
     d_min, d_max = float(ds[0]), float(ds[-1])
-    for i in range(vals.shape[0]):
-        if mask[i] or not np.isfinite(dep[i]):
-            continue
-        if dep[i] < d_min or dep[i] > d_max:
-            continue
-        vals[i] = float(np.interp(float(dep[i]), ds, vs))
+    sel = (~mask) & np.isfinite(dep) & (dep >= d_min) & (dep <= d_max)
+    if np.any(sel):
+        vals[sel] = np.interp(dep[sel], ds, vs)
     return vals, mask
 
 

@@ -86,6 +86,8 @@ class CorrelationCanvas(QWidget):
         # Vertical exaggeration (FRS §3.x 纵横比例尺解耦): depth-axis display
         # stretch factor; 1.0 = unchanged. Independent of pan/zoom (d0/d1).
         self._vertical_exaggeration: float = 1.0
+        # #590: local-extrema snap cache keyed by (well_id, mnemonic, min_span).
+        self._extrema_cache: dict[tuple[str, str, int], np.ndarray] = {}
 
     def column_gap(self) -> int:
         return self._column_gap
@@ -103,6 +105,7 @@ class CorrelationCanvas(QWidget):
         self._depth_shifts = {
             str(k): float(v) for k, v in (shifts or {}).items()
         }
+        self._extrema_cache.clear()
         self._fit_depth()
         self.update()
 
@@ -229,6 +232,7 @@ class CorrelationCanvas(QWidget):
         links: list[HorizonLink] | None = None,
     ) -> None:
         self._columns = list(presentations)
+        self._extrema_cache.clear()
         if tops_per_column is None:
             self._tops_per_column = [[] for _ in self._columns]
         else:
@@ -426,9 +430,18 @@ class CorrelationCanvas(QWidget):
             if span > 0
             else 0.0
         )
-        from well_log_workstation.curve_extrema import snap_depth_to_extrema
+        from well_log_workstation.curve_extrema import (
+            local_extrema_depths,
+            snap_to_extrema_depths,
+        )
 
-        snapped = snap_depth_to_extrema(dep, vals, nulls, raw, tol=tol)
+        min_span = 2
+        key = (str(well_id), str(getattr(layer, "mnemonic", "") or ""), min_span)
+        ext = self._extrema_cache.get(key)
+        if ext is None:
+            ext = local_extrema_depths(dep, vals, nulls, min_span=min_span)
+            self._extrema_cache[key] = ext
+        snapped = snap_to_extrema_depths(ext, raw, tol=tol)
         return float(snapped) + shift
 
     def _fit_depth(self) -> None:

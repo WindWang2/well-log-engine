@@ -32,34 +32,51 @@ def local_extrema_depths(
     if n < 3:
         return np.empty(0, dtype=np.float64)
 
-    # First difference sign; treat null/non-finite as breaks.
+    valid = (~mask[:n]) & np.isfinite(vals[:n])
+    # First-difference sign; a null/non-finite sample breaks the chain so
+    # the next valid sample has sign 0 (no left neighbour).
     sign = np.zeros(n, dtype=np.int8)
-    prev_valid: float | None = None
-    for i in range(n):
-        if mask[i] or not np.isfinite(vals[i]):
-            prev_valid = None
-            sign[i] = 0
-            continue
-        if prev_valid is not None:
-            diff = float(vals[i]) - prev_valid
-            sign[i] = 1 if diff > 0 else (-1 if diff < 0 else 0)
-        prev_valid = float(vals[i])
+    pair_ok = valid[1:] & valid[:-1]
+    sign[1:] = np.where(pair_ok, np.sign(vals[1:n] - vals[: n - 1]), 0).astype(
+        np.int8
+    )
 
-    out: list[float] = []
-    last_idx = -min_span - 1
-    for i in range(1, n - 1):
-        if mask[i] or not np.isfinite(vals[i]):
-            continue
-        # Sign change across sample i: s(i-1) != 0, s(i+1) != 0, differ.
-        s_prev = int(sign[i])
-        s_next = int(sign[i + 1]) if i + 1 < n else 0
-        if s_prev == 0 or s_next == 0 or s_prev == s_next:
-            continue
-        if i - last_idx < min_span:
-            continue
-        out.append(float(dep[i]))
-        last_idx = i
-    return np.asarray(out, dtype=np.float64)
+    cand = (
+        valid[1:-1]
+        & (sign[1:-1] != 0)
+        & (sign[2:] != 0)
+        & (sign[1:-1] != sign[2:])
+    )
+    idx = np.flatnonzero(cand) + 1
+    span = max(1, int(min_span))
+    if idx.size == 0:
+        return np.empty(0, dtype=np.float64)
+    # Greedy keep-first: collapse extrema closer than min_span samples.
+    kept: list[int] = [int(idx[0])]
+    last = int(idx[0])
+    for raw in idx[1:]:
+        i = int(raw)
+        if i - last >= span:
+            kept.append(i)
+            last = i
+    return dep[np.asarray(kept, dtype=np.intp)].astype(np.float64, copy=False)
+
+
+def snap_to_extrema_depths(
+    extrema: np.ndarray,
+    target_depth: float,
+    *,
+    tol: float,
+) -> float:
+    """Snap ``target_depth`` to a precomputed extrema array within ``tol``."""
+    ext = np.asarray(extrema, dtype=np.float64)
+    if ext.size == 0:
+        return float(target_depth)
+    dd = np.abs(ext - float(target_depth))
+    best_i = int(np.argmin(dd))
+    if float(dd[best_i]) <= float(tol):
+        return float(ext[best_i])
+    return float(target_depth)
 
 
 def snap_depth_to_extrema(
@@ -76,10 +93,4 @@ def snap_depth_to_extrema(
     otherwise the target unchanged.
     """
     ext = local_extrema_depths(depth, values, null_mask)
-    if ext.size == 0:
-        return float(target_depth)
-    dd = np.abs(ext - float(target_depth))
-    best = float(np.min(dd))
-    if best <= float(tol):
-        return float(ext[int(np.argmin(dd))])
-    return float(target_depth)
+    return snap_to_extrema_depths(ext, target_depth, tol=tol)

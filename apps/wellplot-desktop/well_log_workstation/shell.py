@@ -1987,10 +1987,18 @@ class WellLogWorkstationWindow(QMainWindow):
                 self._sync_primary_single_well_surface()
         elif well_id is None:
             self.multi_track_canvas.set_tops(None)
-        # Correlation: auto-refresh tops/links/fill when a correlation plot
-        # is loaded (T10 strategy: automatic on tops commit).
-        if self._correlation_presentations and self._workspace is not None:
-            self.refresh_correlation_from_sources(reason="auto")
+        # Correlation: auto-refresh only when the edited well is a column
+        # (#601 dirty-well gate). Skip when well_id is None / not in the plot.
+        if (
+            self._correlation_presentations
+            and self._workspace is not None
+            and well_id is not None
+        ):
+            self.refresh_correlation_from_sources(
+                reason="auto",
+                dirty_well_id=well_id,
+                dirty_tops=list(tops),
+            )
         self._sync_apply_enabled()
         self._update_status()
 
@@ -4029,7 +4037,13 @@ class WellLogWorkstationWindow(QMainWindow):
             return
         self.statusBar().showMessage("已重做对比布局（连线/井序/间距/拉平）", 3000)
 
-    def refresh_correlation_from_sources(self, *, reason: str = "manual") -> None:
+    def refresh_correlation_from_sources(
+        self,
+        *,
+        reason: str = "manual",
+        dirty_well_id: str | None = None,
+        dirty_tops: list[FormationTop] | None = None,
+    ) -> None:
         """Reload tops for open correlation columns; update links & fill (T10).
 
         **Strategy (documented):**
@@ -4040,11 +4054,38 @@ class WellLogWorkstationWindow(QMainWindow):
 
         Does not re-run auto-match of *new* links; only refreshes depths of
         existing links that still have matching top names, and repaints fills.
+
+        ``dirty_well_id`` (#601): auto path updates only that column (using
+        ``dirty_tops`` when provided) and skips the refresh entirely when the
+        well is not a correlation column.
         """
         if self._workspace is None or not self._correlation_presentations:
             return
+        if reason == "auto" and dirty_well_id is not None:
+            in_plot = any(
+                p.well_document_id == dirty_well_id
+                for p in self._correlation_presentations
+            )
+            if not in_plot:
+                return
         tops_cols: list[list[FormationTop]] = []
-        for pres in self._correlation_presentations:
+        existing = (
+            self.correlation_canvas.tops_per_column()
+            if reason == "auto" and dirty_well_id is not None
+            else None
+        )
+        for i, pres in enumerate(self._correlation_presentations):
+            wid = pres.well_document_id
+            if existing is not None and wid != dirty_well_id and i < len(existing):
+                tops_cols.append(existing[i])
+                continue
+            if (
+                existing is not None
+                and wid == dirty_well_id
+                and dirty_tops is not None
+            ):
+                tops_cols.append(list(dirty_tops))
+                continue
             t, _ = load_tops_for_well(self._workspace, pres.well_document_id)
             tops_cols.append(t)
         self.correlation_canvas.set_tops_per_column(tops_cols)
@@ -4119,7 +4160,22 @@ class WellLogWorkstationWindow(QMainWindow):
             self._prefer_engine_canvas
             and self._active_plot_type == "correlation"
         ):
-            self._sync_primary_correlation_surface()
+            # #601: coalesce engine resubmits on auto tops commits; manual
+            # refresh stays synchronous.
+            if reason == "auto":
+                timer = getattr(self, "_corr_engine_sync_timer", None)
+                if timer is None:
+                    timer = QTimer(self)
+                    timer.setSingleShot(True)
+                    timer.setInterval(0)
+                    timer.timeout.connect(self._sync_primary_correlation_surface)
+                    self._corr_engine_sync_timer = timer
+                timer.start()
+            else:
+                pending = getattr(self, "_corr_engine_sync_timer", None)
+                if pending is not None:
+                    pending.stop()
+                self._sync_primary_correlation_surface()
 
     def _on_refresh_correlation_tops(self) -> None:
         self.refresh_correlation_from_sources(reason="manual")
