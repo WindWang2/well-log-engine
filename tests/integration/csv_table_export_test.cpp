@@ -8,6 +8,8 @@
 #include <welllog/export/table_writers.hpp>
 #include <welllog/table/table_projection.hpp>
 
+#include "../../src/export_table/atomic_write.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -19,6 +21,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #if defined(_WIN32)
@@ -293,6 +296,77 @@ void selection_slice_exports_only_the_selected_rows() {
   require(axis_a->slice(3, 1).row_count() == 0, "inverted slice → 0 rows");
 }
 
+[[nodiscard]] std::filesystem::path sibling_temp(const std::filesystem::path &target) {
+  auto temp = target;
+  temp += ".";
+  temp += std::to_string(static_cast<std::uint64_t>(
+#if defined(_WIN32)
+      ::_getpid()
+#else
+      ::getpid()
+#endif
+      ));
+  temp += ".tmp";
+  return temp;
+}
+
+[[nodiscard]] std::size_t count_tmp_siblings(const std::filesystem::path &dir) {
+  std::size_t n = 0;
+  std::error_code ec;
+  for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
+    if (entry.path().native().find(".tmp") != std::string::npos) {
+      ++n;
+    }
+  }
+  return n;
+}
+
+// #760: write_file_atomic's failure contract (producer abort + I/O error)
+// must leave no sibling temp and must not clobber a pre-existing target.
+void atomic_write_failure_cleans_temp_and_preserves_target() {
+  TempDir dir;
+  const auto target = dir.path / "keep.csv";
+  const std::string original = "PREEXISTING\n";
+  {
+    std::ofstream out(target, std::ios::binary | std::ios::trunc);
+    out << original;
+  }
+  require(std::filesystem::exists(target), "pre-existing target must exist");
+
+  const auto aborted = export_table::write_file_atomic(
+      target, [](std::ostream &out) {
+        out << "PARTIAL-SHOULD-NOT-COMMIT\n";
+        return false;
+      });
+  require(!aborted.has_value(), "producer false must fail the atomic write");
+  require(aborted.error().code == ErrorCode::internal_error,
+          "producer abort maps to internal_error");
+  require(!std::filesystem::exists(sibling_temp(target)),
+          "producer abort must remove the sibling temp");
+  require(count_tmp_siblings(dir.path) == 0, "no leftover *.tmp after abort");
+  require(read_file(target) == original,
+          "failed write must leave the pre-existing target byte-identical");
+
+  const auto ro_dir = dir.path / "ro";
+  std::filesystem::create_directories(ro_dir);
+  const auto ro_target = ro_dir / "denied.csv";
+  std::filesystem::permissions(ro_dir, std::filesystem::perms::owner_read |
+                                           std::filesystem::perms::owner_exec);
+  const auto io_fail = export_table::write_file_atomic(
+      ro_target, [](std::ostream &out) {
+        out << "SHOULD-NOT-LAND\n";
+        return true;
+      });
+  std::filesystem::permissions(ro_dir, std::filesystem::perms::owner_all);
+  require(!io_fail.has_value(), "unwritable directory must fail");
+  require(io_fail.error().code == ErrorCode::internal_error,
+          "I/O failure maps to internal_error");
+  require(!std::filesystem::exists(ro_target),
+          "failed I/O must not create the visible target");
+  require(count_tmp_siblings(ro_dir) == 0,
+          "failed I/O must not leave a sibling temp");
+}
+
 } // namespace
 
 int main() {
@@ -301,6 +375,7 @@ int main() {
   package_writes_directory_and_manifest();
   empty_projection_writes_header_only();
   selection_slice_exports_only_the_selected_rows();
+  atomic_write_failure_cleans_temp_and_preserves_target();
   std::cout << "welllog.csv-table-export: all cases passed\n";
   return EXIT_SUCCESS;
 }

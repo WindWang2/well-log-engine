@@ -599,41 +599,35 @@ void cancel_stops_work_and_cleans_temp() {
   auto fixture = make_curve_fixture();
   const auto path = temp_file("welllog-157-cancel.png");
   std::filesystem::remove(path);
-  auto temp = path;
-  temp += ".";
-  // pid-specific; we just ensure no leftover *.tmp for this stem after cancel.
 
+  // #762: a small 800×8000/8px job can finish before request_cancel is
+  // honoured; the old test then accepted completed/failed and skipped the
+  // cancel assertions. Size the job so a no-op cancel cannot complete
+  // inside the poll budget (20000 tiles), and require cancelled.
   RasterExportRequest req{
       .path = path,
       .format = RasterImageFormat::png,
-      .width_px = 800,
-      .height_px = 8000,
-      .tile_height_px = 8,
+      .width_px = 1600,
+      .height_px = 40000,
+      .tile_height_px = 2,
   };
   auto job = RasterExportJob::start(fixture.scene, fixture.snapshot, req);
   require(job.has_value(), "cancel job must start");
   job.value()->request_cancel();
 
   auto state = RasterExportState::running;
-  for (int i = 0; i < 500 && state == RasterExportState::running; ++i) {
+  for (int i = 0; i < 1000 && state == RasterExportState::running; ++i) {
     state = job.value()->poll();
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  require(state == RasterExportState::cancelled ||
-              state == RasterExportState::failed ||
-              state == RasterExportState::completed,
-          "cancel must reach a terminal state");
-  if (state == RasterExportState::cancelled) {
-    const auto result = job.value()->result();
-    require(!result.has_value() &&
-                result.error().code == ErrorCode::operation_cancelled,
-            "cancelled jobs report operation_cancelled");
-  }
-  // Target should not remain as a partial success without complete.
-  if (state == RasterExportState::cancelled) {
-    require(!std::filesystem::exists(path),
-            "cancelled export must not leave a final target file");
-  }
+  require(state == RasterExportState::cancelled,
+          "request_cancel must yield cancelled, not completed/failed/running");
+  const auto result = job.value()->result();
+  require(!result.has_value() &&
+              result.error().code == ErrorCode::operation_cancelled,
+          "cancelled jobs report operation_cancelled");
+  require(!std::filesystem::exists(path),
+          "cancelled export must not leave a final target file");
   std::filesystem::remove(path);
 }
 

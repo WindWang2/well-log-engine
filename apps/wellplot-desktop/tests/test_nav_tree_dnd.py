@@ -172,7 +172,6 @@ def test_tree_has_context_menu_policy(qtbot, tmp_path: Path) -> None:
         win.workspace_tree.contextMenuPolicy()
         == Qt.ContextMenuPolicy.CustomContextMenu
     )
-    assert isinstance(win.workspace_tree, type(win.workspace_tree))
     from well_log_workstation.nav_tree import NavTreeWidget
 
     assert isinstance(win.workspace_tree, NavTreeWidget)

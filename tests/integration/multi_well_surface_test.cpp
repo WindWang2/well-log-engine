@@ -293,12 +293,22 @@ void multi_well_layout_shared_viewport_and_surface_svg() {
   const auto svg = SvgExporter::write(*surface);
   require(svg.has_value(), "multi-well SVG write succeeds");
   const auto &svg_text = svg.value().text();
-  require(svg_text.find("<svg") != std::string_view::npos &&
-              (svg_text.find("<path") != std::string_view::npos ||
-               svg_text.find("layer-") != std::string_view::npos ||
-               svg_text.find("polyline") != std::string_view::npos ||
-               !surface->curve_points().empty()),
-          "multi-well SVG exports curve content");
+  // #756: the old fourth disjunct (`!curve_points().empty()`) was already
+  // required two lines above, so the assertion collapsed to "has <svg".
+  // Demand the concrete curve-path artefact the exporter emits.
+  require(svg_text.find("<svg") != std::string_view::npos,
+          "multi-well SVG must have a root");
+  std::size_t curve_ids = 0;
+  for (std::size_t pos = 0;
+       (pos = svg_text.find("data-curve-id=", pos)) != std::string_view::npos;
+       pos += 14) {
+    ++curve_ids;
+  }
+  require(curve_ids >= 2,
+          "multi-well SVG must tag each well's curve (data-curve-id=)");
+  require(svg_text.find("<path") != std::string_view::npos &&
+              svg_text.find(" d=\"") != std::string_view::npos,
+          "multi-well SVG must emit path geometry");
   // Unified pick returns well identity.
   const auto left_a = session.well_layout()[0].left.value;
   const auto width_a = session.well_layout()[0].width.value > 0.0

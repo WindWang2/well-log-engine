@@ -89,7 +89,7 @@ def test_shell_default_is_host_multitrack(qtbot, tmp_path: Path, monkeypatch) ->
     assert win.multi_track_canvas.track_count() >= 2
     assert win.primary_surface == "host"
     assert win.single_well_stack.currentIndex() == 0
-    with pytest.raises((EngineUnavailable, Exception)):
+    with pytest.raises(EngineUnavailable):
         win.open_engine_preview()
     assert win.active_presentation is not None
     assert win.primary_surface == "host"

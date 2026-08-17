@@ -8,6 +8,7 @@
 #include <charconv>
 #include <cmath>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <utility>
@@ -1308,41 +1309,39 @@ ManifestCodec::read(std::string_view manifest,
         require_exact_fields(image, {"id", "widthPx", "heightPx", "pixelFormat",
                                      "referenceDepthTop",
                                      "referenceDepthBottom", "dpi", "source"});
-        const auto width_px =
-            static_cast<std::uint32_t>(unsigned_integer(field(image, "widthPx")));
-        const auto height_px = static_cast<std::uint32_t>(
-            unsigned_integer(field(image, "heightPx")));
-        const auto dpi =
-            static_cast<std::uint32_t>(unsigned_integer(field(image, "dpi")));
+        const auto raw_width = unsigned_integer(field(image, "widthPx"));
+        const auto raw_height = unsigned_integer(field(image, "heightPx"));
+        const auto raw_dpi = unsigned_integer(field(image, "dpi"));
         const auto depth_top = number(field(image, "referenceDepthTop"));
         const auto depth_bottom = number(field(image, "referenceDepthBottom"));
-        // ADR 0042 untrusted-input limits.
-        if (width_px == 0 || height_px == 0 ||
-            width_px > manifest_maximum_image_dimension_px ||
-            height_px > manifest_maximum_image_dimension_px) {
+        // ADR 0042 untrusted-input limits. Validate the raw uint64 before
+        // any narrowing so 2^32+N cannot wrap into a legal small value (#749).
+        if (raw_width == 0 || raw_height == 0 ||
+            raw_width > manifest_maximum_image_dimension_px ||
+            raw_height > manifest_maximum_image_dimension_px) {
           return manifest_error(MessageKey::image_dimension_exceeds_limit,
                                 ErrorCode::invalid_image);
         }
-        const auto pixels = static_cast<std::uint64_t>(width_px) *
-                            static_cast<std::uint64_t>(height_px);
+        const auto pixels = raw_width * raw_height;
         if (pixels > manifest_maximum_image_pixels) {
           return manifest_error(MessageKey::image_pixels_exceed_limit,
                                 ErrorCode::invalid_image);
         }
-        if (dpi < manifest_minimum_image_dpi || !std::isfinite(depth_top) ||
-            !std::isfinite(depth_bottom)) {
+        if (raw_dpi < manifest_minimum_image_dpi ||
+            raw_dpi > std::numeric_limits<std::uint32_t>::max() ||
+            !std::isfinite(depth_top) || !std::isfinite(depth_bottom)) {
           return manifest_error(MessageKey::image_metadata_invalid,
                                 ErrorCode::invalid_image);
         }
         builder.add_image_source(ImageSource{
             .id = entity_id(field(image, "id")),
-            .width_px = width_px,
-            .height_px = height_px,
+            .width_px = raw_width,
+            .height_px = raw_height,
             .pixel_format =
                 parse_pixel_format(string(field(image, "pixelFormat"))),
             .reference_depth_top = depth_top,
             .reference_depth_bottom = depth_bottom,
-            .dpi = dpi,
+            .dpi = static_cast<std::uint32_t>(raw_dpi),
             .source = parse_source(field(image, "source")),
         });
       }
