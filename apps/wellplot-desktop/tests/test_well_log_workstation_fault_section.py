@@ -411,7 +411,7 @@ def test_split_quad_by_fault_outside_or_edge_returns_none() -> None:
     assert split_quad_by_fault(degenerate, f, 3) is None
 
 
-def test_section_canvas_fault_split_changes_render(qtbot) -> None:
+def test_section_canvas_fault_split_changes_render(qtbot, pixel_bytes) -> None:
     from PySide6.QtGui import QImage
 
     from well_log_workstation.section_canvas import SectionCanvas
@@ -459,4 +459,5 @@ def test_section_canvas_fault_split_changes_render(qtbot) -> None:
     )
     canvas.set_section([pres, pres], [[], []], faults=[fault], tie_quads=[quad])
     split = grab()
-    assert split.constBits() != plain.constBits()
+    assert split.size() == plain.size()
+    assert pixel_bytes(split) != pixel_bytes(plain)

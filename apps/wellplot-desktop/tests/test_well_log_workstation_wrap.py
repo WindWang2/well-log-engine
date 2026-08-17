@@ -211,6 +211,76 @@ def test_export_wrap_paint_smoke(qtbot) -> None:
     assert canvas.width() == 600
 
 
+# -- production paint_curve: wrap folds over-range inboard (#614) ---
+
+
+def test_curve_stroke_vertices_wrap_folds_overrange_inboard() -> None:
+    """Production wrap mapping (not a test-local formula) folds v>vmax."""
+    from well_log_workstation.curve_paint import curve_stroke_vertices
+
+    depth = np.array([0.0, 1.0, 2.0])
+    vals = np.array([250.0, 250.0, 250.0])  # t=1.667 → wrap 0.667, clip 1.0
+    wrapped, _ = curve_stroke_vertices(
+        depth, vals, None, 0.0, 2.0,
+        vmin=0.0, vmax=150.0, wrap=True,
+        x0=10.0, y0=0.0, tw=180.0, th=100.0,
+    )
+    clipped, _ = curve_stroke_vertices(
+        depth, vals, None, 0.0, 2.0,
+        vmin=0.0, vmax=150.0, wrap=False,
+        x0=10.0, y0=0.0, tw=180.0, th=100.0,
+    )
+    assert wrapped and clipped
+    expected_wrap = 10.0 + ((250.0 - 0.0) / 150.0 - 1.0) * 180.0
+    assert all(abs(x - expected_wrap) < 1e-6 for x, _y, _i, _s in wrapped)
+    assert all(abs(x - 190.0) < 1e-6 for x, _y, _i, _s in clipped)
+
+
+def test_paint_curve_wrap_folds_overrange_off_the_right_edge() -> None:
+    """#614: paint_curve wrap must not pin an over-range value to x0+tw."""
+    from PySide6.QtGui import QColor, QPainter
+    from PySide6.QtWidgets import QApplication
+
+    from well_log_workstation.multi_track_canvas import MultiTrackCanvas
+
+    QApplication.instance() or QApplication([])
+    canvas = MultiTrackCanvas()
+    img = QImage(200, 200, QImage.Format.Format_ARGB32)
+    img.fill(0xFFFFFFFF)
+    painter = QPainter(img)
+    depth = np.array([0.0, 50.0, 100.0])
+    vals = np.array([250.0, 250.0, 250.0])
+    canvas._paint_curve(
+        painter,
+        x0=10,
+        y0=10,
+        tw=180,
+        th=180,
+        depth=depth,
+        d0=0.0,
+        d1=100.0,
+        values=vals,
+        null_mask=np.zeros(3, bool),
+        vmin=0.0,
+        vmax=150.0,
+        mode="linear",
+        color=QColor("#000000"),
+        wrap=True,
+    )
+    painter.end()
+
+    def _dark(x_lo: int, x_hi: int) -> bool:
+        for y in range(img.height()):
+            for x in range(x_lo, x_hi):
+                if img.pixelColor(x, y).lightness() < 200:
+                    return True
+        return False
+
+    # wrap t=2/3 → x = 10 + 120 = 130. Clip would paint x=190.
+    assert _dark(122, 138), "wrapped over-range value must paint inboard"
+    assert not _dark(175, 195), "wrap must not clip over-range values to the right edge"
+
+
 # -- shell track-props checkbox -------------------------------------
 
 

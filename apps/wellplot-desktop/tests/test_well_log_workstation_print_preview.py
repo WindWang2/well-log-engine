@@ -144,14 +144,16 @@ def test_compute_print_preview_windows() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_render_thumbnail_differs_per_page(qtbot) -> None:
+def test_render_thumbnail_differs_per_page(qtbot, pixel_bytes) -> None:
     received: list = []
     fn = _recording_paint_fn(received)
     spec = PageSpec(depth_per_page_mm=5.0)
     pm1 = render_preview_thumbnail(fn, spec, depth_range=(1000.0, 1005.0))
     pm2 = render_preview_thumbnail(fn, spec, depth_range=(1005.0, 1010.0))
     assert received == [(1000.0, 1005.0), (1005.0, 1010.0)]
-    assert pm1.toImage().constBits() != pm2.toImage().constBits()
+    img1, img2 = pm1.toImage(), pm2.toImage()
+    assert img1.size() == img2.size()
+    assert pixel_bytes(img1) != pixel_bytes(img2)
 
 
 # ---------------------------------------------------------------------------

@@ -101,18 +101,20 @@ def test_render_to_smoke(qtbot) -> None:
     assert not img.isNull()
 
 
-def test_render_to_honors_depth_window(qtbot) -> None:
+def test_render_to_honors_depth_window(qtbot, pixel_bytes) -> None:
     canvas = _section_canvas(qtbot)
     rect = QRectF(0, 0, 600, 480)
     # The tie quad spans 1005–1095: an upper window and a lower window must
     # produce visibly different pages (quad painted in different positions).
     upper = _render(canvas, rect, depth_range=(1000.0, 1050.0))
     lower = _render(canvas, rect, depth_range=(1050.0, 1100.0))
-    assert upper.constBits() != lower.constBits()
+    assert upper.size() == lower.size()
+    assert pixel_bytes(upper) != pixel_bytes(lower)
     # A window entirely below the quad (1090–1100 barely touches its edge)
     # renders differently from the full fit — geometry is windowed/clipped.
     deep = _render(canvas, rect, depth_range=(1095.0, 1100.0))
-    assert deep.constBits() != upper.constBits()
+    assert deep.size() == upper.size()
+    assert pixel_bytes(deep) != pixel_bytes(upper)
 
 
 def test_render_to_restores_viewport(qtbot) -> None:

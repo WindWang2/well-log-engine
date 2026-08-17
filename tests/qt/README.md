@@ -2,8 +2,10 @@
 
 | CTest | Binary / command | Notes |
 |-------|------------------|--------|
-| `welllog.qt-widget` | `welllog_qt_widget_tests` | Functional GL embedding |
+| `welllog.qt-widget` | `welllog_qt_widget_tests` | Functional GL embedding (FBO pixel goldens) |
+| `welllog.qt-widget-api` | `welllog_qt_widget_tests` (async + cross-thread slots) | Non-pixel WellLogView API (#611) |
 | `welllog.qt-context-lifecycle-stress` | `welllog_qt_context_lifecycle_stress_tests` | Create/destroy, reparent, multi-view isolation, Trace toggle |
+| `welllog.qt-context-lifecycle-api` | `welllog_qt_context_lifecycle_stress_tests` (no FBO readback) | Session-lifetime churn without pixel goldens (#611) |
 | `welllog.async-lrw-stress` | `welllog_async_lrw_stress_tests` | Headless LRW, session destroy under workers, export cancel, table/SVG without GL |
 | `welllog.python.qt-lifecycle-stress` | `tests/python/test_qt_lifecycle_stress.py` | GC off GUI thread, churn (needs `WELLLOG_BUILD_PYTHON`) |
 
@@ -13,10 +15,11 @@
 ctest -R 'welllog\.(qt-context-lifecycle|async-lrw|python\.qt-lifecycle|qt-widget)' --output-on-failure
 ```
 
-Linux Mesa software path (matching `welllog.qt-widget`):
+Linux Mesa software path. Pixel-golden suites need a fuller GL stack than
+GHA llvmpipe; the non-pixel subset is what CI runs:
 
 ```bash
-LIBGL_ALWAYS_SOFTWARE=1 ctest -R welllog.qt-context-lifecycle-stress --output-on-failure
+LIBGL_ALWAYS_SOFTWARE=1 ctest -R 'welllog[.]qt-(widget-api|context-lifecycle-api|unavailable)' --output-on-failure
 ```
 
 ## Sanitizers (AC8)

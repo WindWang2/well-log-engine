@@ -437,7 +437,7 @@ def test_split_composite_two_faults_and_two_contacts() -> None:
     assert colors == {"#f59e0b", "#dc2626", "#2563eb"}
 
 
-def test_section_canvas_fault_and_contact_composite_render(qtbot) -> None:
+def test_section_canvas_fault_and_contact_composite_render(qtbot, pixel_bytes) -> None:
     from PySide6.QtGui import QImage
 
     from well_log_workstation.section_canvas import SectionCanvas
@@ -489,6 +489,8 @@ def test_section_canvas_fault_and_contact_composite_render(qtbot) -> None:
 
     fault_only = grab([fault], [])
     composite = grab([fault], [contact])
-    assert composite.constBits() != fault_only.constBits()
+    assert composite.size() == fault_only.size()
+    assert pixel_bytes(composite) != pixel_bytes(fault_only)
     contact_only = grab([], [contact])
-    assert composite.constBits() != contact_only.constBits()
+    assert composite.size() == contact_only.size()
+    assert pixel_bytes(composite) != pixel_bytes(contact_only)
