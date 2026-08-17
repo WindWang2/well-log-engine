@@ -17,6 +17,14 @@
 #include <vector>
 
 namespace welllog::detail {
+
+GlAtlasDebugStats &gl_atlas_debug_stats() noexcept {
+  static GlAtlasDebugStats stats{};
+  return stats;
+}
+
+void reset_gl_atlas_debug_stats() noexcept { gl_atlas_debug_stats() = {}; }
+
 namespace {
 
 #if defined(_WIN32)

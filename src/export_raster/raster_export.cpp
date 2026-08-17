@@ -29,6 +29,16 @@
 #endif
 
 namespace welllog {
+
+RasterExportDebugStats &raster_export_debug_stats() noexcept {
+  static RasterExportDebugStats stats{};
+  return stats;
+}
+
+void reset_raster_export_debug_stats() noexcept {
+  raster_export_debug_stats() = {};
+}
+
 namespace {
 
 constexpr double k_mm_per_inch = 25.4;
