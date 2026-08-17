@@ -473,6 +473,78 @@ void mismatched_budget_rejected() {
           "mismatched budget must return the document-structure code");
 }
 
+// #750: a tail of many null-separated micro-runs whose SourceRun overhead
+// exceeds the budget must fail the same way as a full rebuild, not wrap the
+// unsigned remaining-budget check and emit extra levels.
+void extend_tail_rejects_when_run_overhead_exceeds_budget() {
+  std::vector<double> d_short, v_short;
+  for (int i = 0; i < 8; ++i) {
+    d_short.push_back(8000.0 + i);
+    v_short.push_back(static_cast<double>(i));
+  }
+  constexpr int tail_pairs = 64;
+  const auto ext_count = static_cast<std::size_t>(8 + tail_pairs * 2);
+  std::vector<double> d_ext = d_short;
+  std::vector<double> v_ext = v_short;
+  std::vector<std::uint8_t> null_bytes((ext_count + 7) / 8, 0);
+  for (int i = 0; i < tail_pairs; ++i) {
+    const auto null_index = static_cast<std::size_t>(8 + i * 2);
+    const auto valid_index = null_index + 1;
+    d_ext.push_back(8000.0 + static_cast<double>(null_index));
+    v_ext.push_back(0.0);
+    d_ext.push_back(8000.0 + static_cast<double>(valid_index));
+    v_ext.push_back(1.0);
+    null_bytes[null_index / 8] |=
+        static_cast<std::uint8_t>(1u << (null_index % 8));
+  }
+  auto depth_owner = std::make_shared<const std::vector<double>>(d_ext);
+  auto value_owner = std::make_shared<const std::vector<double>>(v_ext);
+  auto null_owner =
+      std::make_shared<const std::vector<std::uint8_t>>(null_bytes);
+  const auto ext_built = Built{
+      .axis = SamplingAxis{
+          .id = axis_id,
+          .coordinates = BufferView::from_vector(depth_owner),
+          .domain = DepthDomain::measured_depth,
+          .unit = "m",
+          .direction = AxisDirection::increasing,
+      },
+      .curve = Curve{
+          .id = curve_id,
+          .mnemonic = "GR",
+          .display_name = "Gamma Ray",
+          .unit = "API",
+          .sampling_axis_id = axis_id,
+          .values = BufferView::from_vector(value_owner),
+          .nulls = NullBitmapView::from_raw(
+              null_owner->data(), ext_count,
+              static_cast<std::uint64_t>(null_owner->size()),
+              SharedOwner{null_owner}),
+      },
+  };
+  const auto short_built = make_built(d_short, v_short);
+  const CurveLodBuildOptions tight{
+      .algorithm = CurveLodAlgorithm::hierarchical,
+      .base_bucket_samples = 4,
+      .maximum_derived_bytes = 256,
+  };
+  const auto previous =
+      CurveLodPyramid::build(short_built.axis, short_built.curve, tight);
+  require(previous.has_value(), "prefix must fit the tiny budget");
+  const auto full =
+      CurveLodPyramid::build(ext_built.axis, ext_built.curve, tight);
+  require(!full.has_value(),
+          "full rebuild must refuse when run overhead exceeds the budget");
+  require(full.error().code == ErrorCode::resource_exhausted,
+          "full rebuild uses resource_exhausted for run-overhead overflow");
+  const auto incremental = CurveLodPyramid::extend_tail(
+      previous.value(), ext_built.axis, ext_built.curve, tight);
+  require(!incremental.has_value(),
+          "extend_tail must refuse the same run-overhead overflow");
+  require(incremental.error().code == ErrorCode::resource_exhausted,
+          "extend_tail must match build's resource_exhausted code");
+}
+
 } // namespace
 
 int main() {
@@ -484,6 +556,7 @@ int main() {
   null_gap_in_tail_matches_full_rebuild();
   extend_tail_matches_full_rebuild_under_tight_budget();
   mismatched_budget_rejected();
+  extend_tail_rejects_when_run_overhead_exceeds_budget();
   std::cout << "welllog.incremental-lod: all cases passed\n";
   return EXIT_SUCCESS;
 }

@@ -76,6 +76,9 @@ pagination_error(ErrorCode code, MessageKey message) noexcept {
 // Printable-area + depth math come from the shared export_layout header
 // (identical to the PDF backend — ADR 0047/0048: one page model).
 using export_layout::compute_page_windows;
+using export_layout::legend_band_height_mm;
+using export_layout::legend_entry_count;
+using export_layout::legend_row_height_mm;
 using export_layout::printable_depth_height_mm;
 using export_layout::printable_height;
 using export_layout::printable_width;
@@ -320,20 +323,10 @@ void append_fixed_page(std::string &output, const PreparedScene &scene,
   // and the scene body's clip rect is shrunk by that height below so the legend
   // never overpaints curve geometry.
   const auto headers = scene.track_header_entries();
-  const auto legend_entries =
-      page.repeat_legend ? headers.size() : std::size_t{0};
-  constexpr double legend_row_height_mm = 4.0;
-  const auto max_legend_entries =
-      printable_page_height > 0.0
-          ? static_cast<std::size_t>(printable_page_height /
-                                     legend_row_height_mm)
-          : std::size_t{0};
-  const auto emitted_legend_entries =
-      std::min(legend_entries, max_legend_entries);
-  const double legend_band_height_mm =
-      static_cast<double>(emitted_legend_entries) * legend_row_height_mm;
+  const auto emitted_legend_entries = legend_entry_count(scene, page);
+  const double reserved_legend_mm = legend_band_height_mm(scene, page);
   const double body_clip_height_mm =
-      std::max(0.0, printable_page_height - legend_band_height_mm);
+      std::max(0.0, printable_page_height - reserved_legend_mm);
   if (page.repeat_legend) {
     double legend_y = content_top + printable_page_height - 3.0;
     for (std::size_t i = 0; i < emitted_legend_entries; ++i) {

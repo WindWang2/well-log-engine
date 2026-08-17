@@ -9,6 +9,7 @@
 // MediaBox; the SVG side substring-counts its data-export-role elements. qpdf /
 // pdfinfo / pdftoppm verify external validity + orientation when available.
 
+#include <welllog/export/export_layout.hpp>
 #include <welllog/export/pagination.hpp>
 #include <welllog/export/pdf_scene.hpp>
 #include <welllog/export/svg.hpp>
@@ -363,6 +364,29 @@ int run(std::string_view command, std::string &captured) {
 #endif
 }
 
+// Grows the sink until inflate finishes. A compressed×8 guess silently
+// dropped high-compression streams from the pure-vector gate (#759).
+std::string inflate_zlib(std::string compressed, std::string_view what) {
+  z_stream zs{};
+  require(inflateInit(&zs) == Z_OK, "inflateInit must succeed");
+  std::string sink(compressed.size() < 2048 ? 4096 : compressed.size() * 2,
+                   '\0');
+  zs.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(compressed.data()));
+  zs.avail_in = static_cast<uInt>(compressed.size());
+  int rc = Z_OK;
+  do {
+    if (zs.total_out >= sink.size()) {
+      sink.resize(sink.size() * 2, '\0');
+    }
+    zs.next_out = reinterpret_cast<Bytef *>(sink.data() + zs.total_out);
+    zs.avail_out = static_cast<uInt>(sink.size() - zs.total_out);
+    rc = inflate(&zs, Z_FINISH);
+  } while (rc == Z_BUF_ERROR || (rc == Z_OK && zs.avail_out == 0));
+  inflateEnd(&zs);
+  require(rc == Z_STREAM_END, what);
+  return std::string(sink.data(), zs.total_out);
+}
+
 // Inflates EVERY FlateDecode content stream in the PDF, in file order.
 std::vector<std::string> inflate_all_streams(std::string_view bytes) {
   std::vector<std::string> out;
@@ -381,22 +405,9 @@ std::vector<std::string> inflate_all_streams(std::string_view bytes) {
     if (endstream == std::string_view::npos) {
       break;
     }
-    const std::string compressed =
-        std::string{bytes.substr(payload_start, endstream - payload_start)};
-    z_stream zs{};
-    if (inflateInit(&zs) != Z_OK) {
-      break;
-    }
-    std::string sink(compressed.size() * 8 + 4096, '\0');
-    zs.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(compressed.data()));
-    zs.avail_in = static_cast<uInt>(compressed.size());
-    zs.next_out = reinterpret_cast<Bytef *>(sink.data());
-    zs.avail_out = static_cast<uInt>(sink.size());
-    const auto rc = inflate(&zs, Z_FINISH);
-    inflateEnd(&zs);
-    if (rc == Z_STREAM_END) {
-      out.emplace_back(sink.data(), zs.total_out);
-    }
+    out.push_back(inflate_zlib(
+        std::string{bytes.substr(payload_start, endstream - payload_start)},
+        "every FlateDecode stream must inflate"));
     search = endstream;
   }
   return out;
@@ -440,77 +451,84 @@ std::size_t count_pdf_pages(std::string_view bytes) {
   return count;
 }
 
-// Parses the 6 operands of the PAGE `cm` operator — the transform with a
-// NEGATIVE d (the y-flip), which uniquely identifies the page cm amid the
-// per-glyph / image-placement / band cms. Uses qpdf --qdf to decompress every
-// stream reliably (the parity PDF's content streams are Flate-compressed); when
-// qpdf is unavailable the check is skipped (the orientation test in
-// pdf_scene_test covers the negative-d invariant independently).
-std::vector<double> parse_page_cm_operands(std::string_view bytes) {
-  bool qpdf_available = std::filesystem::exists("/usr/sbin/qpdf") ||
-                        std::filesystem::exists("/usr/bin/qpdf");
-  if (!qpdf_available) {
-    return {};
-  }
-  const auto in_path = write_temp_pdf(bytes);
-  const auto qdf_path =
-      std::filesystem::temp_directory_path() / "welllog_parity_qdf.pdf";
-  std::string captured;
-  const auto rc = run("qpdf --qdf --object-streams=disable " +
-                          in_path.string() + " " + qdf_path.string() + " 2>&1",
-                      captured);
-  std::error_code ec;
-  if (rc != 0) {
-    std::filesystem::remove(in_path, ec);
-    return {};
-  }
-  std::ifstream qdf(qdf_path, std::ios::binary);
-  const std::string qdf_bytes((std::istreambuf_iterator<char>(qdf)),
-                              std::istreambuf_iterator<char>());
-  std::filesystem::remove(in_path, ec);
-  std::filesystem::remove(qdf_path, ec);
-  // Scan every ` cm` operator line for the one with a negative d (index 3).
-  std::string_view::size_type search = 0;
-  while (true) {
-    const auto cm_pos = qdf_bytes.find(" cm", search);
-    if (cm_pos == std::string::npos) {
-      break;
+// Walks $PATH then the two historical absolute locations.
+std::filesystem::path find_on_path(std::string_view name) {
+  if (const char *path = std::getenv("PATH"); path != nullptr) {
+    std::string_view rest{path};
+    while (!rest.empty()) {
+      const auto colon = rest.find(':');
+      const auto dir = rest.substr(0, colon == std::string_view::npos
+                                          ? rest.size()
+                                          : colon);
+      const auto candidate =
+          std::filesystem::path{std::string{dir}} / std::string{name};
+      if (!dir.empty() && std::filesystem::exists(candidate)) {
+        return candidate;
+      }
+      if (colon == std::string_view::npos) {
+        break;
+      }
+      rest.remove_prefix(colon + 1);
     }
-    const auto line_start = qdf_bytes.rfind('\n', cm_pos);
-    const auto line_end = qdf_bytes.find('\n', cm_pos);
-    const auto line = qdf_bytes.substr(
-        line_start == std::string::npos ? 0 : line_start + 1,
-        (line_end == std::string::npos ? qdf_bytes.size() : line_end) -
-            (line_start == std::string::npos ? 0 : line_start + 1));
+  }
+  for (const char *prefix : {"/usr/bin/", "/usr/sbin/"}) {
+    auto candidate = std::filesystem::path{std::string{prefix} + std::string{name}};
+    if (std::filesystem::exists(candidate)) {
+      return candidate;
+    }
+  }
+  return {};
+}
+
+// Parses the 6 operands of the PAGE `cm` operator — the transform with a
+// NEGATIVE d (the y-flip). The page-body cm is emitted first in each content
+// stream, so the first negative-d cm in the inflated streams is the anchor
+// (#193). Does not depend on qpdf (#761).
+std::vector<double> parse_page_cm_operands(std::string_view bytes) {
+  auto parse_cm_line = [](std::string_view line) -> std::vector<double> {
     std::vector<double> vals;
     std::string token;
-    bool ok = true;
+    auto take = [&](std::string_view t) {
+      try {
+        vals.push_back(std::stod(std::string{t}));
+      } catch (...) {
+        // Skip the `cm` operator token (and any other non-numeric).
+      }
+    };
     for (const char ch : line) {
       if (ch == ' ') {
         if (!token.empty()) {
-          try {
-            vals.push_back(std::stod(token));
-          } catch (...) {
-            ok = false;
-            break;
-          }
+          take(token);
           token.clear();
         }
       } else {
         token.push_back(ch);
       }
     }
-    if (ok && !token.empty()) {
-      try {
-        vals.push_back(std::stod(token));
-      } catch (...) {
-        ok = false;
+    if (!token.empty()) {
+      take(token);
+    }
+    return vals;
+  };
+  for (const auto &stream : inflate_all_streams(bytes)) {
+    std::string_view::size_type search = 0;
+    while (true) {
+      const auto cm_pos = stream.find(" cm", search);
+      if (cm_pos == std::string::npos) {
+        break;
       }
+      const auto line_start = stream.rfind('\n', cm_pos);
+      const auto line_end = stream.find('\n', cm_pos);
+      const auto line = stream.substr(
+          line_start == std::string::npos ? 0 : line_start + 1,
+          (line_end == std::string::npos ? stream.size() : line_end) -
+              (line_start == std::string::npos ? 0 : line_start + 1));
+      const auto vals = parse_cm_line(line);
+      if (vals.size() == 6 && vals[3] < 0.0) {
+        return vals;
+      }
+      search = cm_pos + 3;
     }
-    if (ok && vals.size() == 6 && vals[3] < 0.0) {
-      return vals;
-    }
-    search = cm_pos + 3;
   }
   return {};
 }
@@ -629,11 +647,8 @@ void asymmetric_margins_anchor_body_at_printable_top() {
   const auto doc = build_pdf(*scene, snap);
   const auto bytes = std::string{doc.bytes()};
   const auto cm = parse_page_cm_operands(bytes);
-  if (cm.empty()) {
-    // qpdf unavailable — the negative-d orientation invariant is covered
-    // independently by pdf_scene_test; skip the asymmetric-anchor check here.
-    return;
-  }
+  require(cm.size() == 6,
+          "page cm must be parsed from inflated streams without qpdf (#761)");
   require(cm[3] < 0.0, "page cm d-operand must be negative (y-flip)");
   // f = (page_height_mm − margins.top)·pmm = (535 − 10)·pmm = 525·pmm.
   const auto expected_f =
@@ -1004,18 +1019,22 @@ void external_tools_accept_and_orientation_is_upright() {
   const auto bytes = std::string{doc.bytes()};
   const auto path = write_temp_pdf(bytes);
 
-  bool qpdf_available = std::filesystem::exists("/usr/sbin/qpdf") ||
-                        std::filesystem::exists("/usr/bin/qpdf");
-  if (qpdf_available) {
+  const auto qpdf = find_on_path("qpdf");
+  if (qpdf.empty()) {
+    std::cerr << "SKIP(qpdf): not on PATH; #193 anchor is asserted without it\n";
+  } else {
     std::string captured;
-    const auto rc = run("qpdf --check " + path.string() + " 2>&1", captured);
+    const auto rc = run(qpdf.string() + " --check " + path.string() + " 2>&1",
+                        captured);
     require(rc == 0, "qpdf --check must accept the parity PDF: " + captured);
   }
-  bool pdfinfo_available = std::filesystem::exists("/usr/sbin/pdfinfo") ||
-                           std::filesystem::exists("/usr/bin/pdfinfo");
-  if (pdfinfo_available) {
+  const auto pdfinfo = find_on_path("pdfinfo");
+  if (pdfinfo.empty()) {
+    std::cerr << "SKIP(pdfinfo): not on PATH\n";
+  } else {
     std::string captured;
-    const auto rc = run("pdfinfo " + path.string() + " 2>&1", captured);
+    const auto rc =
+        run(pdfinfo.string() + " " + path.string() + " 2>&1", captured);
     require(rc == 0, "pdfinfo must accept the parity PDF: " + captured);
     require(captured.find("Pages:") != std::string::npos,
             "pdfinfo must report a Pages line");
@@ -1023,15 +1042,17 @@ void external_tools_accept_and_orientation_is_upright() {
   // Render page 1 to PNG to confirm the PDF is renderable + upright (the #187
   // flip bug surfaced only at render time). The existence + non-zero size of
   // the PNG is the gate; a flipped/empty render is a future visual assertion.
-  bool pdftoppm_available = std::filesystem::exists("/usr/sbin/pdftoppm") ||
-                            std::filesystem::exists("/usr/bin/pdftoppm");
-  if (pdftoppm_available) {
+  const auto pdftoppm = find_on_path("pdftoppm");
+  if (pdftoppm.empty()) {
+    std::cerr << "SKIP(pdftoppm): not on PATH\n";
+  } else {
     const auto png =
         std::filesystem::temp_directory_path() / "welllog_parity_page";
     std::string captured;
-    const auto rc = run("pdftoppm -png -r 50 -f 1 -l 1 " + path.string() + " " +
-                            png.string() + " 2>&1",
-                        captured);
+    const auto rc =
+        run(pdftoppm.string() + " -png -r 50 -f 1 -l 1 " + path.string() + " " +
+                png.string() + " 2>&1",
+            captured);
     require(rc == 0, "pdftoppm must render page 1: " + captured);
     std::error_code ec;
     require(std::filesystem::file_size(png.string() + "-1.png", ec) > 0,
@@ -1042,9 +1063,87 @@ void external_tools_accept_and_orientation_is_upright() {
   std::filesystem::remove(path, ec);
 }
 
+// #759: a >8x-compressible stream containing BI\n must be inflated (not
+// dropped) so the pure-vector raster-operator scan can see it.
+void inflate_all_streams_keeps_highly_compressible_raster_operator() {
+  std::string raw(12 * 1024, 'A');
+  raw += "BI\n";
+  raw.append(12 * 1024, 'A');
+  z_stream zs{};
+  require(deflateInit(&zs, Z_BEST_COMPRESSION) == Z_OK, "deflateInit");
+  std::string compressed(raw.size() + 64, '\0');
+  zs.next_in = reinterpret_cast<Bytef *>(raw.data());
+  zs.avail_in = static_cast<uInt>(raw.size());
+  zs.next_out = reinterpret_cast<Bytef *>(compressed.data());
+  zs.avail_out = static_cast<uInt>(compressed.size());
+  require(deflate(&zs, Z_FINISH) == Z_STREAM_END, "deflate");
+  compressed.resize(zs.total_out);
+  deflateEnd(&zs);
+  require(raw.size() > compressed.size() * 8 + 4096,
+          "fixture must expand more than the old 8x+4096 sink");
+  std::string pdf = "%PDF-1.4\n1 0 obj\n<< /Filter /FlateDecode >>\nstream\n";
+  pdf += compressed;
+  pdf += "\nendstream\n";
+  const auto streams = inflate_all_streams(pdf);
+  require(streams.size() == 1, "the synthetic stream must not be dropped");
+  require(streams[0].find("BI\n") != std::string::npos,
+          "high-compression BI\\n must remain visible to the vector gate");
+}
+
+std::vector<double> parse_first_clip_rect(std::string_view stream) {
+  const auto re = stream.find(" re\nW\n");
+  require(re != std::string_view::npos, "page body must clip with re/W");
+  const auto line_start = stream.rfind('\n', re);
+  const auto line = stream.substr(
+      line_start == std::string_view::npos ? 0 : line_start + 1,
+      re - (line_start == std::string_view::npos ? 0 : line_start + 1));
+  std::vector<double> vals;
+  std::string token;
+  for (const char ch : line) {
+    if (ch == ' ') {
+      if (!token.empty()) {
+        vals.push_back(std::stod(token));
+        token.clear();
+      }
+    } else {
+      token.push_back(ch);
+    }
+  }
+  if (!token.empty()) {
+    vals.push_back(std::stod(token));
+  }
+  require(vals.size() == 4, "clip rect must have x y w h");
+  return vals;
+}
+
+// #745: fixed-page PDF body clip must leave the legend band empty, matching SVG.
+void pdf_fixed_page_reserves_legend_band() {
+  auto scene_data = make_parity_scene();
+  const auto scene = prepare(scene_data.document, scene_data.presentation);
+  auto snap = make_snapshot(PaginationMode::fixed, Millimetres{50.0});
+  const auto reserved =
+      welllog::export_layout::legend_band_height_mm(*scene, snap.page);
+  require(reserved > 0.0, "parity fixture must emit a legend band");
+  const auto scale = welllog::export_layout::printable_width(snap.page) /
+                     scene->physical_width().value;
+  const auto full_depth =
+      welllog::export_layout::printable_depth_height_mm(*scene, snap.page);
+  const auto expected_clip = full_depth - reserved / scale;
+
+  const auto pdf_bytes = std::string{build_pdf(*scene, snap).bytes()};
+  const auto streams = inflate_all_streams(pdf_bytes);
+  require(!streams.empty(), "fixed PDF must have a content stream");
+  const auto clip = parse_first_clip_rect(streams.front());
+  require_near(clip[3], expected_clip,
+               "PDF body clip height must exclude the legend band");
+  require(clip[3] + 1.0e-6 < full_depth,
+          "PDF body clip must be shorter than the full printable depth");
+}
+
 } // namespace
 
 int main() {
+  inflate_all_streams_keeps_highly_compressible_raster_operator();
   pdf_page_physical_dimensions_match_request();
   asymmetric_margins_anchor_body_at_printable_top();
   svg_structure_is_correct();
@@ -1054,6 +1153,7 @@ int main() {
   snapshot_metadata_round_trips_in_both();
   reproducibility_byte_and_structural();
   pure_vector_never_rasterizes();
+  pdf_fixed_page_reserves_legend_band();
   external_tools_accept_and_orientation_is_upright();
   std::cout << "welllog.export-parity: all cases passed\n";
   return EXIT_SUCCESS;

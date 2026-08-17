@@ -329,8 +329,13 @@ build_run_levels(const Curve &curve, std::uint32_t run_begin,
         (static_cast<std::uint64_t>(run_end) - run_begin + bucket_samples - 1) /
         bucket_samples;
     const auto level_bytes = sizeof(Level) + bucket_count * sizeof(Summary);
-    if (level_bytes >
-        maximum_derived_bytes - result.derived_bytes - derived_bytes_so_far) {
+    // Compare as used+need > max so an already-over-budget
+    // `derived_bytes_so_far` cannot unsigned-wrap the remaining budget to a
+    // huge value and admit another level (#750).
+    if (derived_bytes_so_far > maximum_derived_bytes ||
+        result.derived_bytes > maximum_derived_bytes - derived_bytes_so_far ||
+        level_bytes > maximum_derived_bytes - derived_bytes_so_far -
+                          result.derived_bytes) {
       result.budget_limited = true;
       break;
     }
@@ -793,7 +798,18 @@ CurveLodPyramid::extend_tail(const CurveLodPyramid &previous,
     }
     // Pre-charge every re-derive run's SourceRun overhead (matches build's
     // `run_count * sizeof(SourceRun)` initial charge over the same run set).
+    // build() refuses when the *total* run count cannot fit in the budget;
+    // apply the same check here so a null-split tail cannot slip past it
+    // and then wrap the unsigned remaining-budget subtraction (#750).
+    const auto total_runs = impl->runs.size() + redesign_runs.size();
+    if (total_runs > options.maximum_derived_bytes / sizeof(SourceRun)) {
+      return lod_error(ErrorCode::resource_exhausted,
+                       MessageKey::resource_exhausted);
+    }
     derived_bytes += redesign_runs.size() * sizeof(SourceRun);
+    if (derived_bytes > options.maximum_derived_bytes) {
+      impl->statistics.budget_limited = true;
+    }
     // Second pass: derive the levels for each re-derive run under the now-full
     // budget envelope, identical to a full rebuild's per-run derivation.
     for (const auto &range : redesign_runs) {

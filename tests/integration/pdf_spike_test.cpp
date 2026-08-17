@@ -170,13 +170,21 @@ void standard_font_searchable_text_is_present() {
       bytes.substr(payload_start, endstream - payload_start);
   z_stream zs{};
   require(inflateInit(&zs) == Z_OK, "inflateInit");
-  std::string sink(compressed.size() * 8 + 256, '\0');
+  std::string sink(compressed.size() < 2048 ? 4096 : compressed.size() * 2,
+                   '\0');
   zs.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(compressed.data()));
   zs.avail_in = static_cast<uInt>(compressed.size());
-  zs.next_out = reinterpret_cast<Bytef *>(sink.data());
-  zs.avail_out = static_cast<uInt>(sink.size());
-  require(inflate(&zs, Z_FINISH) == Z_STREAM_END, "inflate content");
+  int rc = Z_OK;
+  do {
+    if (zs.total_out >= sink.size()) {
+      sink.resize(sink.size() * 2, '\0');
+    }
+    zs.next_out = reinterpret_cast<Bytef *>(sink.data() + zs.total_out);
+    zs.avail_out = static_cast<uInt>(sink.size() - zs.total_out);
+    rc = inflate(&zs, Z_FINISH);
+  } while (rc == Z_BUF_ERROR || (rc == Z_OK && zs.avail_out == 0));
   inflateEnd(&zs);
+  require(rc == Z_STREAM_END, "inflate content");
   const std::string inflated(sink.data(), zs.total_out);
   require(inflated.find("(GR depth 1000.0)") != std::string::npos,
           "inflated operators must contain the Latin text literal");
@@ -218,12 +226,20 @@ void flate_stream_round_trips() {
   // Inflate the real stream.
   z_stream stream{};
   require(inflateInit(&stream) == Z_OK, "inflateInit must succeed");
-  std::string sink(compressed.size() * 8 + 256, '\0');
+  std::string sink(compressed.size() < 2048 ? 4096 : compressed.size() * 2,
+                   '\0');
   stream.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(compressed.data()));
   stream.avail_in = static_cast<uInt>(compressed.size());
-  stream.next_out = reinterpret_cast<Bytef *>(sink.data());
-  stream.avail_out = static_cast<uInt>(sink.size());
-  const auto rc = inflate(&stream, Z_FINISH);
+  int rc = Z_OK;
+  do {
+    if (stream.total_out >= sink.size()) {
+      sink.resize(sink.size() * 2, '\0');
+    }
+    stream.next_out =
+        reinterpret_cast<Bytef *>(sink.data() + stream.total_out);
+    stream.avail_out = static_cast<uInt>(sink.size() - stream.total_out);
+    rc = inflate(&stream, Z_FINISH);
+  } while (rc == Z_BUF_ERROR || (rc == Z_OK && stream.avail_out == 0));
   inflateEnd(&stream);
   require(rc == Z_STREAM_END, "the embedded stream must inflate cleanly");
   const std::string inflated(sink.data(), stream.total_out);

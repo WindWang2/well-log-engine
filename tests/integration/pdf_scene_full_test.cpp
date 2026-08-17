@@ -456,6 +456,31 @@ int run(std::string_view command, std::string &captured) {
 #endif
 }
 
+// Grows the sink until inflate finishes. A compressed×N guess is not enough
+// for glyph-dense page streams (#763).
+std::string inflate_zlib(std::string compressed, std::string_view what) {
+  z_stream stream{};
+  require(inflateInit(&stream) == Z_OK, "inflateInit must succeed");
+  std::string sink(compressed.size() < 2048 ? 4096 : compressed.size() * 2,
+                   '\0');
+  stream.next_in =
+      reinterpret_cast<Bytef *>(const_cast<char *>(compressed.data()));
+  stream.avail_in = static_cast<uInt>(compressed.size());
+  int rc = Z_OK;
+  do {
+    if (stream.total_out >= sink.size()) {
+      sink.resize(sink.size() * 2, '\0');
+    }
+    stream.next_out =
+        reinterpret_cast<Bytef *>(sink.data() + stream.total_out);
+    stream.avail_out = static_cast<uInt>(sink.size() - stream.total_out);
+    rc = inflate(&stream, Z_FINISH);
+  } while (rc == Z_BUF_ERROR || (rc == Z_OK && stream.avail_out == 0));
+  inflateEnd(&stream);
+  require(rc == Z_STREAM_END, what);
+  return std::string(sink.data(), stream.total_out);
+}
+
 // Inflates the FIRST FlateDecode stream after a given needle (used to read a
 // specific object's stream, e.g. the first content stream or a pattern/image
 // stream). Mirrors pdf_scene_test.cpp's inflate helper.
@@ -470,20 +495,9 @@ std::string inflate_first_stream(std::string_view bytes) {
   const auto endstream = bytes.find("\nendstream", payload_start);
   require(endstream != std::string_view::npos,
           "endstream must terminate the stream");
-  const std::string compressed =
-      std::string{bytes.substr(payload_start, endstream - payload_start)};
-  z_stream stream{};
-  require(inflateInit(&stream) == Z_OK, "inflateInit must succeed");
-  std::string sink(compressed.size() * 8 + 4096, '\0');
-  stream.next_in =
-      reinterpret_cast<Bytef *>(const_cast<char *>(compressed.data()));
-  stream.avail_in = static_cast<uInt>(compressed.size());
-  stream.next_out = reinterpret_cast<Bytef *>(sink.data());
-  stream.avail_out = static_cast<uInt>(sink.size());
-  const auto rc = inflate(&stream, Z_FINISH);
-  inflateEnd(&stream);
-  require(rc == Z_STREAM_END, "the embedded stream must inflate cleanly");
-  return std::string(sink.data(), stream.total_out);
+  return inflate_zlib(
+      std::string{bytes.substr(payload_start, endstream - payload_start)},
+      "the embedded stream must inflate cleanly");
 }
 
 // Inflates EVERY FlateDecode stream in the PDF (each page has its own content
@@ -506,33 +520,9 @@ std::vector<std::string> inflate_all_streams(std::string_view bytes) {
     if (endstream == std::string_view::npos) {
       break;
     }
-    const std::string compressed =
-        std::string{bytes.substr(payload_start, endstream - payload_start)};
-    z_stream zs{};
-    if (inflateInit(&zs) != Z_OK) {
-      break;
-    }
-    // Grow the output buffer until inflate finishes — dense page content
-    // (glyphs + patterns) can exceed a fixed compressed×N estimate and was
-    // previously dropped, under-counting pagination band cms.
-    std::string sink(std::max<std::size_t>(compressed.size() * 16, 65536),
-                     '\0');
-    zs.next_in =
-        reinterpret_cast<Bytef *>(const_cast<char *>(compressed.data()));
-    zs.avail_in = static_cast<uInt>(compressed.size());
-    int rc = Z_OK;
-    do {
-      if (zs.total_out >= sink.size()) {
-        sink.resize(sink.size() * 2, '\0');
-      }
-      zs.next_out = reinterpret_cast<Bytef *>(sink.data() + zs.total_out);
-      zs.avail_out = static_cast<uInt>(sink.size() - zs.total_out);
-      rc = inflate(&zs, Z_FINISH);
-    } while (rc == Z_BUF_ERROR || (rc == Z_OK && zs.avail_out == 0));
-    if (rc == Z_STREAM_END) {
-      out.emplace_back(sink.data(), zs.total_out);
-    }
-    inflateEnd(&zs);
+    out.push_back(inflate_zlib(
+        std::string{bytes.substr(payload_start, endstream - payload_start)},
+        "every FlateDecode stream must inflate"));
     search = endstream;
   }
   return out;
@@ -1343,9 +1333,37 @@ void fixed_pdf_pages_omit_out_of_window_curve_points() {
           "first PDF page stream must not contain the last page's curve point");
 }
 
+// #763: a first-stream helper that inflates once into compressed×8 fails
+// on highly compressible payload (repeated glyph-like operators).
+void inflate_first_stream_grows_past_eight_times() {
+  std::string raw;
+  raw.reserve(32 * 1024);
+  for (int i = 0; i < 400; ++i) {
+    raw += "0 0 1 1 2 2 c\n";
+  }
+  z_stream zs{};
+  require(deflateInit(&zs, Z_BEST_COMPRESSION) == Z_OK, "deflateInit");
+  std::string compressed(raw.size() + 64, '\0');
+  zs.next_in = reinterpret_cast<Bytef *>(raw.data());
+  zs.avail_in = static_cast<uInt>(raw.size());
+  zs.next_out = reinterpret_cast<Bytef *>(compressed.data());
+  zs.avail_out = static_cast<uInt>(compressed.size());
+  require(deflate(&zs, Z_FINISH) == Z_STREAM_END, "deflate");
+  compressed.resize(zs.total_out);
+  deflateEnd(&zs);
+  require(raw.size() > compressed.size() * 8 + 4096,
+          "fixture must expand more than the old 8x+4096 sink");
+  std::string pdf = "%PDF-1.4\n1 0 obj\n<< /Filter /FlateDecode >>\nstream\n";
+  pdf += compressed;
+  pdf += "\nendstream\n";
+  const auto inflated = inflate_first_stream(pdf);
+  require(inflated == raw, "inflate_first_stream must recover a >8x stream");
+}
+
 } // namespace
 
 int main() {
+  inflate_first_stream_grows_past_eight_times();
   external_tools_accept_the_full_pdf();
   image_xobject_is_embedded_and_invoked();
   image_dpi_is_recoverable_from_placement();

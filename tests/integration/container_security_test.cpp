@@ -177,9 +177,18 @@ void manifest_rejects_oversize_and_deep() {
   auto deep_result = ManifestCodec::read(deep, resolvers);
   require(!deep_result.has_value(), "deep nest rejected");
 
-  // Oversize string — build a key longer than 1MB would be heavy; use tiny
-  // custom limit by calling scan on a synthetic package. Manifest string limit
-  // is 1MB; create a 2k string that's fine, and ensure no crash on bad input.
+  // Oversize string — the 1 MiB per-string cap (#758). A key one byte over
+  // the documented default must be rejected (no custom-limit hook needed).
+  const auto limit = default_container_security_limits().max_json_string_bytes;
+  require(limit == 1ULL * 1024ULL * 1024ULL, "documented 1MiB string cap");
+  std::string oversize = "{\"";
+  oversize.append(static_cast<std::size_t>(limit + 1), 'A');
+  oversize += "\":1}";
+  auto oversize_result = ManifestCodec::read(oversize, resolvers);
+  require(!oversize_result.has_value(), "string longer than 1MiB rejected");
+  require(oversize_result.error().code == ErrorCode::invalid_manifest,
+          "oversize string uses the manifest error code");
+
   auto empty = ManifestCodec::read("", resolvers);
   require(!empty.has_value(), "empty rejected");
 }

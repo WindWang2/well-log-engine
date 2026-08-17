@@ -94,6 +94,14 @@ void chrome_trace_default_off_and_export() {
   // Privacy: no accidental well-name style fields in exporter itself.
   require(json.find("well_name") == std::string::npos, "no well_name");
   require(json.find("curve_value") == std::string::npos, "no curve_value");
+  require(!json.empty() && json.front() == '{' && json.back() == '}',
+          "export must be a JSON object");
+  require(json.find("\"traceEvents\":[") != std::string::npos,
+          "traceEvents array must be present");
+  rec.clear();
+  const auto cleared = rec.export_json();
+  require(cleared.find("\"traceEvents\":[]") != std::string::npos,
+          "clear() must empty the traceEvents array");
 }
 
 void overlay_text_is_aggregate_only() {

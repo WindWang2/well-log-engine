@@ -49,6 +49,32 @@ printable_depth_height_mm(const PreparedScene &scene,
   return printable_height(page) / scale;
 }
 
+// Legend band reserved at the bottom of the printable area (4 mm per visible
+// curve-header entry, capped so the body clip cannot go negative). Shared by
+// SVG and PDF so both shrink the body by the same amount (#745 / #746).
+inline constexpr double legend_row_height_mm = 4.0;
+
+[[nodiscard]] inline std::size_t
+legend_entry_count(const PreparedScene &scene,
+                   const ExportPageSpec &page) noexcept {
+  if (!page.repeat_legend) {
+    return 0;
+  }
+  const auto printable = printable_height(page);
+  const auto max_entries =
+      printable > 0.0
+          ? static_cast<std::size_t>(printable / legend_row_height_mm)
+          : std::size_t{0};
+  return std::min(scene.track_header_entries().size(), max_entries);
+}
+
+[[nodiscard]] inline double
+legend_band_height_mm(const PreparedScene &scene,
+                      const ExportPageSpec &page) noexcept {
+  return static_cast<double>(legend_entry_count(scene, page)) *
+         legend_row_height_mm;
+}
+
 // Linear scene-y (mm, 0 at the top) → reference depth, using the scene's depth
 // range. Shared so the depth-range footer is identical across backends.
 [[nodiscard]] inline double scene_y_to_depth(const PreparedScene &scene,
