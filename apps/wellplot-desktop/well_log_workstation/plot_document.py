@@ -572,6 +572,7 @@ def load_plot_document(workspace: Workspace, plot_id: str) -> PlotDocument:
             ornaments=doc.ornaments,
             correlation_spacing=doc.correlation_spacing,
             vertical_exaggeration=doc.vertical_exaggeration,
+            track_order=list(doc.track_order),
         )
     # Lazy import: keep this module importable without PySide6 (see save).
     from well_log_workstation.events import restore_plot_revision

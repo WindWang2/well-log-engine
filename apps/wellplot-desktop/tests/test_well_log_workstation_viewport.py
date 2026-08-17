@@ -89,3 +89,31 @@ def test_invalid_depth_range_ignored(qtbot, tmp_path: Path) -> None:
     before = canvas.depth_range()
     canvas.set_depth_range(50.0, 50.0)  # invalid
     assert canvas.depth_range() == before
+
+
+def test_depth_track_labels_use_step_precision(qtbot, tmp_path: Path, monkeypatch):
+    """#739: sub-unit ticks must not all render as the same integer label."""
+    from well_log_workstation import multi_track_canvas as mtc
+
+    ws = create_workspace(tmp_path / "ws-zoom")
+    las = _write_las(tmp_path / "vz.las")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    well_id = win.import_las_path(las)
+    win.apply_template_to_well(well_id, "std-gr-rt-den")
+    canvas = win.multi_track_canvas
+    seen: list[tuple[float, float]] = []
+    orig = mtc.format_depth_label
+
+    def rec(value, step):
+        seen.append((float(value), float(step)))
+        return orig(value, step)
+
+    monkeypatch.setattr(mtc, "format_depth_label", rec)
+    canvas.set_depth_range(1000.0, 1004.0)
+    canvas.resize(400, 600)
+    canvas.grab()
+    assert seen
+    steps = {round(s, 6) for _v, s in seen}
+    assert any(s < 1.0 for s in steps)

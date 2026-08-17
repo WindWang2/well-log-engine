@@ -15,6 +15,7 @@ from PySide6.QtCore import QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
+from well_log_workstation.depth_ruler import format_depth_label
 from well_log_workstation.template_model import HostPresentation, ScaleSpec
 from well_log_workstation.tops_model import FormationTop
 
@@ -1175,6 +1176,7 @@ class MultiTrackCanvas(QWidget):
         # --- ResFormStar-style depth grid across all tracks ---
         depth_ticks = _nice_ticks(d0, d1, target_count=12)
         minor_step = 5.0
+        actual_step = 50.0
         # Draw minor horizontal grid lines first (under everything).
         if depth_ticks:
             actual_step = depth_ticks[1] - depth_ticks[0] if len(depth_ticks) > 1 else 50.0
@@ -1289,7 +1291,7 @@ class MultiTrackCanvas(QWidget):
                     yy = top + int(((dt - d0) / (d1 - d0)) * (bottom - top))
                     p.drawLine(x, yy, x + 10, yy)
                     p.setPen(QColor("#333"))
-                    p.drawText(x + 12, yy + 4, f"{dt:.0f}")
+                    p.drawText(x + 12, yy + 4, format_depth_label(dt, actual_step))
                     p.setPen(QPen(_DEPTH_MAJOR_TICK, 1))
                 # Minor ticks (no labels)
                 p.setPen(QPen(_DEPTH_MINOR_TICK, 0.5))

@@ -270,6 +270,24 @@ def test_binding_first_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
         _BINDING_CACHE.clear()
 
 
+def test_malformed_binding_falls_back_to_mirror(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#742: a short/un-normalizable binding result must not become 0.0 TST."""
+    _BINDING_CACHE.clear()
+
+    class _FakeWellLog(SimpleNamespace):
+        def tst_through_layers(self, start, length, direction, layers):
+            return SimpleNamespace(value=None)  # cannot coerce to float
+
+    monkeypatch.setitem(sys.modules, "welllog", _FakeWellLog())
+    try:
+        result = tst_through_layers(0.0, 100.0, VERTICAL, _two_layers())
+        assert result.value == pytest.approx(50.0 + 50.0 * KS2, abs=1e-9)
+        assert result.value != 0.0
+    finally:
+        monkeypatch.delitem(sys.modules, "welllog", raising=False)
+        _BINDING_CACHE.clear()
+
+
 def test_fallback_without_binding() -> None:
     _BINDING_CACHE.clear()
     # The real welllog module (if importable) has no tst bindings yet, or is

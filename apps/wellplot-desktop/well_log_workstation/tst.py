@@ -662,7 +662,9 @@ def tst_through_layers(
         well_direction, list(layers),
     )
     if bound is not None:
-        return _result_from_bound(bound)
+        normalized = _result_from_bound(bound)
+        if normalized is not None:
+            return normalized
     return _mirror_tst_through_layers(
         start_md, measured_length_m, well_direction, layers
     )
@@ -675,7 +677,9 @@ def tst_along_path(
     """TST along a polyline path (binding-first)."""
     bound = _call_binding("tst_along_path", list(path), list(layers))
     if bound is not None:
-        return _result_from_bound(bound)
+        normalized = _result_from_bound(bound)
+        if normalized is not None:
+            return normalized
     return _mirror_tst_along_path(path, layers)
 
 
@@ -689,12 +693,18 @@ def tst_along_surface_path(
     surfaces (see tst.hpp / the mirror docstring)."""
     bound = _call_binding("tst_along_surface_path", list(path), list(surfaces))
     if bound is not None:
-        return _result_from_bound(bound)
+        normalized = _result_from_bound(bound)
+        if normalized is not None:
+            return normalized
     return _mirror_tst_along_surface_path(path, surfaces)
 
 
-def _result_from_bound(bound: Any) -> TrueStratigraphicThickness:
-    """Normalize a binding result (unknown shape) to the mirror result."""
+def _result_from_bound(bound: Any) -> TrueStratigraphicThickness | None:
+    """Normalize a binding result (unknown shape) to the mirror result.
+
+    Returns None when the bound object cannot be interpreted so callers
+    fall back to the Python mirror instead of a fake 0.0 thickness.
+    """
     if isinstance(bound, TrueStratigraphicThickness):
         return bound
     try:
@@ -710,7 +720,7 @@ def _result_from_bound(bound: Any) -> TrueStratigraphicThickness:
             else (bound[3] if len(bound) > 3 else 0.0)
         )
     except (TypeError, ValueError, IndexError):
-        return _EMPTY_TST
+        return None
     return TrueStratigraphicThickness(
         value=value, measured_interval_m=measured, normal_dot=dot
     )

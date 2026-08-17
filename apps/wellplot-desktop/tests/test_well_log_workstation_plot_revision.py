@@ -208,6 +208,64 @@ def test_id_mismatch_branch_preserves_revision(tmp_path: Path) -> None:
     assert loaded.revision == 5
 
 
+def test_id_mismatch_branch_preserves_track_order(tmp_path: Path) -> None:
+    """#737: rebuild-on-id-mismatch must keep persisted track_order."""
+    from well_log_workstation.plot_document import PLOT_SCHEMA_VERSION, load_plot_document
+    from well_log_workstation.workspace import add_plot, create_workspace
+
+    ws = create_workspace(tmp_path / "ws-order")
+    file_id = "file-id"
+    catalog_id = "cat-id"
+    rel = f"plots/{file_id}.json"
+    (ws.root / "plots").mkdir(exist_ok=True)
+    (ws.root / rel).write_text(
+        json.dumps(
+            {
+                "schemaVersion": PLOT_SCHEMA_VERSION,
+                "id": file_id,
+                "name": "Renamed on disk",
+                "type": "single_well",
+                "well_ids": ["w-a"],
+                "template_id": "t",
+                "track_order": ["gr", "rt", "depth"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    add_plot(ws, name="Cat", plot_type="single_well", path=rel, plot_id=catalog_id)
+    loaded = load_plot_document(ws, catalog_id)
+    assert loaded.track_order == ["gr", "rt", "depth"]
+
+
+def test_save_layout_warns_when_document_unreadable(qtbot, monkeypatch) -> None:
+    """#730: 保存布局 must not silently no-op if load_plot_document raises."""
+    from types import SimpleNamespace
+
+    from PySide6.QtWidgets import QMessageBox
+
+    from well_log_workstation.composite_view import CompositeView
+
+    view = CompositeView()
+    qtbot.addWidget(view)
+    view._workspace = object()
+    view._active_plot_id = "missing"
+    view._layout_window = SimpleNamespace(panels=lambda: [], free_graphics=lambda: [])
+    seen: list[str] = []
+    monkeypatch.setattr(
+        "well_log_workstation.plot_document.load_plot_document",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("corrupt json")),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *args, **kwargs: seen.append(str(args)),
+    )
+    view.save_layout()
+    assert seen
+    assert "corrupt json" in seen[0] or "无法读取" in seen[0]
+
+
 def test_to_json_always_writes_revision_field() -> None:
     """Pure _from_json/_to_json round-trip; no events/PySide6 import.
 
