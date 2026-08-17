@@ -19,8 +19,9 @@ _PARENT_ONLY_TOPLEVEL = {"paleo_workbench", "geoviz"}
 
 
 def _imported_toplevel_modules(tree: ast.Module) -> set[str]:
+    """Only module-level imports break collection. Nested try/import is OK."""
     names: set[str] = set()
-    for node in ast.walk(tree):
+    for node in tree.body:
         if isinstance(node, ast.Import):
             names.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
