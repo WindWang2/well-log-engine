@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from PySide6.QtCore import Qt
+
 from well_log_workstation.curve_edit import CurveEdit
 
 class CurveEditDialog(QDialog):
@@ -104,18 +106,24 @@ class CurveEditDialog(QDialog):
         combo.setObjectName("CurveEditMethodCombo")
         combo.addItem("去毛刺", "despike")
         combo.addItem("基线平移", "baseline")
+        combo.addItem("手绘", "freehand")
         idx = combo.findData(edit.method)
         combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.table.setCellWidget(r, 1, combo)
 
         mnemonic_item = QTableWidgetItem(edit.mnemonic)
+        # The original edit is kept on the row so freehand points survive an
+        # OK round-trip unchanged (#588).
+        mnemonic_item.setData(Qt.ItemDataRole.UserRole, edit)
         self.table.setItem(r, 0, mnemonic_item)
-        # Param 1: despike → window (odd); baseline → shift.
+        # Param 1: despike → window (odd); baseline → shift; freehand → none.
         p1 = QTableWidgetItem(
-            f"{edit.window}" if edit.method == "despike" else f"{edit.shift:g}"
+            f"{edit.window}"
+            if edit.method == "despike"
+            else (f"{edit.shift:g}" if edit.method == "baseline" else "")
         )
         self.table.setItem(r, 2, p1)
-        # Param 2: despike → threshold; baseline → unused.
+        # Param 2: despike → threshold; baseline/freehand → unused.
         p2 = QTableWidgetItem(
             f"{edit.threshold:g}" if edit.method == "despike" else ""
         )
@@ -131,7 +139,7 @@ class CurveEditDialog(QDialog):
         p1 = self.table.item(row, 2)
         p2 = self.table.item(row, 3)
         if p1 is not None:
-            p1.setText("5" if method == "despike" else "0")
+            p1.setText("5" if method == "despike" else ("0" if method == "baseline" else ""))
         if p2 is not None:
             p2.setText("3" if method == "despike" else "")
 
@@ -166,6 +174,10 @@ class CurveEditDialog(QDialog):
                 )
             except ValueError:
                 threshold = float("nan")
+            if method == "freehand":
+                # Freehand edits carry their points on the original edit and
+                # need no numeric parameters (#588).
+                continue
             if method == "despike":
                 if window < 3 or not math.isfinite(threshold) or threshold <= 0:
                     QMessageBox.warning(
@@ -195,7 +207,43 @@ class CurveEditDialog(QDialog):
             if not mnemonic:
                 continue
             try:
-                if method == "despike":
+                if method == "freehand":
+                    # Preserve the original freehand definition verbatim
+                    # (points included); only the mnemonic may have changed.
+                    # A row that was switched TO freehand has no stored
+                    # points and yields a no-op freehand edit (#588).
+                    original = (
+                        mn.data(Qt.ItemDataRole.UserRole)
+                        if mn is not None
+                        else None
+                    )
+                    out.append(
+                        CurveEdit(
+                            mnemonic=mnemonic,
+                            method="freehand",
+                            window=(
+                                getattr(original, "window", 5)
+                                if original is not None
+                                else 5
+                            ),
+                            threshold=(
+                                getattr(original, "threshold", 3.0)
+                                if original is not None
+                                else 3.0
+                            ),
+                            shift=(
+                                getattr(original, "shift", 0.0)
+                                if original is not None
+                                else 0.0
+                            ),
+                            points=(
+                                tuple(getattr(original, "points", ()) or ())
+                                if original is not None
+                                else ()
+                            ),
+                        )
+                    )
+                elif method == "despike":
                     window = (
                         int(p1.text())
                         if p1 is not None and p1.text().strip()

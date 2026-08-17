@@ -353,6 +353,24 @@ class CoreDialog(QDialog):
     # ------------------------------------------------------------------
     def _on_accept(self) -> None:
         self._flush_samples()
+        # The samples table must not silently drop rows: any row with data
+        # needs a parseable depth, or the sample would vanish on save (#592).
+        for r in range(self.samples.rowCount()):
+            has_content = any(
+                item is not None and item.text().strip()
+                for col in range(S_VERSION + 1)
+                for item in (self.samples.item(r, col),)
+            )
+            if not has_content:
+                continue
+            depth = self._sample_text(r, S_DEPTH)
+            try:
+                float(depth)
+            except (TypeError, ValueError):
+                QMessageBox.warning(
+                    self, "岩心样点无效", f"第 {r + 1} 行：深度必须是数字。"
+                )
+                return
         for r in range(self.runs.rowCount()):
             top = self._run_text(r, R_TOP)
             bottom = self._run_text(r, R_BOTTOM)

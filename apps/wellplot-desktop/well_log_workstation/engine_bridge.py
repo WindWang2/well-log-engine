@@ -247,8 +247,9 @@ def primary_curve_from_presentation(
         nulls = np.asarray(layer.null_mask, dtype=bool)
         if nulls.size == vals.size:
             vals[nulls] = np.nan
-        # Engine may not accept NaN — replace with 0 for display path only
-        vals = np.nan_to_num(vals, nan=0.0)
+        # The C++ bridge accepts NaN and breaks polylines at non-finite
+        # samples (valid_sample checks isfinite); substituting 0.0 fabricated
+        # fake zero segments that were also baked into exports (#586).
         values = _readonly_f64(vals)
         n = min(depth.size, values.size)
         if n < 2:
@@ -268,7 +269,6 @@ def primary_curve_from_document(
     nulls = np.asarray(curve.null_mask, dtype=bool)
     if nulls.size == vals.size:
         vals[nulls] = np.nan
-    vals = np.nan_to_num(vals, nan=0.0)
     values = _readonly_f64(vals)
     n = min(depth.size, values.size)
     if n < 2:
@@ -408,7 +408,7 @@ def presentation_to_multi_track_payload(
     # "depth" in the curve entry; shared-axis layers keep the historic
     # truncate-to-shared-depth behaviour.
     curves: list[dict[str, Any]] = []
-    curve_ids: dict[str, str] = {}  # mnemonic upper -> curve_id
+    curve_ids: dict[str, str] = {}  # layer identity -> curve_id (#585)
     n = depth.size
 
     for track in presentation.tracks:
@@ -417,14 +417,17 @@ def presentation_to_multi_track_payload(
         if track.role != "curve":
             continue
         for layer in track.layers:
-            key = layer.mnemonic.upper()
+            # Identity = mnemonic + version (document invariant). The plain
+            # mnemonic collapses edited-* correction tracks and multi-rate
+            # resample leaves onto the first curve; layers without an explicit
+            # identity keep the historic mnemonic-only behaviour (#585).
+            key = layer.identity or layer.mnemonic.upper()
             if key in curve_ids:
                 continue
             vals = np.asarray(layer.values, dtype=np.float64).copy()
             nulls = np.asarray(layer.null_mask, dtype=bool)
             if nulls.size == vals.size:
                 vals[nulls] = np.nan
-            vals = np.nan_to_num(vals, nan=0.0)
             values = _readonly_f64(vals)
             cid = str(uuid.uuid4())
             layer_depth = getattr(layer, "depth", None)
@@ -473,7 +476,7 @@ def presentation_to_multi_track_payload(
             continue
         layers_out: list[dict[str, Any]] = []
         for layer in track.layers:
-            cid = curve_ids.get(layer.mnemonic.upper())
+            cid = curve_ids.get(layer.identity or layer.mnemonic.upper())
             if not cid:
                 continue
             layers_out.append({"curve_id": cid, "color": layer.color or "#1972b8"})

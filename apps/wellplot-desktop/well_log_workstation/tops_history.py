@@ -8,23 +8,14 @@ Desktop first-ship command surface for tops edits (add / remove / move).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclasses_replace
 
 from well_log_workstation.tops_model import FormationTop
 
 
 def snapshot_tops(tops: list[FormationTop]) -> list[FormationTop]:
     """Deep-ish copy of tops for stack entries (FormationTop is frozen)."""
-    return [
-        FormationTop(
-            name=t.name,
-            depth=float(t.depth),
-            unit=t.unit,
-            color=t.color,
-            id=t.id,
-        )
-        for t in tops
-    ]
+    return [dataclasses_replace(t) for t in tops]
 
 
 @dataclass

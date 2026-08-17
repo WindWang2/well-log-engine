@@ -593,3 +593,108 @@ def test_tvdss_engine_submission_accepts_decreasing_transform(
     report = win.open_engine_correlation_preview()
     assert report.get("render_prepared") is True
     assert int(report.get("well_count", 0)) == 2
+
+
+def _write_las_with_null(path: Path, well: str = "ENG-2") -> Path:
+    """LAS whose GR curve has a NULL (-999.25) sample at 1002 m."""
+    path.write_text(
+        f"""~VERSION INFORMATION
+VERS. 2.0
+WRAP. NO
+~WELL INFORMATION
+STRT.M 1000.0
+STOP.M 1003.0
+STEP.M 1.0
+NULL. -999.25
+WELL. {well}
+~CURVE INFORMATION
+DEPT.M
+GR.GAPI
+RT.OHMM
+~ASCII
+1000 10 1
+1001 20 2
+1002 -999.25 3
+1003 40 4
+""",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_primary_curve_preserves_nulls_as_nan(qtbot, tmp_path: Path, monkeypatch) -> None:
+    """#586: null samples must reach the engine as NaN, not fabricated 0.0."""
+    monkeypatch.setenv("WLWS_DISABLE_ENGINE", "1")
+    reset_engine_capability_cache()
+    ws = create_workspace(tmp_path / "ws-null")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    well_id = win.import_las_path(_write_las_with_null(tmp_path / "pnull.las"))
+    pres = win.apply_template_to_well(well_id, "std-gr-rt-den")
+    primary = primary_curve_from_presentation(pres)
+    assert primary is not None
+    depth, values, mnemonic, unit = primary
+    assert mnemonic == "GR"
+    # The null sample at 1002 m must be NaN — never 0.0 (which would draw a
+    # fake zero segment and bake into exports).
+    idx = int(np.argmin(np.abs(depth - 1002.0)))
+    assert np.isnan(values[idx])
+    assert np.any(np.isnan(values))
+
+
+def test_multi_track_payload_keeps_distinct_curve_identities(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    """#585: layers sharing a mnemonic but with distinct identities (edited-*
+    correction tracks, multi-rate resample leaves) must each get their own
+    curve entry instead of collapsing onto the first curve_id."""
+    monkeypatch.setenv("WLWS_DISABLE_ENGINE", "1")
+    reset_engine_capability_cache()
+    ws = create_workspace(tmp_path / "ws-id")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    well_id = win.import_las_path(_write_las(tmp_path / "pid.las"))
+    pres = win.apply_template_to_well(well_id, "std-gr-rt-den")
+
+    from well_log_workstation.template_model import BoundCurveLayer, BoundTrack, ScaleSpec
+
+    curve_track = next(
+        t for t in pres.tracks if t.role == "curve" and t.layers
+    )
+    original = curve_track.layers[0]
+    pres.tracks.append(
+        BoundTrack(
+            id="edited-GR",
+            role="curve",
+            title="GR 校正",
+            width_fraction=0.25,
+            scale=ScaleSpec(mode="linear", min=0.0, max=100.0, unit=original.unit),
+            layers=[
+                BoundCurveLayer(
+                    mnemonic=original.mnemonic,
+                    color="#10b981",
+                    unit=original.unit,
+                    values=np.asarray(original.values) * 2.0,
+                    null_mask=np.asarray(original.null_mask),
+                    depth=original.depth,
+                    identity="edited:GR",
+                )
+            ],
+        )
+    )
+    payload = presentation_to_multi_track_payload(pres, tops=[])
+    gr_curves = [c for c in payload["curves"] if c["mnemonic"] == "GR"]
+    assert len(gr_curves) == 2, (
+        "the edited track must not collapse onto the original GR curve"
+    )
+    # Both tracks resolve to their own curve_id.
+    ids = {c["curve_id"] for c in gr_curves}
+    assert len(ids) == 2
+    layer_ids = {
+        layer["curve_id"]
+        for track in payload["tracks"]
+        for layer in track["layers"]
+    }
+    assert ids.issubset(layer_ids)

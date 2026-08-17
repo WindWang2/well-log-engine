@@ -488,6 +488,7 @@ def presentation_from_display_set(
                         values=curve.values,
                         null_mask=curve.null_mask,
                         depth=curve.depth,
+                        identity=desc.leaf_id,
                     )
                 ],
             )
