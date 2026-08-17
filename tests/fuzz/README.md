@@ -5,7 +5,7 @@ without requiring libFuzzer at CI time:
 
 | Target | CTest name | Seeds |
 |--------|------------|--------|
-| DLIS / LIS / Format716 | `welllog.fuzz-binary-sources` | `corpus/binary/` |
+| DLIS / LIS / Format716 | `welllog.fuzz-binary-sources` | `corpus/binary/` (includes minimal valid DLIS SUL, LIS logical-record, and 716 disk seeds so `inspect()` can succeed) |
 | Manifest / XML / ZIP / Image / CustomLayer / URI | `welllog.fuzz-assets` | `corpus/assets/` |
 
 ## Running

@@ -4,10 +4,12 @@
 #include <welllog/scene/scene.hpp>
 #include <welllog/session/session.hpp>
 
+#if defined(WELLLOG_ARROW_HAS_IPC)
 #include <arrow/api.h>
 #include <arrow/c/bridge.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/api.h>
+#endif
 
 #include <chrono>
 #include <cmath>
@@ -376,6 +378,22 @@ void arrow_array_into_session_and_scene() {
           "replace document");
 }
 
+void ipc_availability_matches_build() {
+#if defined(WELLLOG_ARROW_HAS_IPC)
+  require(arrow_ipc_available(), "IPC advertised when Arrow C++ is linked");
+#else
+  require(!arrow_ipc_available(),
+          "IPC must not be advertised without Arrow C++");
+  const auto missing = import_arrow_ipc_file_column(
+      "/nonexistent-welllog-arrow-ipc.arrow", 0);
+  require(!missing.has_value(), "disabled IPC import must fail closed");
+  require(missing.error().code == ErrorCode::unresolved_buffer,
+          "disabled IPC import must use unresolved_buffer");
+  std::cerr << "SKIP: Arrow IPC not built (C Data + mmap still tested)\n";
+#endif
+}
+
+#if defined(WELLLOG_ARROW_HAS_IPC)
 void ipc_file_column_zero_copy() {
   require(arrow_ipc_available(), "IPC built");
   const auto dir =
@@ -425,6 +443,7 @@ void ipc_file_column_zero_copy() {
 
   std::filesystem::remove_all(dir);
 }
+#endif
 
 void large_mmap_budget_smoke() {
   constexpr std::uint64_t n = 1'000'000;
@@ -490,7 +509,10 @@ int main() {
   half_float_requires_explicit_convert();
   mmap_column_zero_copy_and_lod();
   arrow_array_into_session_and_scene();
+  ipc_availability_matches_build();
+#if defined(WELLLOG_ARROW_HAS_IPC)
   ipc_file_column_zero_copy();
+#endif
   large_mmap_budget_smoke();
   nested_types_rejected();
   return EXIT_SUCCESS;
