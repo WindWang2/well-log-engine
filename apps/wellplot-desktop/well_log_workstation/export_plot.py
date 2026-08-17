@@ -10,6 +10,7 @@ from PySide6.QtCore import QRectF, QSizeF, Qt
 from PySide6.QtGui import QColor, QPainter, QPdfWriter, QPen
 from PySide6.QtWidgets import QApplication
 
+from well_log_workstation.curve_paint import paint_curve
 from well_log_workstation.template_model import HostPresentation
 
 
@@ -266,20 +267,26 @@ def _paint_curve(
                 painter.drawPolygon(poly)
             painter.setBrush(Qt.BrushStyle.NoBrush)
 
-    painter.setPen(QPen(color, 1.2))
-    prev = None
-    step = max(1, n // 2500)
-    for i in range(0, n, step):
-        if bool(null_mask[i]):
-            prev = None
-            continue
-        xx, yy = x_map(float(values[i])), y_map(float(depth[i]))
-        if not math.isfinite(xx) or not math.isfinite(yy):
-            prev = None
-            continue
-        if prev is not None:
-            painter.drawLine(int(prev[0]), int(prev[1]), int(xx), int(yy))
-        prev = (xx, yy)
+    # Same peak-preserving stroke as the interactive canvas (#595 / #494).
+    paint_curve(
+        painter,
+        x0,
+        y0,
+        tw,
+        th,
+        depth,
+        d0,
+        d1,
+        values,
+        null_mask,
+        vmin,
+        vmax,
+        mode,
+        color,
+        wrap=wrap,
+        reverse=reverse,
+        pen_width=1.2,
+    )
 
 
 def export_presentation_svg(

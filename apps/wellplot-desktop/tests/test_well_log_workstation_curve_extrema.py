@@ -65,6 +65,54 @@ def test_snap_depth_to_extrema_within_tol() -> None:
     assert snap_depth_to_extrema(depth, vals, np.zeros(10, bool), 1004.0, tol=0.1) == 1004.0
 
 
+def _reference_local_extrema_depths(depth, values, null_mask, *, min_span: int = 2):
+    """Pre-#590 per-sample loops — vectorized output must match this."""
+    dep = np.asarray(depth, dtype=np.float64)
+    vals = np.asarray(values, dtype=np.float64)
+    mask = np.asarray(null_mask, dtype=bool)
+    n = min(dep.size, vals.size, mask.size)
+    if n < 3:
+        return np.empty(0, dtype=np.float64)
+    sign = np.zeros(n, dtype=np.int8)
+    prev_valid: float | None = None
+    for i in range(n):
+        if mask[i] or not np.isfinite(vals[i]):
+            prev_valid = None
+            sign[i] = 0
+            continue
+        if prev_valid is not None:
+            diff = float(vals[i]) - prev_valid
+            sign[i] = 1 if diff > 0 else (-1 if diff < 0 else 0)
+        prev_valid = float(vals[i])
+    out: list[float] = []
+    last_idx = -min_span - 1
+    for i in range(1, n - 1):
+        if mask[i] or not np.isfinite(vals[i]):
+            continue
+        s_prev = int(sign[i])
+        s_next = int(sign[i + 1]) if i + 1 < n else 0
+        if s_prev == 0 or s_next == 0 or s_prev == s_next:
+            continue
+        if i - last_idx < min_span:
+            continue
+        out.append(float(dep[i]))
+        last_idx = i
+    return np.asarray(out, dtype=np.float64)
+
+
+def test_local_extrema_vectorized_matches_reference() -> None:
+    rng = np.random.default_rng(590)
+    depth = np.linspace(1000.0, 1100.0, 400)
+    vals = np.cumsum(rng.normal(size=400))
+    mask = rng.random(400) < 0.08
+    vals = vals.copy()
+    vals[mask] = np.nan
+    for min_span in (1, 2, 5):
+        got = local_extrema_depths(depth, vals, mask, min_span=min_span)
+        ref = _reference_local_extrema_depths(depth, vals, mask, min_span=min_span)
+        np.testing.assert_allclose(got, ref)
+
+
 # -- canvas: link hit-test + drag ------------------------------------
 
 
@@ -146,6 +194,48 @@ def test_snap_drag_depth_outside_tolerance_unchanged(qtbot) -> None:
     # ~0.2 m pixel tolerance at this zoom → unchanged.
     snapped = canvas._snap_drag_depth("w0", 1002.5)
     assert snapped == 1002.5
+
+
+def test_link_drag_caches_extrema_across_moves(qtbot, monkeypatch) -> None:
+    """#590: N mouse-moves during a link drag compute extrema at most once."""
+    import well_log_workstation.curve_extrema as extrema_mod
+
+    canvas, _link = _canvas(qtbot)
+    calls: list[int] = []
+    orig = extrema_mod.local_extrema_depths
+
+    def _counted(*args, **kwargs):
+        calls.append(1)
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(extrema_mod, "local_extrema_depths", _counted)
+
+    mx, my = _link_mid_px(canvas)
+    canvas.mousePressEvent(
+        _mouse_ev(
+            QMouseEvent.Type.MouseButtonPress,
+            mx,
+            my,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+        )
+    )
+    assert canvas._drag_link_id == "l1"
+    for step in range(20):
+        canvas.mouseMoveEvent(
+            _mouse_ev(
+                QMouseEvent.Type.MouseMove,
+                mx,
+                my + step,
+                Qt.MouseButton.NoButton,
+                Qt.MouseButton.LeftButton,
+            )
+        )
+    assert sum(calls) == 1
+    # Same well/mnemonic stays cached for a subsequent snap.
+    before = sum(calls)
+    assert canvas._snap_drag_depth("w0", 1001.02) == 1001.0
+    assert sum(calls) == before
 
 
 def test_link_drag_emits_committed(qtbot) -> None:

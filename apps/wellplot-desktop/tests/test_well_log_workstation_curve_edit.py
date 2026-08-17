@@ -64,6 +64,65 @@ def test_despike_no_mutation_of_input() -> None:
     np.testing.assert_array_equal(vals, orig)
 
 
+def _reference_despike(values, null_mask, *, window: int = 5, threshold: float = 3.0):
+    """Independent-window median/MAD (docstring semantics; stats on source)."""
+    _eps = 1e-12
+    src = np.asarray(values, dtype=np.float64)
+    vals = src.copy()
+    mask = np.asarray(null_mask, dtype=bool).copy()
+    n = vals.shape[0]
+    if n == 0:
+        return vals, mask
+    half = max(1, int(window) // 2)
+    th = max(float(threshold), 0.0)
+    for i in range(n):
+        if mask[i]:
+            continue
+        lo, hi = max(0, i - half), min(n, i + half + 1)
+        nb = src[lo:hi][~mask[lo:hi]]
+        if nb.size < 3:
+            continue
+        med = float(np.median(nb))
+        mad = float(np.median(np.abs(nb - med)))
+        scale = max(mad, _eps)
+        if abs(float(src[i]) - med) > th * scale:
+            vals[i] = med
+    return vals, mask
+
+
+def test_despike_matches_reference_small_array() -> None:
+    rng = np.random.default_rng(591)
+    n = 80
+    vals = rng.normal(loc=10.0, scale=1.0, size=n)
+    vals[11] = 80.0
+    vals[44] = -40.0
+    mask = rng.random(n) < 0.1
+    vals = vals.copy()
+    vals[mask] = np.nan
+    out, out_m = despike(vals, mask, window=5, threshold=3.0)
+    ref, ref_m = _reference_despike(vals, mask, window=5, threshold=3.0)
+    np.testing.assert_allclose(out, ref, equal_nan=True)
+    np.testing.assert_array_equal(out_m, ref_m)
+
+
+def test_despike_200k_under_half_second() -> None:
+    """#591: despike must stay vectorized — 200k samples finish well under 0.5s."""
+    import time
+
+    rng = np.random.default_rng(591)
+    n = 200_000
+    vals = rng.normal(size=n)
+    vals[::997] = 50.0
+    mask = np.zeros(n, dtype=bool)
+    mask[::4000] = True
+    t0 = time.perf_counter()
+    out, out_m = despike(vals, mask, window=5, threshold=3.0)
+    elapsed = time.perf_counter() - t0
+    assert out.shape == (n,)
+    assert out_m.shape == (n,)
+    assert elapsed < 0.5, f"despike(200k) took {elapsed:.3f}s (need vectorized <0.5s)"
+
+
 # -- baseline --------------------------------------------------------
 
 
@@ -318,6 +377,26 @@ def test_apply_freehand_keeps_null_and_single_point_noop() -> None:
     out3, _ = apply_freehand(depth, np.zeros(11), np.zeros(11, bool),
                              [(1002.0, 10.0)])
     assert np.array_equal(out3, np.zeros(11))  # < 2 points no-op
+
+
+def test_apply_freehand_vectorized_matches_scalar_interp() -> None:
+    """#591: one np.interp over the in-range slice, same values as scalar."""
+    depth = np.linspace(1000.0, 1100.0, 201)
+    vals = np.linspace(0.0, 1.0, 201)
+    mask = np.zeros(201, dtype=bool)
+    mask[50] = True
+    pts = ((1010.0, 5.0), (1040.0, 15.0), (1070.0, 7.0))
+    out, out_m = apply_freehand(depth, vals, mask, pts)
+    ds = np.array([p[0] for p in pts])
+    vs = np.array([p[1] for p in pts])
+    expect = vals.copy()
+    for i in range(depth.size):
+        if mask[i] or not np.isfinite(depth[i]):
+            continue
+        if 1010.0 <= depth[i] <= 1070.0:
+            expect[i] = float(np.interp(float(depth[i]), ds, vs))
+    np.testing.assert_allclose(out, expect, equal_nan=True)
+    assert bool(out_m[50]) is True
 
 
 # -- freehand: JSON + merge ------------------------------------------
