@@ -4160,22 +4160,10 @@ class WellLogWorkstationWindow(QMainWindow):
             self._prefer_engine_canvas
             and self._active_plot_type == "correlation"
         ):
-            # #601: coalesce engine resubmits on auto tops commits; manual
-            # refresh stays synchronous.
-            if reason == "auto":
-                timer = getattr(self, "_corr_engine_sync_timer", None)
-                if timer is None:
-                    timer = QTimer(self)
-                    timer.setSingleShot(True)
-                    timer.setInterval(0)
-                    timer.timeout.connect(self._sync_primary_correlation_surface)
-                    self._corr_engine_sync_timer = timer
-                timer.start()
-            else:
-                pending = getattr(self, "_corr_engine_sync_timer", None)
-                if pending is not None:
-                    pending.stop()
-                self._sync_primary_correlation_surface()
+            # Dirty-well gating above already avoids full-well reloads.
+            # Keep the engine resubmit synchronous so create/open and
+            # tops-commit stay on the same event-loop turn (wheel CI).
+            self._sync_primary_correlation_surface()
 
     def _on_refresh_correlation_tops(self) -> None:
         self.refresh_correlation_from_sources(reason="manual")
