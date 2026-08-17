@@ -466,6 +466,98 @@ void missing_axis_rejected_with_distinct_code() {
           "curve/axis disagreement must surface a distinct rejection code");
 }
 
+// #755: an ordered append of a large prefix must not re-walk the composite
+// axis. Open and replace still full-scan. A disordered tail still fails
+// (out_of_order_tail_rejected above).
+void ordered_append_skips_full_axis_rescan() {
+  constexpr std::uint64_t prefix = 32'768;
+  std::vector<double> depth_store;
+  std::vector<double> value_store;
+  depth_store.reserve(prefix);
+  value_store.reserve(prefix);
+  for (std::uint64_t i = 0; i < prefix; ++i) {
+    depth_store.push_back(1000.0 + static_cast<double>(i));
+    value_store.push_back(10.0);
+  }
+  auto depths =
+      std::make_shared<const std::vector<double>>(std::move(depth_store));
+  auto values =
+      std::make_shared<const std::vector<double>>(std::move(value_store));
+
+  WellLogSession session;
+  WellLogDocumentBuilder builder(document_id, DocumentRevision{1});
+  builder.add_sampling_axis(SamplingAxis{
+      .id = axis_id,
+      .coordinates = BufferView::from_vector(depths),
+      .domain = DepthDomain::measured_depth,
+      .unit = "m",
+      .direction = AxisDirection::increasing});
+  builder.add_curve(Curve{
+      .id = curve_gr_id,
+      .mnemonic = "GR",
+      .display_name = "Gamma Ray",
+      .unit = "API",
+      .sampling_axis_id = axis_id,
+      .values = BufferView::from_vector(values),
+      .nulls = {}});
+
+  reset_axis_is_ordered_full_scan_count();
+  require(session.execute(SetDocumentCommand{builder.build()}).has_value(),
+          "prefix document must be accepted");
+  require(axis_is_ordered_full_scan_count() >= 1,
+          "validate-on-open must still full-scan the axis");
+
+  reset_axis_is_ordered_full_scan_count();
+  const auto append = session.execute(AppendBatchCommand{
+      .document_id = document_id,
+      .target_revision = DocumentRevision{2},
+      .blocks =
+          {
+              CurveTailBlock{
+                  .curve_id = curve_gr_id,
+                  .sampling_axis_id = axis_id,
+                  .tail_coordinates =
+                      tail_view({1000.0 + static_cast<double>(prefix),
+                                 1000.0 + static_cast<double>(prefix + 1)}),
+                  .tail_values = tail_view({11.0, 12.0}),
+              },
+          },
+  });
+  require(append.has_value(), "ordered append must succeed");
+  require(axis_is_ordered_full_scan_count() == 0,
+          "ordered append must not invoke a full-axis axis_is_ordered");
+  require(session.document(document_id)
+                  ->sampling_axes()
+                  .front()
+                  .coordinates.length() == prefix + 2,
+          "append must extend the axis by the tail length");
+
+  auto replace_depths = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{1.0, 2.0, 3.0});
+  auto replace_values = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{10.0, 20.0, 30.0});
+  WellLogDocumentBuilder replacer(document_id, DocumentRevision{3});
+  replacer.add_sampling_axis(SamplingAxis{
+      .id = axis_id,
+      .coordinates = BufferView::from_vector(replace_depths),
+      .domain = DepthDomain::measured_depth,
+      .unit = "m",
+      .direction = AxisDirection::increasing});
+  replacer.add_curve(Curve{
+      .id = curve_gr_id,
+      .mnemonic = "GR",
+      .display_name = "Gamma Ray",
+      .unit = "API",
+      .sampling_axis_id = axis_id,
+      .values = BufferView::from_vector(replace_values),
+      .nulls = {}});
+  reset_axis_is_ordered_full_scan_count();
+  require(session.execute(SetDocumentCommand{replacer.build()}).has_value(),
+          "replacement document must be accepted");
+  require(axis_is_ordered_full_scan_count() >= 1,
+          "validate-on-replace must still full-scan the axis");
+}
+
 } // namespace
 
 int main() {
@@ -479,6 +571,7 @@ int main() {
   append_on_missing_document_rejected();
   missing_curve_rejected_with_distinct_code();
   missing_axis_rejected_with_distinct_code();
+  ordered_append_skips_full_axis_rescan();
   std::cout << "welllog.append-batch: all cases passed\n";
   return EXIT_SUCCESS;
 }

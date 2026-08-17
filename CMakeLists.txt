@@ -1624,7 +1624,7 @@ if(WELLLOG_BUILD_TESTS)
     )
     add_test(NAME welllog.fuzz-assets COMMAND welllog_fuzz_assets_tests)
 
-    if(WELLLOG_BUILD_ARROW AND WELLLOG_ARROW_HAS_IPC)
+    if(WELLLOG_BUILD_ARROW)
         add_executable(welllog_arrow_adapter_tests
             tests/integration/arrow_adapter_test.cpp
         )
@@ -1636,8 +1636,13 @@ if(WELLLOG_BUILD_TESTS)
                 WellLog::Arrow
                 WellLog::Session
                 WellLog::Scene
-                Arrow::arrow_shared
         )
+        if(WELLLOG_ARROW_HAS_IPC)
+            target_link_libraries(
+                welllog_arrow_adapter_tests
+                PRIVATE Arrow::arrow_shared
+            )
+        endif()
         add_test(NAME welllog.arrow-adapter COMMAND welllog_arrow_adapter_tests)
     endif()
 

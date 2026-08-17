@@ -6,6 +6,7 @@
 #include <welllog/scene/curve_lod.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -27,6 +28,20 @@ namespace welllog {
 namespace {
 
 constexpr std::uint32_t default_frame_pixel_height = 2160;
+
+std::atomic<std::uint64_t> g_axis_is_ordered_full_scans{0};
+
+} // namespace
+
+std::uint64_t axis_is_ordered_full_scan_count() noexcept {
+  return g_axis_is_ordered_full_scans.load(std::memory_order_relaxed);
+}
+
+void reset_axis_is_ordered_full_scan_count() noexcept {
+  g_axis_is_ordered_full_scans.store(0, std::memory_order_relaxed);
+}
+
+namespace {
 
 [[nodiscard]] Result<std::uint64_t> required_bytes(const BufferView &buffer) {
   if (!buffer.has_owner()) {
@@ -189,6 +204,7 @@ template <typename T>
 // append's own validation guarantees tail continuity against the existing
 // direction, so double precision across the segment boundary is acceptable.
 [[nodiscard]] bool axis_is_ordered(const SamplingAxis &axis) noexcept {
+  g_axis_is_ordered_full_scans.fetch_add(1, std::memory_order_relaxed);
   const auto &coordinates = axis.coordinates;
   if (coordinates.is_composite()) {
     const auto length = coordinates.length();
@@ -239,7 +255,7 @@ template <typename T>
 }
 
 [[nodiscard]] std::optional<Error>
-validate_document(const WellLogDocument &document) {
+validate_document(const WellLogDocument &document, bool skip_axis_order) {
   if (document.id().is_nil() || document.revision().value == 0 ||
       document.sampling_axes().empty() || document.curves().empty()) {
     return Error{
@@ -267,7 +283,7 @@ validate_document(const WellLogDocument &document) {
       error.entity_id = axis.id;
       return error;
     }
-    if (!axis_is_ordered(axis)) {
+    if (!skip_axis_order && !axis_is_ordered(axis)) {
       return Error{
           .code = ErrorCode::invalid_sampling_axis,
           .entity_id = axis.id,
@@ -540,9 +556,11 @@ validate_document(const WellLogDocument &document) {
   return true;
 }
 
-[[nodiscard]] std::uint64_t missing_sample_count(const Curve &curve) noexcept {
+[[nodiscard]] std::uint64_t
+missing_sample_count(const Curve &curve, std::uint64_t start_index) noexcept {
   std::uint64_t count{};
-  for (std::uint64_t index = 0; index < curve.values.length(); ++index) {
+  for (std::uint64_t index = start_index; index < curve.values.length();
+       ++index) {
     if ((!curve.nulls.empty() && curve.nulls.is_null(index)) ||
         !std::isfinite(load_as_double(curve.values, index))) {
       ++count;
@@ -1140,6 +1158,14 @@ struct WellLogSession::Impl {
   };
   std::unordered_map<EntityId, PendingLodReuse, EntityIdHash>
       pending_lod_reuse;
+  // Append path (#755): previous revision was accepted and the tail already
+  // passed tail_continues_axis. SetDocumentCommand then skips the O(n) axis
+  // order walk and only scans missing samples from the previous length.
+  std::unordered_set<EntityId, EntityIdHash> pending_append_validation;
+  using MissingSampleMap =
+      std::unordered_map<EntityId, std::uint64_t, EntityIdHash>;
+  std::unordered_map<EntityId, MissingSampleMap, EntityIdHash>
+      missing_sample_counts;
   std::unordered_map<EntityId, std::uint64_t, EntityIdHash> frame_generations;
   // Declared before task_executor: members destroy in reverse order, so the
   // text engine and its mutex outlive pool join (#610). The mutex is also
@@ -1452,7 +1478,10 @@ std::shared_ptr<TextEngine> WellLogSession::text_engine() const noexcept {
 
 Result<CommandReceipt> WellLogSession::execute(SetDocumentCommand command) {
   try {
-    if (const auto error = validate_document(command.document)) {
+    const auto append_prefix_validated =
+        impl_->pending_append_validation.contains(command.document.id());
+    if (const auto error =
+            validate_document(command.document, append_prefix_validated)) {
       return *error;
     }
     if (impl_->state_version == std::numeric_limits<std::uint64_t>::max()) {
@@ -1682,8 +1711,41 @@ Result<CommandReceipt> WellLogSession::execute(SetDocumentCommand command) {
     });
 
     std::optional<std::uint64_t> first_diagnostic_id;
+    Impl::MissingSampleMap new_missing;
+    const WellLogDocument *previous_document =
+        append_prefix_validated && current_document != impl_->documents.end()
+            ? current_document->second.get()
+            : nullptr;
+    const Impl::MissingSampleMap *previous_missing = nullptr;
+    if (previous_document != nullptr) {
+      if (const auto cached = impl_->missing_sample_counts.find(document_id);
+          cached != impl_->missing_sample_counts.end()) {
+        previous_missing = &cached->second;
+      }
+    }
     for (const auto &curve : document->curves()) {
-      const auto count = missing_sample_count(curve);
+      std::uint64_t count = 0;
+      bool incremental = false;
+      if (previous_document != nullptr && previous_missing != nullptr) {
+        const Curve *prev_curve = nullptr;
+        for (const auto &candidate : previous_document->curves()) {
+          if (candidate.id == curve.id) {
+            prev_curve = &candidate;
+            break;
+          }
+        }
+        if (const auto cached = previous_missing->find(curve.id);
+            prev_curve != nullptr && cached != previous_missing->end() &&
+            prev_curve->values.length() <= curve.values.length()) {
+          count = cached->second +
+                  missing_sample_count(curve, prev_curve->values.length());
+          incremental = true;
+        }
+      }
+      if (!incremental) {
+        count = missing_sample_count(curve, 0);
+      }
+      new_missing[curve.id] = count;
       if (count == 0) {
         continue;
       }
@@ -1740,6 +1802,8 @@ Result<CommandReceipt> WellLogSession::execute(SetDocumentCommand command) {
       }
     }
     impl_->documents.insert_or_assign(document_id, document);
+    impl_->missing_sample_counts.insert_or_assign(document_id,
+                                                 std::move(new_missing));
     impl_->prepared_scenes.erase(document_id);
     impl_->presentations.erase(document_id);
     impl_->viewports.erase(document_id);
@@ -4311,7 +4375,9 @@ WellLogSession::commit_append_batch(const AppendBatchCommand &command) {
                           ? impl_->append_viewport_modes.at(command.document_id)
                           : AppendViewportMode::fixed;
 
+    impl_->pending_append_validation.insert(command.document_id);
     const auto commit = execute(SetDocumentCommand{std::move(appended)});
+    impl_->pending_append_validation.erase(command.document_id);
     if (!commit.has_value()) {
       // A rejected delegated replacement must not leave an append-tail cache
       // hint for a later document with different source buffers.

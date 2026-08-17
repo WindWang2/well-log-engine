@@ -417,6 +417,12 @@ struct Diagnostic {
   std::uint64_t occurrence_count{};
 };
 
+// Process-wide full-axis `axis_is_ordered` invocations. Defined in
+// session.cpp so shared-library builds share one counter with tests (#755).
+[[nodiscard]] WELLLOG_SESSION_API std::uint64_t
+axis_is_ordered_full_scan_count() noexcept;
+WELLLOG_SESSION_API void reset_axis_is_ordered_full_scan_count() noexcept;
+
 class WELLLOG_SESSION_API WellLogSession {
 public:
   WellLogSession();

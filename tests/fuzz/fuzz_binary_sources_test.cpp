@@ -8,10 +8,13 @@
 #include <welllog/io/format716.hpp>
 #include <welllog/io/lis.hpp>
 
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -28,6 +31,8 @@ void require(bool condition, std::string_view message) {
     fail(message);
   }
 }
+
+std::filesystem::path corpus_dir();
 
 // Tight ceilings so mutated huge-count fields cannot allocate unbounded RAM.
 DlisLimits tight_dlis() {
@@ -57,10 +62,15 @@ Format716Limits tight_716() {
   };
 }
 
-void fuzz_bytes(std::span<const std::byte> bytes) {
+struct FuzzStats {
+  std::uint64_t inspect_ok{};
+};
+
+void fuzz_bytes(std::span<const std::byte> bytes, FuzzStats &stats) {
   // Each adapter must return Result without throwing or aborting.
   const auto dlis = DlisSourceAdapter::inspect(bytes, tight_dlis());
   if (dlis.has_value()) {
+    ++stats.inspect_ok;
     // Import with empty selection must reject cleanly.
     (void)DlisSourceAdapter::import(
         bytes,
@@ -74,6 +84,7 @@ void fuzz_bytes(std::span<const std::byte> bytes) {
 
   const auto lis = LisSourceAdapter::inspect(bytes, tight_lis());
   if (lis.has_value()) {
+    ++stats.inspect_ok;
     (void)LisSourceAdapter::import(
         bytes,
         BufferSourceReference{.uri = "fuzz://seed", .checksum = {},
@@ -87,6 +98,7 @@ void fuzz_bytes(std::span<const std::byte> bytes) {
   (void)Format716SourceAdapter::detect_endian(bytes, tight_716());
   const auto f716 = Format716SourceAdapter::inspect(bytes, {}, tight_716());
   if (f716.has_value()) {
+    ++stats.inspect_ok;
     (void)Format716SourceAdapter::import(
         bytes,
         BufferSourceReference{.uri = "fuzz://seed", .checksum = {},
@@ -96,6 +108,33 @@ void fuzz_bytes(std::span<const std::byte> bytes) {
     require(f716.error().arguments.size == 0,
             "716 error must not carry raw payload arguments");
   }
+}
+
+std::vector<std::byte> read_seed_file(const std::filesystem::path &path) {
+  std::ifstream in(path, std::ios::binary);
+  require(static_cast<bool>(in), "structural seed must be readable");
+  in.seekg(0, std::ios::end);
+  const auto size = static_cast<std::size_t>(in.tellg());
+  in.seekg(0, std::ios::beg);
+  require(size > 0 && size <= 4096, "structural seed must stay tiny");
+  std::vector<std::byte> buf(size);
+  in.read(reinterpret_cast<char *>(buf.data()),
+          static_cast<std::streamsize>(size));
+  require(static_cast<bool>(in) || in.eof(), "structural seed read");
+  return buf;
+}
+
+void unmutated_structural_seeds_inspect_ok() {
+  const auto dir = corpus_dir();
+  const auto dlis = read_seed_file(dir / "dlis_sul_v1.bin");
+  require(DlisSourceAdapter::inspect(dlis, tight_dlis()).has_value(),
+          "unmutated DLIS SUL seed must inspect ok");
+  const auto lis = read_seed_file(dir / "lis_lr_header.bin");
+  require(LisSourceAdapter::inspect(lis, tight_lis()).has_value(),
+          "unmutated LIS logical-record seed must inspect ok");
+  const auto f716 = read_seed_file(dir / "valid_716_one_sample.bin");
+  require(Format716SourceAdapter::inspect(f716, {}, tight_716()).has_value(),
+          "unmutated 716 seed must inspect ok");
 }
 
 std::filesystem::path corpus_dir() {
@@ -120,20 +159,25 @@ void run_corpus_and_mutations() {
   require(!seeds.empty(), "at least one seed");
   const auto rounds = mutation_iterations();
   std::uint64_t cases = 0;
+  FuzzStats stats;
   for (std::size_t i = 0; i < seeds.size(); ++i) {
     run_mutations(seeds[i], rounds, 0x17200ULL + i, [&](std::span<const std::byte> b) {
-      fuzz_bytes(b);
+      fuzz_bytes(b, stats);
       ++cases;
     });
   }
   require(cases > 0, "exercised cases");
+  require(stats.inspect_ok > 0,
+          "at least one inspect() success so import is reachable");
   std::cerr << "INFO: binary fuzz cases=" << cases << " seeds=" << seeds.size()
-            << " iters=" << rounds << '\n';
+            << " iters=" << rounds << " inspect_ok=" << stats.inspect_ok
+            << '\n';
 }
 
 } // namespace
 
 int main() {
+  unmutated_structural_seeds_inspect_ok();
   run_corpus_and_mutations();
   return EXIT_SUCCESS;
 }
