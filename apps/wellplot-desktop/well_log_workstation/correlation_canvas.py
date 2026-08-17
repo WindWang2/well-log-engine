@@ -88,6 +88,7 @@ class CorrelationCanvas(QWidget):
         self._vertical_exaggeration: float = 1.0
         # #590: local-extrema snap cache keyed by (well_id, mnemonic, min_span).
         self._extrema_cache: dict[tuple[str, str, int], np.ndarray] = {}
+        self._fill_brush_cache: dict[str, object] = {}
 
     def column_gap(self) -> int:
         return self._column_gap
@@ -169,6 +170,7 @@ class CorrelationCanvas(QWidget):
 
     def set_fill_color(self, color: str) -> None:
         self._fill_color = str(color or "#93c5fd80")
+        self._fill_brush_cache.clear()
         self.update()
 
     def pinchout_mode(self) -> str:
@@ -204,6 +206,7 @@ class CorrelationCanvas(QWidget):
         self._fill_pattern_map = {
             str(k): str(v) for k, v in (mapping or {}).items() if k and v
         }
+        self._fill_brush_cache.clear()
         self.update()
 
     def well_x_offsets(self) -> list[float] | None:
@@ -466,9 +469,16 @@ class CorrelationCanvas(QWidget):
             return
         span = self._d1 - self._d0
         factor = 0.9 if delta > 0 else 1.1
-        mid = 0.5 * (self._d0 + self._d1)
         new_span = max(span * factor, 1e-3)
-        self.set_depth_range(mid - new_span / 2, mid + new_span / 2)
+        y = float(event.position().y())
+        anchor = self.depth_at_y(y)
+        if anchor is None or span <= 0:
+            mid = 0.5 * (self._d0 + self._d1)
+            self.set_depth_range(mid - new_span / 2, mid + new_span / 2)
+        else:
+            above = anchor - self._d0
+            new_d0 = anchor - above * (new_span / span)
+            self.set_depth_range(new_d0, new_d0 + new_span)
         event.accept()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -616,9 +626,19 @@ class CorrelationCanvas(QWidget):
             vertical_exaggeration=self._vertical_exaggeration,
         )
 
-        # Inter-well fill behind curves (#297)
+        # Inter-well fill behind curves (#297). Build the band list once
+        # per paint so the footer counts reuse the same result (#733).
+        bands = []
         if self._show_interwell_fill and n >= 2:
-            self._paint_interwell_fills(p, n, gap, col_w, top, bottom, d0, d1)
+            bands = build_interwell_fill_bands(
+                self._tops_per_column,
+                pinchout_mode=self._pinchout_mode,
+                pinchout_factor=self._pinchout_factor,
+                pinchout_smooth=self._pinchout_smooth,
+            )
+            self._paint_interwell_fills(
+                p, n, gap, col_w, top, bottom, d0, d1, bands
+            )
 
         for i, pres in enumerate(self._columns):
             x0 = self._x_well(i, col_w, gap) - col_w / 2
@@ -805,18 +825,8 @@ class CorrelationCanvas(QWidget):
 
         tops_n = sum(len(t) for t in self._tops_per_column)
         links_n = len(self._links)
-        all_bands = (
-            build_interwell_fill_bands(
-                self._tops_per_column,
-                pinchout_mode=self._pinchout_mode,
-                pinchout_factor=self._pinchout_factor,
-                pinchout_smooth=self._pinchout_smooth,
-            )
-            if self._show_interwell_fill
-            else []
-        )
-        fill_n = sum(1 for b in all_bands if b.pinch == PINCH_OFF)
-        wedge_n = len(all_bands) - fill_n
+        fill_n = sum(1 for b in bands if b.pinch == PINCH_OFF)
+        wedge_n = len(bands) - fill_n
         pick_note = (
             " · 点选连线中(先后点两井层位)"
             if self._link_pick_mode
@@ -850,24 +860,16 @@ class CorrelationCanvas(QWidget):
         bottom: int,
         d0: float,
         d1: float,
+        bands,
     ) -> None:
         """Paint fill quads + pinchout wedges between adjacent wells."""
         if d1 <= d0:
             return
-        bands = build_interwell_fill_bands(
-            self._tops_per_column,
-            pinchout_mode=self._pinchout_mode,
-            pinchout_factor=self._pinchout_factor,
-            pinchout_smooth=self._pinchout_smooth,
-        )
         color = QColor(self._fill_color)
         if color.alpha() == 255:
             color.setAlpha(96)
         p.setPen(Qt.PenStyle.NoPen)
 
-        # Lazily resolve lithology patterns (top name → QBrush), cached for
-        # the duration of this paint so repeated names share one pixmap.
-        pat_cache: dict[str, object] = {}
         from well_log_workstation.litho_pattern_lib import get_pattern, make_qbrush
 
         def brush_for(band) -> object:
@@ -878,11 +880,12 @@ class CorrelationCanvas(QWidget):
             )
             if not pid:
                 return QBrush(color)
-            if pid in pat_cache:
-                return pat_cache[pid]
+            cached = self._fill_brush_cache.get(pid)
+            if cached is not None:
+                return cached
             pat = get_pattern(pid)
             brush = make_qbrush(pat, self._fill_color) if pat else QBrush(color)
-            pat_cache[pid] = brush
+            self._fill_brush_cache[pid] = brush
             return brush
 
         def y_of(d_disp: float) -> float:

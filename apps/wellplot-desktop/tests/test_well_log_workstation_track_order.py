@@ -20,6 +20,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 
 from well_log_workstation.las_import import import_las_into_workspace
+from well_log_workstation.depth_ruler import RULER_WIDTH
 from well_log_workstation.multi_track_canvas import (
     MultiTrackCanvas,
     track_header_rects,
@@ -330,3 +331,89 @@ def test_canvas_width_drag_without_move_does_not_emit(qtbot, tmp_path: Path) -> 
     QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=press)
     QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=press)
     assert emitted == []
+
+
+def test_header_width_drag_uses_plot_width_with_secondary_axis(
+    qtbot, tmp_path: Path
+) -> None:
+    """#738: secondary-axis drag must convert px using _plot_width(), not width()."""
+    pres = _presentation(tmp_path)
+    canvas = MultiTrackCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(900, 600)
+    canvas.set_presentation(pres)
+    canvas.set_secondary_depth_axis(
+        [(0.0, 1000.0), (-100.0, 1105.0)], "TVDSS (m)"
+    )
+    plot_w = canvas._plot_width()
+    assert plot_w == 900 - RULER_WIDTH
+
+    entries, _band = track_header_rects(pres, plot_w, 600)
+    header = entries[1][1]
+    track = entries[1][0]
+    start_frac = track.width_fraction
+    total_frac = (
+        sum(max(0.05, t.width_fraction) for t in pres.visible_tracks) or 1.0
+    )
+    y = header.center().y()
+    dx = 40
+    QTest.mousePress(
+        canvas, Qt.MouseButton.LeftButton, pos=QPoint(header.right() - 2, y)
+    )
+    QTest.mouseMove(canvas, QPoint(header.right() - 2 + dx, y))
+    QTest.mouseRelease(
+        canvas, Qt.MouseButton.LeftButton, pos=QPoint(header.right() - 2 + dx, y)
+    )
+
+    tw_new = max(24, header.width() + dx)
+    expected = max(0.05, min(1.0, tw_new * total_frac / max(40, plot_w - 16)))
+    wrong = max(0.05, min(1.0, tw_new * total_frac / max(40, canvas.width() - 16)))
+    assert expected != pytest.approx(wrong, rel=1e-6)
+    assert track.width_fraction == pytest.approx(expected)
+    assert track.width_fraction != pytest.approx(wrong)
+    assert track.width_fraction > start_frac
+
+
+def test_header_reorder_target_uses_plot_width_with_secondary_axis(
+    qtbot, tmp_path: Path
+) -> None:
+    """#738: insertion target must use painted header centres (_plot_width)."""
+    pres = _presentation(tmp_path)
+    canvas = MultiTrackCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(900, 600)
+    canvas.set_presentation(pres)
+    canvas.set_secondary_depth_axis(
+        [(0.0, 1000.0), (-100.0, 1105.0)], "TVDSS (m)"
+    )
+
+    plot_entries, _ = track_header_rects(pres, canvas._plot_width(), 600)
+    full_entries, _ = track_header_rects(pres, canvas.width(), 600)
+    last_plot = plot_entries[-1][1]
+    last_full = full_entries[-1][1]
+    y = last_plot.center().y()
+    # Midway between the painted last-header centre and the too-wide
+    # full-widget last-header centre (secondary-axis 52 px drift).
+    x = int((last_plot.center().x() + last_full.center().x()) / 2)
+    assert last_plot.center().x() < x < last_full.center().x()
+
+    QTest.mousePress(
+        canvas, Qt.MouseButton.LeftButton, pos=last_plot.center()
+    )
+    from PySide6.QtCore import QEvent, QPointF
+    from PySide6.QtGui import QMouseEvent
+
+    local = QPointF(x, y)
+    move = QMouseEvent(
+        QEvent.Type.MouseMove,
+        local,
+        local,
+        local,
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    canvas.mouseMoveEvent(move)
+    # Right of the painted last centre → insert at end, not before last.
+    assert canvas._drag_track_target == len(plot_entries)
+    QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=QPoint(x, y))

@@ -638,6 +638,93 @@ void version_gate_accepts_v1_and_rejects_unknown() {
           "unknown version must surface manifest_schema_unsupported");
 }
 
+void escaped_surrogate_pair_decodes_to_astral_character() {
+  // #751: RFC 8259 surrogate pairs (e.g. "\ud83d\ude00" = U+1F600) are
+  // valid JSON; lone surrogates stay rejected.
+  const auto document_id = id("01234567-89ab-4cde-8fab-0123456789ab");
+  const auto axis_id = id("12345678-9abc-4def-8abc-123456789abc");
+  const auto curve_id = id("23456789-abcd-4efa-8bcd-23456789abcd");
+
+  auto depths = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{900.25, 900.5, 900.75});
+  auto values = std::make_shared<const std::vector<float>>(
+      std::initializer_list<float>{12.5F, 25.0F, 37.5F});
+  WellLogDocumentBuilder builder(document_id, DocumentRevision{1});
+  builder.add_sampling_axis(SamplingAxis{
+      .id = axis_id,
+      .coordinates = BufferView::from_vector(
+          depths, BufferSourceReference{.uri = "mmap://well-a.bin#depth",
+                                        .checksum = "sha256:depth",
+                                        .byte_offset = 64}),
+      .domain = DepthDomain::measured_depth,
+      .unit = "m",
+      .direction = AxisDirection::increasing,
+  });
+  builder.add_curve(Curve{
+      .id = curve_id,
+      .mnemonic = "GR",
+      .display_name = "GR",
+      .unit = "API",
+      .sampling_axis_id = axis_id,
+      .values = BufferView::from_vector(
+          values, BufferSourceReference{.uri = "mmap://well-a.bin#gr",
+                                        .checksum = "sha256:gr",
+                                        .byte_offset = 4096}),
+      .nulls = {},
+  });
+  const auto encoded = ManifestCodec::write(builder.build());
+  require(encoded.has_value(), "fixture manifest must serialize");
+
+  ManifestResolvers resolvers{
+      .buffer = [&](const BufferDescriptor &descriptor) -> Result<BufferView> {
+        if (descriptor.source.uri == "mmap://well-a.bin#depth") {
+          return BufferView::from_vector(
+              depths, BufferSourceReference{.uri = "mmap://well-a.bin#depth",
+                                            .checksum = "sha256:depth",
+                                            .byte_offset = 64});
+        }
+        if (descriptor.source.uri == "mmap://well-a.bin#gr") {
+          return BufferView::from_vector(
+              values, BufferSourceReference{.uri = "mmap://well-a.bin#gr",
+                                            .checksum = "sha256:gr",
+                                            .byte_offset = 4096});
+        }
+        return Error{
+            .code = ErrorCode::unresolved_buffer,
+            .entity_id = std::nullopt,
+            .message = MessageKey::external_buffer_unresolved,
+            .arguments = {},
+        };
+      },
+      .null_bitmap = {},
+      .image_tile = {},
+  };
+
+  auto with_pair = std::string{encoded.value().text()};
+  const auto name_key = std::string{"\"displayName\":\"GR\""};
+  require(with_pair.find(name_key) != std::string::npos,
+          "fixture carries displayName");
+  with_pair.replace(with_pair.find(name_key), name_key.size(),
+                    "\"displayName\":\"\\ud83d\\ude00\"");
+  const auto grin = ManifestCodec::read(with_pair, resolvers);
+  require(grin.has_value(),
+          "escaped surrogate pair must parse as valid JSON");
+  require(grin.value().curves().front().display_name == "\xF0\x9F\x98\x80",
+          "\\ud83d\\ude00 must decode to U+1F600");
+
+  auto lone_high = std::string{encoded.value().text()};
+  lone_high.replace(lone_high.find(name_key), name_key.size(),
+                    "\"displayName\":\"\\ud83d\"");
+  const auto lone = ManifestCodec::read(lone_high, resolvers);
+  require(!lone.has_value(), "lone high surrogate must stay rejected");
+
+  auto lone_low = std::string{encoded.value().text()};
+  lone_low.replace(lone_low.find(name_key), name_key.size(),
+                   "\"displayName\":\"\\ude00\"");
+  const auto low = ManifestCodec::read(lone_low, resolvers);
+  require(!low.has_value(), "lone low surrogate must stay rejected");
+}
+
 } // namespace
 
 int main() {
@@ -646,6 +733,7 @@ int main() {
   image_and_custom_sources_round_trip();
   over_limit_image_and_empty_custom_sources_rejected();
   version_gate_accepts_v1_and_rejects_unknown();
+  escaped_surrogate_pair_decodes_to_astral_character();
   std::cout << "PASS: manifest round trip\n";
   return EXIT_SUCCESS;
 }

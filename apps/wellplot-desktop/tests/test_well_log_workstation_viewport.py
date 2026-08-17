@@ -117,3 +117,97 @@ def test_depth_track_labels_use_step_precision(qtbot, tmp_path: Path, monkeypatc
     assert seen
     steps = {round(s, 6) for _v, s in seen}
     assert any(s < 1.0 for s in steps)
+
+
+def _dummy_presentation(well_id: str = "w1") -> object:
+    import numpy as np
+
+    from well_log_workstation.template_model import (
+        BoundCurveLayer,
+        BoundTrack,
+        HostPresentation,
+        ScaleSpec,
+    )
+
+    depth = np.array([1000.0, 1050.0, 1100.0])
+    vals = np.array([10.0, 20.0, 30.0])
+    return HostPresentation(
+        template_id="t",
+        template_name="T",
+        well_document_id=well_id,
+        well_name=well_id,
+        depth=depth,
+        depth_unit="m",
+        tracks=[
+            BoundTrack(
+                id="c",
+                role="curve",
+                title="GR",
+                width_fraction=1.0,
+                scale=ScaleSpec(min=0.0, max=100.0, mode="linear", unit="API"),
+                layers=[
+                    BoundCurveLayer(
+                        mnemonic="GR",
+                        color="#1a6fb5",
+                        unit="API",
+                        values=vals,
+                        null_mask=np.zeros(3, dtype=bool),
+                    )
+                ],
+            )
+        ],
+    )
+
+
+def _wheel_at(widget, x: float, y: float, delta: int = 120) -> None:
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+
+    pos = QPointF(x, y)
+    event = QWheelEvent(
+        pos,
+        pos,
+        QPoint(0, 0),
+        QPoint(0, delta),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    widget.wheelEvent(event)
+
+
+def test_correlation_wheel_keeps_cursor_depth(qtbot) -> None:
+    """#732: zoom must keep the depth under the cursor, not the window mid."""
+    from well_log_workstation.correlation_canvas import CorrelationCanvas
+
+    canvas = CorrelationCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(600, 400)
+    canvas.set_columns([_dummy_presentation("a"), _dummy_presentation("b")])
+    canvas.set_depth_range(1000.0, 1100.0)
+    top, bottom = 36, canvas.height() - 24
+    y = top + 0.25 * (bottom - top)
+    before = canvas.depth_at_y(y)
+    assert before == pytest.approx(1025.0)
+    _wheel_at(canvas, 300.0, y, delta=120)
+    after = canvas.depth_at_y(y)
+    assert after == pytest.approx(before, abs=1e-6)
+
+
+def test_section_wheel_keeps_cursor_depth(qtbot) -> None:
+    """#732 sibling: section canvas must also cursor-anchor wheel zoom."""
+    from well_log_workstation.section_canvas import SectionCanvas
+
+    canvas = SectionCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(600, 400)
+    canvas.set_section([_dummy_presentation("a"), _dummy_presentation("b")])
+    canvas.set_depth_range(1000.0, 1100.0)
+    top, bottom = 36, canvas.height() - 24
+    y = top + 0.25 * (bottom - top)
+    before = canvas.depth_at_y(y)
+    assert before == pytest.approx(1025.0)
+    _wheel_at(canvas, 300.0, y, delta=120)
+    after = canvas.depth_at_y(y)
+    assert after == pytest.approx(before, abs=1e-6)

@@ -3865,7 +3865,11 @@ compose_multi_well_scene(std::span<const WellScenePlacement> wells,
         out->tracks.push_back(track);
       }
       const auto interval_base = out->intervals.size();
-      for (const auto &interval : local.intervals) {
+      const auto run_base = out->text_runs.size();
+      for (auto interval : local.intervals) {
+        if (interval.label_run_index != no_text_run) {
+          interval.label_run_index += static_cast<std::uint64_t>(run_base);
+        }
         out->intervals.push_back(interval);
       }
       for (auto layer : local.interval_layers) {
@@ -3873,7 +3877,10 @@ compose_multi_well_scene(std::span<const WellScenePlacement> wells,
         out->interval_layers.push_back(layer);
       }
       const auto marker_base = out->markers.size();
-      for (const auto &marker : local.markers) {
+      for (auto marker : local.markers) {
+        if (marker.label_run_index != no_text_run) {
+          marker.label_run_index += static_cast<std::uint64_t>(run_base);
+        }
         out->markers.push_back(marker);
       }
       for (auto layer : local.marker_layers) {
@@ -3928,7 +3935,6 @@ compose_multi_well_scene(std::span<const WellScenePlacement> wells,
       for (const auto &glyph : local.glyphs) {
         out->glyphs.push_back(glyph);
       }
-      const auto run_base = out->text_runs.size();
       for (auto run : local.text_runs) {
         run.first_glyph += static_cast<std::uint64_t>(glyph_base);
         out->text_runs.push_back(run);

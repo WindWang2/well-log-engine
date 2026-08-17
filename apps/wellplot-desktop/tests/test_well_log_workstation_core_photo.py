@@ -244,6 +244,29 @@ def test_image_track_paint_missing_image_no_crash(qtbot) -> None:
 # -- shell menu wiring ----------------------------------------------
 
 
+def test_pick_image_button_writes_path(qtbot, tmp_path: Path, monkeypatch) -> None:
+    """#729: 选择图片 must be wired and write the chosen path into COL_IMAGE."""
+    from PySide6.QtWidgets import QFileDialog, QPushButton
+
+    from well_log_workstation.core_photo_dialog import (
+        COL_IMAGE,
+        CorePhotoDialog,
+    )
+
+    dlg = CorePhotoDialog()
+    qtbot.addWidget(dlg)
+    btn = dlg.findChild(QPushButton, "CorePhotoPickImage")
+    assert btn is not None
+    assert "图片" in btn.text()
+    dlg.table.setCurrentCell(0, COL_IMAGE)
+    chosen = str(tmp_path / "core.png")
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", lambda *a, **k: (chosen, "")
+    )
+    btn.click()
+    assert dlg.table.item(0, COL_IMAGE).text() == chosen
+
+
 def test_shell_core_photo_menu_enabled_with_workspace(
     qtbot, tmp_path: Path
 ) -> None:

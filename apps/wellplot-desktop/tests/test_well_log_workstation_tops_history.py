@@ -150,6 +150,73 @@ def test_tops_json_roundtrip_preserves_unit_id_and_semantic(tmp_path: Path) -> N
     assert loaded[0].semantic == "casing_shoe"
 
 
+def test_undo_save_failure_keeps_history(qtbot, tmp_path: Path, monkeypatch) -> None:
+    """#743: OSError from save_tops_for_well must not drop the undo snapshot."""
+    from PySide6.QtWidgets import QMessageBox
+
+    import well_log_workstation.shell as shell_mod
+
+    ws = create_workspace(tmp_path / "ws-undo-fail")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    well_id = win.import_las_path(_write_las(tmp_path / "u.las"))
+    win.apply_template_to_well(well_id, "std-gr-rt-den")
+    win.add_top_at_depth(well_id, "T1", 1001.0)
+    assert win._tops_history.can_undo(well_id)
+    assert not win._tops_history.can_redo(well_id)
+
+    warnings: list[tuple] = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *a, **k: warnings.append(a)
+    )
+
+    def _boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(shell_mod, "save_tops_for_well", _boom)
+    assert win.undo_tops_edit(well_id) is False
+    assert win._tops_history.can_undo(well_id)
+    assert not win._tops_history.can_redo(well_id)
+    assert warnings
+    loaded, _ = load_tops_for_well(ws, well_id)
+    assert len(loaded) == 1
+    assert loaded[0].name == "T1"
+
+
+def test_redo_save_failure_keeps_history(qtbot, tmp_path: Path, monkeypatch) -> None:
+    """#743: redo save failure must restore the redo stack."""
+    from PySide6.QtWidgets import QMessageBox
+
+    import well_log_workstation.shell as shell_mod
+
+    ws = create_workspace(tmp_path / "ws-redo-fail")
+    win = WellLogWorkstationWindow()
+    qtbot.addWidget(win)
+    win.set_workspace(ws)
+    well_id = win.import_las_path(_write_las(tmp_path / "r.las"))
+    win.apply_template_to_well(well_id, "std-gr-rt-den")
+    win.add_top_at_depth(well_id, "T1", 1001.0)
+    win.add_top_at_depth(well_id, "T2", 1002.0)
+    assert win.undo_tops_edit(well_id)
+    assert win._tops_history.can_redo(well_id)
+
+    warnings: list[tuple] = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *a, **k: warnings.append(a)
+    )
+
+    def _boom(*_a, **_k):
+        raise OSError("readonly")
+
+    monkeypatch.setattr(shell_mod, "save_tops_for_well", _boom)
+    assert win.redo_tops_edit(well_id) is False
+    assert win._tops_history.can_redo(well_id)
+    assert warnings
+    loaded, _ = load_tops_for_well(ws, well_id)
+    assert [t.name for t in loaded] == ["T1"]
+
+
 def test_set_top_depth_preserves_unit_id(qtbot, tmp_path: Path) -> None:
     """#599: set_top_depth rebuilds the top with every field intact."""
     from well_log_workstation.shell import WellLogWorkstationWindow

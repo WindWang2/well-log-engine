@@ -78,6 +78,10 @@ class CorePhotoDialog(QDialog):
         del_btn.setObjectName("CorePhotoDeleteRow")
         del_btn.clicked.connect(self._delete_selected_rows)
         row_buttons.addWidget(del_btn)
+        pick_btn = QPushButton("选择图片")
+        pick_btn.setObjectName("CorePhotoPickImage")
+        pick_btn.clicked.connect(self._pick_image_for_selected)
+        row_buttons.addWidget(pick_btn)
         row_buttons.addStretch(1)
         layout.addLayout(row_buttons)
 
@@ -126,7 +130,11 @@ class CorePhotoDialog(QDialog):
             self, "选择岩心照片", "", "图片 (*.png *.jpg *.jpeg *.bmp);;All (*.*)"
         )
         if path:
-            self.table.item(row, COL_IMAGE).setText(path)
+            item = self.table.item(row, COL_IMAGE)
+            if item is None:
+                self.table.setItem(row, COL_IMAGE, QTableWidgetItem(path))
+            else:
+                item.setText(path)
 
     # ------------------------------------------------------------------
     # Accept / value

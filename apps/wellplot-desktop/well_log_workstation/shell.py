@@ -1914,7 +1914,12 @@ class WellLogWorkstationWindow(QMainWindow):
         previous = self._tops_history.undo(wid, current)
         if previous is None:
             return False
-        save_tops_for_well(self._workspace, wid, previous)
+        try:
+            save_tops_for_well(self._workspace, wid, previous)
+        except OSError as exc:
+            self._tops_history.redo(wid, previous)
+            QMessageBox.warning(self, "撤销层位失败", str(exc))
+            return False
         self._selected_well_id = wid
         self._apply_tops_to_ui(wid, previous, [])
         self._sync_apply_enabled()
@@ -1929,7 +1934,12 @@ class WellLogWorkstationWindow(QMainWindow):
         nxt = self._tops_history.redo(wid, current)
         if nxt is None:
             return False
-        save_tops_for_well(self._workspace, wid, nxt)
+        try:
+            save_tops_for_well(self._workspace, wid, nxt)
+        except OSError as exc:
+            self._tops_history.undo(wid, nxt)
+            QMessageBox.warning(self, "重做层位失败", str(exc))
+            return False
         self._selected_well_id = wid
         self._apply_tops_to_ui(wid, nxt, [])
         self._sync_apply_enabled()
