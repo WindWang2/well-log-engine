@@ -17,6 +17,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QWidget
 
 from well_log_workstation.correlation_links import HorizonLink
+from well_log_workstation.curve_paint import paint_curve
 from well_log_workstation.depth_ruler import RULER_WIDTH, paint_depth_ruler
 from well_log_workstation.interwell_fill import (
     PINCH_LEFT,
@@ -700,25 +701,25 @@ class CorrelationCanvas(QWidget):
                     d0, d1, shifted_depth,
                 )
 
-            p.setPen(QPen(QColor(layer.color), 1.5))
-            prev = None
-            npts = min(depth.size, vals.size, nulls.size)
-            step = max(1, npts // 1500)
-            for j in range(0, npts, step):
-                if bool(nulls[j]):
-                    prev = None
-                    continue
-                d = float(depth[j]) + well_shift
-                if d < d0 or d > d1:
-                    prev = None
-                    continue
-                xx, yy = x_map(float(vals[j])), y_map(d)
-                if not math.isfinite(xx) or not math.isfinite(yy):
-                    prev = None
-                    continue
-                if prev is not None:
-                    p.drawLine(int(prev[0]), int(prev[1]), int(xx), int(yy))
-                prev = (xx, yy)
+            paint_curve(
+                p,
+                x0 + 4,
+                top,
+                col_w - 12,
+                (bottom - top) * self._vertical_exaggeration,
+                depth + well_shift,
+                d0,
+                d1,
+                vals,
+                nulls,
+                vmin,
+                vmax,
+                mode,
+                QColor(layer.color),
+                wrap=wrap,
+                reverse=reverse,
+                pen_width=1.5,
+            )
 
             # Per-column formation tops as depth references
             col_tops = (

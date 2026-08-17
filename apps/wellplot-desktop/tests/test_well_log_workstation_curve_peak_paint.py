@@ -1,5 +1,8 @@
 """Regression: _paint_curve must preserve off-stride spikes (peak-preserving)
-and break the stroke across null/out-of-range samples, never bridging gaps."""
+and break the stroke across null/out-of-range samples, never bridging gaps.
+
+Also covers export/canvas sharing (#595) and viewport windowing (#596).
+"""
 from __future__ import annotations
 
 import os
@@ -10,6 +13,11 @@ import numpy as np
 import pytest
 from PySide6.QtGui import QColor, QImage, QPainter
 
+from well_log_workstation.curve_paint import (
+    curve_stroke_vertices,
+    visible_index_window,
+)
+from well_log_workstation.export_plot import _paint_curve as export_paint_curve
 from well_log_workstation.multi_track_canvas import MultiTrackCanvas
 
 
@@ -129,3 +137,79 @@ def test_null_gap_breaks_stroke(app):
     assert not _dark_in_region(img, 0, img.width(), 60, 200)
     # Sanity: the return stroke (190,295)→(10,390) still renders below the gap.
     assert _dark_in_region(img, 0, img.width(), 294, 300)
+
+
+def _export_paint_spiky_curve(spike_index: int) -> QImage:
+    img = QImage(200, 400, QImage.Format.Format_ARGB32)
+    img.fill(QColor("white"))
+    painter = QPainter(img)
+    n = 5000  # old export stride = n // 2500 = 2 → even indices only
+    depth = np.arange(n, dtype=np.float64)
+    vals = np.zeros(n, dtype=np.float64)
+    vals[spike_index] = 1.0
+    export_paint_curve(
+        painter,
+        x0=10,
+        y0=10,
+        tw=180,
+        th=380,
+        depth=depth,
+        d0=0.0,
+        d1=float(n - 1),
+        values=vals,
+        null_mask=np.zeros(n, dtype=bool),
+        vmin=0.0,
+        vmax=1.0,
+        mode="linear",
+        color=QColor("black"),
+    )
+    painter.end()
+    return img
+
+
+def test_export_off_stride_spike_is_painted(app):
+    """#595: export _paint_curve must keep a spike at an off-stride index."""
+    img = _export_paint_spiky_curve(spike_index=7)
+    assert any(
+        img.pixelColor(x, y).lightness() < 128
+        for x in range(186, 191)
+        for y in range(9, 14)
+    )
+
+
+def test_viewport_window_is_searchsorted_slice():
+    """#596: a tight zoom must not walk the whole depth array."""
+    n = 100_000
+    depth = np.arange(n, dtype=np.float64)
+    i0, i1 = visible_index_window(depth, 50_000.0, 50_100.0)
+    assert i1 - i0 < 200
+    assert i0 <= 50_000 <= i1
+    assert i0 <= 50_100 <= i1
+
+
+def test_viewport_window_keeps_in_view_spike_only():
+    n = 100_000
+    depth = np.arange(n, dtype=np.float64)
+    vals = np.zeros(n, dtype=np.float64)
+    vals[50_050] = 1.0
+    vals[10] = 1.0  # outside the window — must not be emitted
+    verts, win_n = curve_stroke_vertices(
+        depth,
+        vals,
+        None,
+        50_000.0,
+        50_100.0,
+        vmin=0.0,
+        vmax=1.0,
+        x0=0.0,
+        y0=0.0,
+        tw=100.0,
+        th=100.0,
+    )
+    assert win_n < 200
+    emitted = {gi for _x, _y, gi, _s in verts}
+    assert 50_050 in emitted
+    assert 10 not in emitted
+    # Peak at 50_050 maps to the right edge (v=1).
+    peak = [v for v in verts if v[2] == 50_050]
+    assert peak and peak[0][0] == pytest.approx(100.0)

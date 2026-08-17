@@ -23,6 +23,7 @@ from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF, QBrush, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
 from well_log_workstation.correlation_links import HorizonLink
+from well_log_workstation.curve_paint import paint_curve
 from well_log_workstation.depth_ruler import RULER_WIDTH, paint_depth_ruler
 from well_log_workstation.section_geometry import (
     FluidContact2D,
@@ -628,6 +629,7 @@ class SectionCanvas(QWidget):
                 scale = curve_track.scale
             vmin = scale.min if scale else 0.0
             vmax = scale.max if scale else 100.0
+            mode = scale.mode if scale else "linear"
             wrap = bool(getattr(scale, "wrap", False)) if scale else False
             reverse = bool(getattr(scale, "reverse", False)) if scale else False
 
@@ -749,22 +751,25 @@ class SectionCanvas(QWidget):
                             p.drawLine(int(prev[0]), int(prev[1]), int(px), int(py))
                         prev = (px, py)
             else:
-                prev = None
-                for j in range(0, npts, step):
-                    if bool(nulls[j]):
-                        prev = None
-                        continue
-                    d = float(depth[j]) + shift
-                    if d < d0 or d > d1:
-                        prev = None
-                        continue
-                    xx, yy = x_map(float(vals[j])), y_map(d)
-                    if not math.isfinite(xx) or not math.isfinite(yy):
-                        prev = None
-                        continue
-                    if prev is not None:
-                        p.drawLine(int(prev[0]), int(prev[1]), int(xx), int(yy))
-                    prev = (xx, yy)
+                paint_curve(
+                    p,
+                    x0 + 4,
+                    top,
+                    col_w - 12,
+                    bottom - top,
+                    depth + shift,
+                    d0,
+                    d1,
+                    vals,
+                    nulls,
+                    vmin,
+                    vmax,
+                    mode,
+                    QColor(layer.color),
+                    wrap=wrap,
+                    reverse=reverse,
+                    pen_width=1.5,
+                )
 
         # 2. Well trajectory polylines (P1-C / FRS §3.1): the deviated /
         # horizontal segments of each well, shown grey dashed. Drawn before
