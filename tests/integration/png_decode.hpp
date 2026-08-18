@@ -24,6 +24,7 @@ struct DecodedPng {
   std::uint32_t height{};
   unsigned char bit_depth{};
   unsigned char color_type{};
+  std::uint32_t phys_pixels_per_metre{};  // pHYs chunk X density, 0 if absent.
   std::vector<std::uint8_t> samples;  // raw, unfiltered, row-major
 };
 
@@ -68,6 +69,12 @@ inline std::optional<DecodedPng> decode_png(const std::filesystem::path &path) {
       png.bit_depth = bytes[data_begin + 8];
       png.color_type = bytes[data_begin + 9];
       saw_ihdr = true;
+    } else if (type == "pHYs" && length >= 9) {
+      png.phys_pixels_per_metre =
+          (static_cast<std::uint32_t>(bytes[data_begin]) << 24U) |
+          (static_cast<std::uint32_t>(bytes[data_begin + 1]) << 16U) |
+          (static_cast<std::uint32_t>(bytes[data_begin + 2]) << 8U) |
+          static_cast<std::uint32_t>(bytes[data_begin + 3]);
     } else if (type == "IDAT") {
       idat.append(reinterpret_cast<const char *>(bytes.data() + data_begin),
                   length);

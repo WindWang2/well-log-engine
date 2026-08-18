@@ -149,12 +149,21 @@ void append_depth_ruler(std::string &output, const ExportPageSpec &page,
     return;
   }
   const double left_edge = page.margins.left.value;
+  const double content_top = page.margins.top.value;
   const double span = depth_bottom - depth_top;
   const double y_span = window_bottom_mm - window_top_mm;
+  // The ruler is emitted in PAGE-mm space (it sits outside the body <g>), but
+  // the tick y comes from scene millimetres: map scene-y → page-y exactly like
+  // the body group transform — scene-y = window_top lands at content_top, and
+  // the vertical extent is scaled by the body scale — so the ticks align with
+  // the depth grid (#838). Before this fix the raw scene-mm y was emitted,
+  // drifting ~40 mm at default scale and vanishing entirely on fixed pages
+  // past the first.
+  const double body_scale = printable_width(page) / scene.physical_width().value;
   constexpr double font_mm = 2.4;
   for (const double value : ticks.values) {
     const double t = (value - depth_top) / span;
-    const double y_mm = window_top_mm + t * y_span;
+    const double y_mm = content_top + t * y_span * body_scale;
     // Tick mark: 2.5 mm into the margin from the printable left edge.
     output += "<line data-export-role=\"ruler\" x1=\"";
     append_number(output, left_edge - 1.0);
@@ -257,7 +266,14 @@ void append_fixed_page(std::string &output, const PreparedScene &scene,
                        std::uint32_t page_count, double window_top_mm,
                        double window_bottom_mm) noexcept {
   const auto &page = snapshot.page;
-  output += "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"";
+  // Nested per-page <svg> viewport under the paginated document's single root
+  // (#854): positioned at y = page_index * page_height. xmlns is inherited
+  // from the root; the page's own width/height/viewBox preserve per-page
+  // coordinates unchanged.
+  output += "<svg x=\"0\" y=\"";
+  append_number(output,
+                static_cast<double>(page_index) * page.page_height.value);
+  output += "\" width=\"";
   append_number(output, page.page_width.value);
   output += "mm\" height=\"";
   append_number(output, page.page_height.value);
@@ -468,11 +484,17 @@ PaginatedSvgExporter::write(const PreparedScene &scene,
       // One continuous page: the printable width maps the scene width, and the
       // page height preserves true depth->physical-length (scene physical height
       // scaled by the same width factor), so depth proportions stay correct.
+      // Like the PDF backend (#839), the page grows by the reserved legend band
+      // so the repeating legend renders BELOW the body instead of overpainted
+      // curve geometry — and unlike the fixed mode it is emitted here too
+      // (previously the continuous page drew no legend at all).
       const auto printable_width_mm = printable_width(page);
       const auto scale = printable_width_mm / scene.physical_width().value;
+      const auto legend_band_mm =
+          page.repeat_legend ? legend_band_height_mm(scene, page) : 0.0;
       const auto page_height_mm =
-          scene.physical_height().value * scale +
-          page.margins.top.value + page.margins.bottom.value;
+          scene.physical_height().value * scale + page.margins.top.value +
+          page.margins.bottom.value + legend_band_mm;
 
       output += "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"";
       append_number(output, page.page_width.value);
@@ -523,7 +545,39 @@ PaginatedSvgExporter::write(const PreparedScene &scene,
       append_number(output, scale);
       output += ")\" data-export-role=\"body\">";
       append_layer_body(output, scene);
-      output += "</g></svg>";
+      output += "</g>";
+
+      // Legend band: one line per visible curve layer (mnemonic + colour swatch
+      // + scale range), from the prepared track-header entries. The band lives
+      // in the page-height extension reserved above, so it never overpaints the
+      // body — the same layout contract the fixed pages honour (body_clip_height
+      // minus the reserved band, #745).
+      if (page.repeat_legend) {
+        const auto headers = scene.track_header_entries();
+        const auto emitted_legend_entries = legend_entry_count(scene, page);
+        double legend_y = page_height_mm - page.margins.bottom.value - 3.0;
+        for (std::size_t i = 0; i < emitted_legend_entries; ++i) {
+          const auto &entry = headers[i];
+          output += "<rect data-export-role=\"legend\" x=\"";
+          append_number(output, page.margins.left.value);
+          output += "\" y=\"";
+          append_number(output, legend_y - 2.0);
+          output += "\" width=\"3\" height=\"2\" fill=\"";
+          append_color(output, entry.color);
+          output += "\"/>";
+          std::string legend = entry.curve_name;
+          legend += " ";
+          append_number(legend, entry.scale_minimum);
+          legend += "..";
+          append_number(legend, entry.scale_maximum);
+          legend += " ";
+          legend += entry.unit;
+          append_text_element(output, "legend", page.margins.left.value + 4.0,
+                              legend_y, legend);
+          legend_y -= legend_row_height_mm;
+        }
+      }
+      output += "</svg>";
       return SvgDocument{std::move(output)};
     }
 
@@ -535,11 +589,32 @@ PaginatedSvgExporter::write(const PreparedScene &scene,
                               MessageKey::resource_exhausted);
     }
     const auto page_count = static_cast<std::uint32_t>(windows.size());
+    // Single-root document (#854): concatenated <svg> roots are not a
+    // well-formed XML document, so a C++ SDK consumer writing one file got an
+    // illegal file. Nest every page as a positioned <svg> viewport under one
+    // outer root; SVG 1.1 §5.2 allows nested <svg>, so each page's own
+    // width/height/viewBox keep per-page coordinates unchanged. The per-page
+    // <defs> ids (clip-/pat-/glyph) repeat across pages — their content is
+    // identical, so document-order first-match resolution is deterministic.
+    const double total_height_mm =
+        static_cast<double>(page_count) * page.page_height.value;
+    output += "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"";
+    append_number(output, page.page_width.value);
+    output += "mm\" height=\"";
+    append_number(output, total_height_mm);
+    output += "mm\" viewBox=\"0 0 ";
+    append_number(output, page.page_width.value);
+    output.push_back(' ');
+    append_number(output, total_height_mm);
+    output += "\" data-export-pages=\"";
+    append_integer(output, page_count);
+    output += "\">";
     for (std::uint32_t index = 0; index < page_count; ++index) {
       append_fixed_page(output, scene, snapshot, index, page_count,
                         windows[index].window_top_mm,
                         windows[index].window_bottom_mm);
     }
+    output += "</svg>";
     return SvgDocument{std::move(output)};
   } catch (const std::bad_alloc &) {
     return pagination_error(ErrorCode::resource_exhausted,

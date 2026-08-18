@@ -2892,12 +2892,28 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
       std::size_t total_vertices = 0;
       for (const auto &primitive : source->primitives) {
         if (const auto *polyline = std::get_if<CustomPolyline>(&primitive)) {
+          // ADR 0050 dash validation (#840): non-positive / non-finite dash
+          // segments and offsets are rejected here for ALL backends — the GL
+          // subdivision used to NaN-loop on a zero-sum cycle like [0,0] and
+          // silently drop the whole polyline, while SVG/PDF emitted invalid
+          // values (`stroke-dasharray="0 0"` / `[0 0] d`). Odd-length arrays
+          // stay legal (SVG/PDF duplicate them per spec; GL now does too).
+          const auto dash_segment_valid = [](const Millimetres &segment) {
+            return std::isfinite(segment.value) && segment.value > 0.0;
+          };
+          const auto dash_valid =
+              polyline->dash_pattern.segments.empty() ||
+              (std::isfinite(polyline->dash_pattern.offset) &&
+               std::all_of(polyline->dash_pattern.segments.begin(),
+                           polyline->dash_pattern.segments.end(),
+                           dash_segment_valid));
           if (polyline->points.size() < 2 ||
               polyline->points.size() > maximum_custom_polyline_points ||
               !std::isfinite(polyline->width.value) ||
               polyline->width.value < 0.0 ||
               !std::all_of(polyline->points.begin(), polyline->points.end(),
-                           custom_point_valid)) {
+                           custom_point_valid) ||
+              !dash_valid) {
             return presentation_error(layer.id);
           }
           continue;

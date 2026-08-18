@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -11,6 +12,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -25,6 +27,13 @@ GlAtlasDebugStats &gl_atlas_debug_stats() noexcept {
 
 void reset_gl_atlas_debug_stats() noexcept { gl_atlas_debug_stats() = {}; }
 
+GlDashDebugStats &gl_dash_debug_stats() noexcept {
+  static GlDashDebugStats stats{};
+  return stats;
+}
+
+void reset_gl_dash_debug_stats() noexcept { gl_dash_debug_stats() = {}; }
+
 namespace {
 
 #if defined(_WIN32)
@@ -38,6 +47,66 @@ using GlChar = char;
 using GlEnum = unsigned int;
 using GlFloat = float;
 using GlInt = int;
+
+// Deterministic content serialization for the atlas fingerprint (#855): the
+// pattern/glyph phase must not depend on pointer address, hash order or locale.
+// Numbers use the shortest round-trip digits (no locale grouping), colours the
+// four raw bytes, primitives a tagged compact form — so equal content always
+// yields an equal string and different content never collides.
+void append_fingerprint_number(std::string &out, double value) {
+  std::array<char, 32> buffer{};
+  const auto res = std::to_chars(buffer.data(), buffer.data() + buffer.size(),
+                                 value);
+  if (res.ec == std::errc{}) {
+    out.append(buffer.data(), res.ptr);
+  } else {
+    out += "nan";
+  }
+}
+
+void append_fingerprint_color(std::string &out, const RgbaColor &color) {
+  out.push_back(static_cast<char>(color.red));
+  out.push_back(static_cast<char>(color.green));
+  out.push_back(static_cast<char>(color.blue));
+  out.push_back(static_cast<char>(color.alpha));
+}
+
+void append_fingerprint_primitive(std::string &out,
+                                  const PatternPrimitive &primitive) {
+  std::visit(
+      [&out](const auto &p) {
+        using T = std::decay_t<decltype(p)>;
+        if constexpr (std::is_same_v<T, PatternLine>) {
+          out += "l";
+          append_fingerprint_number(out, p.from.left.value);
+          out.push_back(',');
+          append_fingerprint_number(out, p.from.top.value);
+          out.push_back('>');
+          append_fingerprint_number(out, p.to.left.value);
+          out.push_back(',');
+          append_fingerprint_number(out, p.to.top.value);
+        } else if constexpr (std::is_same_v<T, PatternPolyline>) {
+          out += "P";
+          out.push_back(p.closed ? '1' : '0');
+          for (const auto &pt : p.points) {
+            out.push_back(';');
+            append_fingerprint_number(out, pt.left.value);
+            out.push_back(',');
+            append_fingerprint_number(out, pt.top.value);
+          }
+        } else {
+          out += "c";
+          append_fingerprint_number(out, p.center.left.value);
+          out.push_back(',');
+          append_fingerprint_number(out, p.center.top.value);
+          out.push_back(',');
+          append_fingerprint_number(out, p.radius.value);
+          out.push_back(',');
+          out.push_back(p.filled ? '1' : '0');
+        }
+      },
+      primitive);
+}
 using GlSize = int;
 using GlSizePointer = std::ptrdiff_t;
 using GlUInt = unsigned int;
@@ -1080,9 +1149,40 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
     // (issue #463).
     std::string fingerprint;
     fingerprint.reserve(16 * (scene.patterns().size() + 1));
+    // Content fingerprint, not just ids (#855): two patterns with the same id
+    // but different content (colour, width, primitives, tile size, version)
+    // must produce different atlases, and a font swap must invalidate cached
+    // glyph bitmaps — otherwise an in-place pattern/font change reuses stale
+    // texture pixels until some unrelated id/glyph set changes (ADR 0020
+    // "PatternDefinition is the single vector source of truth" was silently
+    // violated for the GL backend).
     for (const auto &pattern : scene.patterns()) {
       fingerprint += "p:";
       fingerprint += pattern.id.to_string();
+      fingerprint += ":";
+      append_fingerprint_number(fingerprint, pattern.tile_width.value);
+      fingerprint.push_back('x');
+      append_fingerprint_number(fingerprint, pattern.tile_height.value);
+      fingerprint += ":r";
+      append_fingerprint_number(fingerprint, pattern.rotation_degrees);
+      fingerprint += ":c";
+      append_fingerprint_color(fingerprint, pattern.foreground);
+      fingerprint.push_back(';');
+      append_fingerprint_color(fingerprint, pattern.background);
+      fingerprint += ":w";
+      append_fingerprint_number(fingerprint, pattern.stroke_width.value);
+      fingerprint += ":a";
+      append_fingerprint_number(fingerprint, pattern.scene_anchor.left.value);
+      fingerprint.push_back(',');
+      append_fingerprint_number(fingerprint, pattern.scene_anchor.top.value);
+      fingerprint += ":v";
+      append_fingerprint_number(fingerprint, static_cast<double>(pattern.version));
+      fingerprint.push_back('{');
+      for (const auto &primitive : pattern.primitives) {
+        append_fingerprint_primitive(fingerprint, primitive);
+      }
+      fingerprint.push_back('}');
+      fingerprint.push_back('|');
     }
     for (const auto &outline : scene.glyph_outlines()) {
       fingerprint += "g:";
@@ -1090,6 +1190,8 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
       fingerprint += ":";
       fingerprint += std::to_string(outline.glyph_id);
     }
+    fingerprint += "|font:";
+    fingerprint += scene.font_asset_fingerprint();
     const bool atlas_cache_hit =
         impl_->cached_pattern_atlas != nullptr &&
         !impl_->cached_pattern_atlas->pixels.empty() &&
@@ -1138,6 +1240,10 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
           rasterize_pattern_tile(pattern, pattern_pixels_per_millimetre);
       const auto rect = pattern_packer.allocate(tile.width, tile.height);
       if (!rect.has_value()) {
+        // Atlas exhausted for this tile: the interval falls back to its solid
+        // fill_color below. Count the drop instead of silently continuing so a
+        // degradation vs. the SVG/PDF backends is observable (issue #855).
+        gl_atlas_debug_stats().pattern_tiles_dropped += 1;
         continue;
       }
       for (std::uint32_t row = 0; row < tile.height; ++row) {
@@ -1530,18 +1636,38 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
           // pattern are emitted (ADR 0050 CPU dash subdivision).
           const auto width = primitive.stroke_width.value;
           const auto &dash = primitive.dash_pattern.segments;
+          // ADR 0050 dash parity (#840): SVG/PDF treat odd-length dash arrays
+          // as if duplicated ([4] -> on 4, off 4); the GL subdivision must do
+          // the same or an odd array degenerates into an all-on solid line.
+          // The scene preflight already rejects non-positive/non-finite
+          // segments and offsets, so the cycle below is always finite and > 0
+          // for session-built scenes; a hand-built scene that bypasses
+          // preflight falls back to solid here instead of NaN-looping into a
+          // vanished polyline (fmod(phase, 0) = NaN, zero-chunk loop exit).
+          std::vector<Millimetres> normalized_dash;
+          std::span<const Millimetres> dash_view = dash;
+          if (!dash.empty() && (dash.size() % 2U) != 0U) {
+            normalized_dash.reserve(dash.size() * 2U);
+            normalized_dash.insert(normalized_dash.end(), dash.begin(),
+                                   dash.end());
+            normalized_dash.insert(normalized_dash.end(), dash.begin(),
+                                   dash.end());
+            dash_view = normalized_dash;
+          }
+          double dash_cycle = 0.0;
+          for (const auto &segment : dash_view) {
+            dash_cycle += segment.value;
+          }
+          const bool dash_usable =
+              !dash_view.empty() && std::isfinite(dash_cycle) &&
+              dash_cycle > 0.0;
           // dash_phase accumulates along the polyline so the pattern is
           // continuous across segments. It is advanced through the full
           // segment length even for "off" gaps.
           double dash_phase = primitive.dash_pattern.offset;
-          const auto dash_cycle =
-              [&dash]() -> double {
-            double total = 0.0;
-            for (const auto &s : dash) {
-              total += s.value;
-            }
-            return total;
-          }();
+          if (!dash_usable) {
+            gl_dash_debug_stats().dash_arrays_fell_back_to_solid += 1;
+          }
           const auto emit_ribbon = [&](const PhysicalPoint &p0,
                                        const PhysicalPoint &p1) {
             const auto dx = p1.left.value - p0.left.value;
@@ -1567,7 +1693,7 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
           // based on the dash cycle, emitting ribbons only for "on" parts.
           const auto emit_segment = [&](const PhysicalPoint &p0,
                                         const PhysicalPoint &p1) {
-            if (dash.empty()) {
+            if (!dash_usable) {
               emit_ribbon(p0, p1);
               return;
             }
@@ -1589,21 +1715,21 @@ bool GlRenderer::queue_upload(const PreparedScene &scene,
               }
               std::size_t seg_index = 0;
               double acc = 0.0;
-              for (std::size_t i = 0; i < dash.size(); ++i) {
-                if (phase_in_cycle < acc + dash[i].value) {
+              for (std::size_t i = 0; i < dash_view.size(); ++i) {
+                if (phase_in_cycle < acc + dash_view[i].value) {
                   seg_index = i;
                   break;
                 }
-                acc += dash[i].value;
+                acc += dash_view[i].value;
               }
               const bool is_on = (seg_index % 2 == 0);
               const auto remaining_in_element =
-                  dash[seg_index].value -
+                  dash_view[seg_index].value -
                   (phase_in_cycle -
                    [&] {
                      double a = 0.0;
                      for (std::size_t i = 0; i < seg_index; ++i) {
-                       a += dash[i].value;
+                       a += dash_view[i].value;
                      }
                      return a;
                    }());

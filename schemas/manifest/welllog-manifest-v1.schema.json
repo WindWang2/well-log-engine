@@ -7,7 +7,7 @@
   "required": ["schemaVersion", "requiredSdkVersion", "document"],
   "properties": {
     "schemaVersion": {
-      "const": 1
+      "const": 2
     },
     "requiredSdkVersion": {
       "const": ">=0.1.0 <1.0.0"
@@ -71,6 +71,171 @@
         "byteCapacity": {"type": "integer", "minimum": 1}
       }
     },
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["left", "top"],
+      "properties": {
+        "left": {"type": "number"},
+        "top": {"type": "number"}
+      }
+    },
+    "color": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["r", "g", "b", "a"],
+      "properties": {
+        "r": {"type": "integer", "minimum": 0, "maximum": 255},
+        "g": {"type": "integer", "minimum": 0, "maximum": 255},
+        "b": {"type": "integer", "minimum": 0, "maximum": 255},
+        "a": {"type": "integer", "minimum": 0, "maximum": 255}
+      }
+    },
+    "rect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["left", "top", "width", "height"],
+      "properties": {
+        "left": {"type": "number"},
+        "top": {"type": "number"},
+        "width": {"type": "number"},
+        "height": {"type": "number"}
+      }
+    },
+    "dashPattern": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["segments", "offset"],
+      "properties": {
+        "segments": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "number", "exclusiveMinimum": 0}
+        },
+        "offset": {"type": "number"}
+      }
+    },
+    "polyline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "closed", "color", "width", "points"],
+      "properties": {
+        "kind": {"const": "polyline"},
+        "closed": {"type": "boolean"},
+        "color": {"$ref": "#/$defs/color"},
+        "width": {"type": "number"},
+        "points": {
+          "type": "array",
+          "minItems": 2,
+          "items": {"$ref": "#/$defs/point"}
+        },
+        "dashPattern": {"$ref": "#/$defs/dashPattern"}
+      }
+    },
+    "triangle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "a", "b", "c", "fillColor"],
+      "properties": {
+        "kind": {"const": "triangle"},
+        "a": {"$ref": "#/$defs/point"},
+        "b": {"$ref": "#/$defs/point"},
+        "c": {"$ref": "#/$defs/point"},
+        "fillColor": {"$ref": "#/$defs/color"}
+      }
+    },
+    "quad": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "rect", "fillColor"],
+      "properties": {
+        "kind": {"const": "quad"},
+        "rect": {"$ref": "#/$defs/rect"},
+        "fillColor": {"$ref": "#/$defs/color"},
+        "patternId": {"$ref": "#/$defs/uuid"}
+      }
+    },
+    "symbol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "center", "symbol", "color", "size"],
+      "properties": {
+        "kind": {"const": "symbol"},
+        "center": {"$ref": "#/$defs/point"},
+        "symbol": {
+          "enum": [
+            "circle",
+            "square",
+            "triangleUp",
+            "triangleDown",
+            "diamond",
+            "cross",
+            "shoe"
+          ]
+        },
+        "color": {"$ref": "#/$defs/color"},
+        "size": {"type": "number"}
+      }
+    },
+    "customPrimitive": {
+      "oneOf": [
+        {"$ref": "#/$defs/polyline"},
+        {"$ref": "#/$defs/triangle"},
+        {"$ref": "#/$defs/quad"},
+        {"$ref": "#/$defs/symbol"}
+      ]
+    },
+    "clipPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["points"],
+      "properties": {
+        "points": {
+          "type": "array",
+          "minItems": 3,
+          "items": {"$ref": "#/$defs/point"}
+        }
+      }
+    },
+    "customSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "contentRevision", "primitives"],
+      "properties": {
+        "id": {"$ref": "#/$defs/uuid"},
+        "contentRevision": {"type": "integer", "minimum": 1},
+        "primitives": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/customPrimitive"}
+        },
+        "clip": {"$ref": "#/$defs/clipPath"}
+      }
+    },
+    "imageSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "widthPx",
+        "heightPx",
+        "pixelFormat",
+        "referenceDepthTop",
+        "referenceDepthBottom",
+        "dpi",
+        "source"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/uuid"},
+        "widthPx": {"type": "integer", "minimum": 1},
+        "heightPx": {"type": "integer", "minimum": 1},
+        "pixelFormat": {"enum": ["rgba8", "rgb8", "r8"]},
+        "referenceDepthTop": {"type": "number"},
+        "referenceDepthBottom": {"type": "number"},
+        "dpi": {"type": "integer", "minimum": 1},
+        "source": {"$ref": "#/$defs/source"}
+      }
+    },
     "axis": {
       "type": "object",
       "additionalProperties": false,
@@ -80,7 +245,8 @@
         "domain": {"enum": ["md", "tvd", "tvdss", "sourceIndex"]},
         "unit": {"type": "string"},
         "direction": {"enum": ["increasing", "decreasing"]},
-        "coordinates": {"$ref": "#/$defs/buffer"}
+        "coordinates": {"$ref": "#/$defs/buffer"},
+        "nominalInterval": {"type": "number"}
       }
     },
     "curve": {
@@ -126,6 +292,16 @@
           "type": "array",
           "minItems": 1,
           "items": {"$ref": "#/$defs/curve"}
+        },
+        "imageSources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/imageSource"}
+        },
+        "customSources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/customSource"}
         }
       }
     }

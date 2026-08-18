@@ -27,25 +27,38 @@
 namespace welllog {
 namespace {
 
-// Appends a double as a compact PDF number (general format, no trailing zeros).
-// Mirrors the SVG emitter's append_number for consistency.
+// Appends a double as a compact PDF number in FIXED-point notation (no
+// exponent). PDF 32000-1 §7.3.3 defines a real as a decimal literal only —
+// scientific notation such as "5e-05" (which the previous shortest-round-trip
+// `general` format emitted for tiny dash segments / coordinates) is rejected by
+// strict validators (#854). Six decimal places keep sub-micron precision at
+// point scale (1 pt ≈ 0.35 mm), matching the SVG emitter's rounding; trailing
+// zeros are trimmed so output stays compact (0.5, not 0.500000).
 void append_number(std::string &out, double value) {
   if (value == 0.0) {
     out.push_back('0');
     return;
   }
+  if (!std::isfinite(value)) {
+    out.push_back('0');
+    return;
+  }
   std::array<char, 48> buffer{};
-  // No explicit precision: to_chars then emits the SHORTEST round-trip
-  // representation (max_digits10 digits is never shortest — it padded every
-  // coordinate with numeric noise and 2-5x'd export file sizes).
   const auto res =
       std::to_chars(buffer.data(), buffer.data() + buffer.size(), value,
-                    std::chars_format::general);
+                    std::chars_format::fixed, 6);
   if (res.ec != std::errc{}) {
     out.push_back('0');
     return;
   }
-  out.append(buffer.data(), res.ptr);
+  auto *end = res.ptr;
+  while (end > buffer.data() && end[-1] == '0') {
+    --end;
+  }
+  if (end > buffer.data() && end[-1] == '.') {
+    --end;
+  }
+  out.append(buffer.data(), static_cast<std::size_t>(end - buffer.data()));
 }
 
 // Appends an integer.
@@ -129,6 +142,10 @@ struct PdfPathStream::Impl {
   // first-encountered order (deduplicated) so the writer's /ExtGState objects
   // are named in the exact order the stream assigns /GSn names.
   std::vector<double> fill_alphas;
+  // Distinct stroke-alpha values this stream emitted `gs /GSs<n>` for (same
+  // order/dedup rules; separate list so a page using fill AND stroke alpha
+  // never produces duplicate ExtGState dict keys). #854 item 7.
+  std::vector<double> stroke_alphas;
   // B1.PDF.2: draw_standard_text was used → writer must name /F1 Helvetica.
   bool uses_standard_font{false};
   // B1.PDF.3: non-Latin-1 code points dropped from searchable overlay.
@@ -275,12 +292,34 @@ PdfPathStream &PdfPathStream::set_line_width(double width) noexcept {
 
 PdfPathStream &PdfPathStream::set_dash(std::span<const double> dash_array,
                                        double phase) noexcept {
+  // Normalize odd-length dash arrays by duplication per PDF 32000-1 §8.4.3.6
+  // ("if the array has an odd number of elements, it is treated as if it were
+  // duplicated") so no strict reader ever sees an odd array ([4] -> "4 4",
+  // matching SVG semantics, #840). The scene preflight already rejects
+  // non-positive/non-finite segments; a caller (test/SDK) that bypasses it
+  // gets a guarded emit rather than a malformed dash pattern.
+  std::vector<double> normalized(dash_array.begin(), dash_array.end());
+  std::span<const double> view = normalized;
+  bool dash_valid = true;
+  for (const double segment : view) {
+    if (!std::isfinite(segment) || segment <= 0.0) {
+      dash_valid = false;
+      break;
+    }
+  }
+  if (!dash_valid) {
+    impl_->operators += "[] 0 d\n";
+    return *this;
+  }
+  if (!normalized.empty() && (normalized.size() % 2U) != 0U) {
+    normalized.insert(normalized.end(), normalized.begin(), normalized.end());
+  }
   impl_->operators += "[";
-  for (std::size_t i = 0; i < dash_array.size(); ++i) {
+  for (std::size_t i = 0; i < normalized.size(); ++i) {
     if (i > 0) {
       impl_->operators.push_back(' ');
     }
-    append_number(impl_->operators, dash_array[i]);
+    append_number(impl_->operators, normalized[i]);
   }
   impl_->operators += "] ";
   append_number(impl_->operators, phase);
@@ -381,6 +420,29 @@ PdfPathStream &PdfPathStream::set_fill_alpha(double alpha) noexcept {
   return *this;
 }
 
+PdfPathStream &PdfPathStream::set_stroke_alpha(double alpha) noexcept {
+  if (!std::isfinite(alpha) || alpha < 0.0) {
+    alpha = 0.0;
+  } else if (alpha > 1.0) {
+    alpha = 1.0;
+  }
+  auto &alphas = impl_->stroke_alphas;
+  std::size_t index = alphas.size();
+  for (std::size_t i = 0; i < alphas.size(); ++i) {
+    if (alphas[i] == alpha) {
+      index = i;
+      break;
+    }
+  }
+  if (index == alphas.size()) {
+    alphas.push_back(alpha);
+  }
+  impl_->operators += "/GSs";
+  append_integer(impl_->operators, static_cast<std::int64_t>(index));
+  impl_->operators += " gs\n";
+  return *this;
+}
+
 PdfPathStream &PdfPathStream::set_pattern_fill(
     std::string_view pattern_name) noexcept {
   // Switch the non-stroking colour space to /Pattern, select the named tiling
@@ -475,6 +537,10 @@ std::span<const double> PdfPathStream::fill_alphas() const noexcept {
   return impl_->fill_alphas;
 }
 
+std::span<const double> PdfPathStream::stroke_alphas() const noexcept {
+  return impl_->stroke_alphas;
+}
+
 bool PdfPathStream::needs_standard_font() const noexcept {
   return impl_->uses_standard_font;
 }
@@ -505,17 +571,18 @@ std::string_view PdfDocument::bytes() const noexcept {
 //   1: Catalog
 //   2: Pages
 //   per page p (0-based):  content stream = 3 + 2*p ;  Page = 3 + 2*p + 1
-//   per-page /ExtGState objects (one per distinct fill-alpha THAT PAGE uses)
-//   follow all page objects, numbered 3 + 2*N + (per-page running offset).
+//   per-page /ExtGState objects (one per distinct fill/stroke alpha THAT PAGE
+//   uses) follow all page objects, numbered 3 + 2*N + (per-page running offset).
 //   caller-supplied objects (images/patterns), then the global OCG objects
 //   (layered PDF, one per entry in `layers`) follow.
 // The xref table follows, then trailer. All offsets are deterministic given the
 // (deterministic) content streams. Each page's /ExtGState dictionary maps its
-// own local /GSn names (n = index in that page's first-encountered-order,
-// deduplicated alpha list) to its own ExtGState objects, so the per-stream
-// `gs /GSn` operators resolve correctly regardless of what alphas other pages
-// use. The first-encountered order (not sorted) is what the stream assigns names
-// in, so the writer must name objects in that exact same order.
+// own local /GSn (fill) + /GSs<n> (stroke) names (n = index in that page's
+// first-encountered-order, deduplicated alpha list) to its own ExtGState
+// objects, so the per-stream `gs` operators resolve correctly regardless of
+// what alphas other pages use. The first-encountered order (not sorted) is what
+// the stream assigns names in, so the writer must name objects in that exact
+// same order.
 Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
                                      std::span<const PdfPageSpec> page_specs,
                                      std::span<const std::string> layers) noexcept {
@@ -529,21 +596,28 @@ Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
       specs[i] = i < page_specs.size() ? page_specs[i] : PdfPageSpec{};
     }
 
-    // Each page's distinct fill-alphas (already sorted-unique per stream). The
-    // /GSn names a stream emits are indices into ITS OWN list, so ExtGState
-    // objects and the Resources/ExtGState dictionary are page-local — no cross-
-    // page name collision, no global re-indexing needed.
+    // Each page's distinct fill/stroke alphas (already sorted-unique per
+    // stream). The /GSn (fill) / GSs<n> (stroke) names a stream emits are
+    // indices into ITS OWN list, so ExtGState objects and the
+    // Resources/ExtGState dictionary are page-local — no cross-page name
+    // collision, no global re-indexing needed.
     std::vector<std::span<const double>> page_alphas(pages.size());
+    std::vector<std::span<const double>> page_stroke_alphas(pages.size());
     for (std::size_t p = 0; p < pages.size(); ++p) {
       page_alphas[p] = pages[p].stream.fill_alphas();
+      page_stroke_alphas[p] = pages[p].stream.stroke_alphas();
     }
     // Per-page ExtGState object-number offsets (after all the page objects).
-    // Page p's alpha g maps to object (ext_gstate_base + running_sum_to_p + g).
+    // Page p's fill alpha g maps to object (fill_base[p] + g); its stroke
+    // alpha g maps to (stroke_base[p] + g). The stroke objects follow each
+    // page's fill objects so the per-page regions stay contiguous.
     const std::size_t ext_gstate_base = 3 + 2 * pages.size();
     std::vector<std::size_t> page_alpha_base(pages.size() + 1);
+    std::vector<std::size_t> page_stroke_base(pages.size() + 1);
     page_alpha_base[0] = ext_gstate_base;
     for (std::size_t p = 0; p < pages.size(); ++p) {
-      page_alpha_base[p + 1] = page_alpha_base[p] + page_alphas[p].size();
+      page_stroke_base[p] = page_alpha_base[p] + page_alphas[p].size();
+      page_alpha_base[p + 1] = page_stroke_base[p] + page_stroke_alphas[p].size();
     }
     const std::size_t total_alpha_objects =
         page_alpha_base[pages.size()] - ext_gstate_base;
@@ -671,7 +745,8 @@ Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
       // `/Resources << >>`, byte-identical to the pre-#188 / pre-B1.PDF.2
       // writer. Otherwise build a dict naming /ExtGState, /XObject, /Pattern,
       // and optionally /Font (Base-14 Helvetica for searchable Latin text).
-      const bool has_alphas = !page_alphas[p].empty();
+      const bool has_alphas = !page_alphas[p].empty() ||
+                              !page_stroke_alphas[p].empty();
       const bool has_objects = !pages[p].objects.empty();
       const bool has_font = pages[p].stream.needs_standard_font();
       // Layered PDF: /Properties names the OCGs this page's marked content
@@ -690,6 +765,14 @@ Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
             out.push_back(' ');
             append_integer(out,
                            static_cast<std::int64_t>(page_alpha_base[p] + g));
+            out += " 0 R ";
+          }
+          for (std::size_t g = 0; g < page_stroke_alphas[p].size(); ++g) {
+            out += "/GSs";
+            append_integer(out, static_cast<std::int64_t>(g));
+            out.push_back(' ');
+            append_integer(out, static_cast<std::int64_t>(page_stroke_base[p] +
+                                                          g));
             out += " 0 R ";
           }
           out += ">>";
@@ -773,12 +856,19 @@ Result<PdfDocument> PdfWriter::write(std::span<const PdfPageContent> pages,
       }
     }
 
-    // Per-page /ExtGState objects (one per distinct fill-alpha that page uses).
+    // Per-page /ExtGState objects (one per distinct fill/stroke alpha that page
+    // uses): fills carry /ca, strokes carry /CA (PDF 32000-1 §11.6.4.2).
     for (std::size_t p = 0; p < pages.size(); ++p) {
       for (std::size_t g = 0; g < page_alphas[p].size(); ++g) {
         emit_object_header(page_alpha_base[p] + g);
         out += "<< /Type /ExtGState /ca ";
         append_number(out, page_alphas[p][g]);
+        out += " >>\nendobj\n";
+      }
+      for (std::size_t g = 0; g < page_stroke_alphas[p].size(); ++g) {
+        emit_object_header(page_stroke_base[p] + g);
+        out += "<< /Type /ExtGState /CA ";
+        append_number(out, page_stroke_alphas[p][g]);
         out += " >>\nendobj\n";
       }
     }

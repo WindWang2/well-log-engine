@@ -106,9 +106,16 @@ compute_page_windows(const PreparedScene &scene,
   const auto scale = printable_width(page) / scene.physical_width().value;
   std::vector<PageWindow> windows;
   if (page.mode == PaginationMode::continuous) {
+    // The continuous page must fit BOTH the full scene body AND the repeating
+    // legend band (repeat_legend, #839): the page height grows by the reserved
+    // legend band so the legend lands below the body instead of overpainting
+    // curve geometry. legend_band_height_mm is 0 when repeat_legend is off or
+    // the scene has no visible headers, so existing outputs are unchanged.
+    const auto legend_band_mm =
+        page.repeat_legend ? legend_band_height_mm(scene, page) : 0.0;
     const auto page_height_mm = scene.physical_height().value * scale +
                                 page.margins.top.value +
-                                page.margins.bottom.value;
+                                page.margins.bottom.value + legend_band_mm;
     windows.push_back({0.0, scene.physical_height().value, false, page_height_mm});
     return windows;
   }

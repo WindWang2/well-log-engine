@@ -508,6 +508,35 @@ void exports_png_and_tiff_with_snapshot_revision() {
   std::filesystem::remove(tiff_path);
 }
 
+void png_carries_physical_resolution_chunk() {
+  // #854-1: PNG exports previously carried no resolution metadata, so viewers
+  // opened them at 96 dpi by default. The writer now emits pHYs (pixels/m).
+  auto fixture = make_curve_fixture();
+  const auto path = temp_file("welllog-157-phys.png");
+  std::filesystem::remove(path);
+  RasterExportRequest req{
+      .path = path,
+      .format = RasterImageFormat::png,
+      .width_px = 120,
+      .height_px = 200,
+      .dpi_override = 150,
+      .background = RgbaColor{255, 255, 255, 255},
+      .color_space = RasterColorSpace::srgb,
+      .tile_height_px = 16,
+  };
+  const auto report = export_raster_sync(fixture.scene, fixture.snapshot, req);
+  require(report.has_value(), "pHYs PNG export must succeed");
+  require(report.value().dpi == 150, "report must carry the overridden dpi");
+
+  const auto png = decode_png(path);
+  require(png.has_value(), "pHYs PNG must decode");
+  const auto expected_ppm = static_cast<std::uint32_t>(
+      std::lround(150.0 * 1000.0 / 25.4));
+  require(png->phys_pixels_per_metre == expected_ppm,
+          "pHYs must carry the export dpi in pixels per metre");
+  std::filesystem::remove(path);
+}
+
 void respects_pixel_dpi_background_and_color_space() {
   auto fixture = make_curve_fixture();
   const auto path = temp_file("welllog-157-gray.png");
@@ -977,6 +1006,7 @@ void tile_cull_skips_bresenham_for_out_of_window_curves() {
 
 int main() {
   exports_png_and_tiff_with_snapshot_revision();
+  png_carries_physical_resolution_chunk();
   respects_pixel_dpi_background_and_color_space();
   rejects_overwrite_without_confirmation_and_resource_limits();
   async_job_reports_progress_and_survives_host_revision_change();

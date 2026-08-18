@@ -240,10 +240,137 @@ void identical_fingerprint_does_not_recopy_or_reupload() {
           "unchanged fingerprint must not re-upload atlas textures (issue #606)");
 }
 
+PreparedScene make_scene_with_pattern(const RgbaColor &foreground) {
+  const auto document_id = id("60600000-0000-4000-8000-000000000021");
+  const auto axis_id = id("60600000-0000-4000-8000-000000000022");
+  const auto curve_id = id("60600000-0000-4000-8000-000000000023");
+  const auto track_id = id("60600000-0000-4000-8000-000000000024");
+  const auto scale_id = id("60600000-0000-4000-8000-000000000025");
+  const auto layer_id = id("60600000-0000-4000-8000-000000000026");
+  const auto interval_id = id("60600000-0000-4000-8000-000000000027");
+  const auto pattern_id = id("60600000-0000-4000-8000-000000000028");
+
+  auto depths = std::make_shared<const std::vector<double>>(
+      std::vector<double>{1000.0, 1001.0, 1002.0});
+  auto values = std::make_shared<const std::vector<double>>(
+      std::vector<double>{10.0, 40.0, 20.0});
+  WellLogDocumentBuilder builder(document_id, DocumentRevision{1});
+  builder.add_sampling_axis(SamplingAxis{
+      .id = axis_id,
+      .coordinates = BufferView::from_vector(depths),
+      .domain = DepthDomain::measured_depth,
+      .unit = "m",
+      .direction = AxisDirection::increasing,
+  });
+  builder.add_curve(Curve{
+      .id = curve_id,
+      .mnemonic = "GR",
+      .display_name = "Gamma Ray",
+      .unit = "API",
+      .sampling_axis_id = axis_id,
+      .values = BufferView::from_vector(values),
+      .nulls = {},
+  });
+  builder.add_interval(Interval{
+      .id = interval_id,
+      .top_reference_depth = 1000.0,
+      .bottom_reference_depth = 1002.0,
+      .semantic = IntervalSemantic::lithology,
+      .pattern_id = pattern_id,
+      .fill_color = {},
+      .label = "Sand",
+  });
+
+  WellLogSession session;
+  require(session.execute(SetDocumentCommand{builder.build()}).has_value(),
+          "pattern fixture document must load");
+  ScenePresentationBuilder presentation(
+      document_id,
+      ReferenceDepthRange{.domain = DepthDomain::measured_depth,
+                          .unit = "m",
+                          .top = 1000.0,
+                          .bottom = 1002.0},
+      Millimetres{40.0}, "font-fixture-v1");
+  presentation.add_pattern(PatternDefinition{
+      .id = pattern_id,
+      .tile_width = Millimetres{4.0},
+      .tile_height = Millimetres{4.0},
+      .rotation_degrees = 0.0,
+      .foreground = foreground,
+      .background = RgbaColor{255, 255, 255, 255},
+      .stroke_width = Millimetres{0.2},
+      .primitives = {PatternLine{
+          .from = PhysicalPoint{Millimetres{0.0}, Millimetres{0.0}},
+          .to = PhysicalPoint{Millimetres{4.0}, Millimetres{4.0}}}},
+      .version = 1,
+  });
+  presentation.add_track(
+      TrackSpec{.id = track_id, .width = Millimetres{40.0}, .z_order = 1});
+  presentation.add_scale(TrackScaleSpec{.id = scale_id,
+                                        .track_id = track_id,
+                                        .mode = ScaleMode::linear,
+                                        .minimum = 0.0,
+                                        .maximum = 100.0,
+                                        .direction = ScaleDirection::left_to_right,
+                                        .unit = "API"});
+  presentation.add_curve_layer(CurveLayerSpec{
+      .id = layer_id,
+      .track_id = track_id,
+      .curve_id = curve_id,
+      .scale_id = scale_id,
+      .color = RgbaColor{200, 20, 20, 255},
+      .line_width = Millimetres{0.4},
+      .z_order = 1,
+      .visible = true,
+  });
+  presentation.add_interval_layer(IntervalLayerSpec{
+      .id = id("60600000-0000-4000-8000-000000000029"),
+      .track_id = track_id,
+      .z_order = 2,
+      .draw_labels = false,
+  });
+  require(session.execute(SetPresentationCommand{presentation.build()}).has_value(),
+          "pattern fixture presentation must load");
+  const auto scene = session.prepared_scene(document_id);
+  require(scene != nullptr && !scene->patterns().empty(),
+          "pattern fixture must prepare a scene with one pattern");
+  return *scene;
+}
+
+// #855-1: the atlas fingerprint must include pattern content (colour here), not
+// just the pattern id, so an in-place edit invalidates the cached atlas.
+void pattern_content_change_invalidates_atlas_cache() {
+  GlRenderer renderer;
+  require(renderer.initialize(&stub_resolver, nullptr),
+          "stub GL must initialize the renderer");
+  const GpuUploadBudgets budgets{
+      .maximum_cache_bytes = 256ULL * 1024ULL * 1024ULL,
+      .maximum_bytes_per_frame = 64ULL * 1024ULL * 1024ULL,
+  };
+
+  const auto scene_a = make_scene_with_pattern(RgbaColor{0, 0, 0, 255});
+  reset_gl_atlas_debug_stats();
+  require(renderer.queue_upload(scene_a, budgets),
+          "first pattern upload must succeed");
+  finish_upload(renderer);
+  const auto first_tex = gl_atlas_debug_stats().tex_image_2d_calls;
+  require(first_tex >= 1, "pattern scene must upload at least one atlas");
+
+  // Same id, different content → must re-upload.
+  const auto scene_b = make_scene_with_pattern(RgbaColor{255, 0, 0, 255});
+  reset_gl_atlas_debug_stats();
+  require(renderer.queue_upload(scene_b, budgets),
+          "second pattern upload must succeed");
+  finish_upload(renderer);
+  require(gl_atlas_debug_stats().tex_image_2d_calls >= 1,
+          "different pattern content must trigger atlas re-upload");
+}
+
 } // namespace
 
 int main() {
   identical_fingerprint_does_not_recopy_or_reupload();
+  pattern_content_change_invalidates_atlas_cache();
   std::cout << "PASS: atlas cache hit skips copy and tex upload\n";
   return EXIT_SUCCESS;
 }

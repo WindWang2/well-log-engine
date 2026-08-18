@@ -100,6 +100,13 @@ public:
   // in that same order, so identical content always yields identical /GS names
   // and object layout. A `gs` operator is emitted referencing the assigned name.
   PdfPathStream &set_fill_alpha(double alpha) noexcept;
+  // Set the STRKING (stroke) alpha to `alpha` in [0,1], mirroring
+  // set_fill_alpha but resolved to a dedicated `/GSs<n>` ExtGState carrying
+  // /CA (PDF 32000-1 §11.6.4.2, "stroke alpha") — without it, semi-transparent
+  // strokes exported through PDF rendered fully opaque (#854). The name prefix
+  // is distinct from the fill list's `/GSn` so a page using both never emits
+  // duplicate ExtGState keys.
+  PdfPathStream &set_stroke_alpha(double alpha) noexcept;
   // Paint the current path with a tiling pattern instead of a solid colour
   // (#188). Switches the non-stroking colour space to /Pattern and paints the
   // current path with the named pattern: `/Pattern cs` + `/<name> scn` + `f`.
@@ -128,6 +135,9 @@ public:
   // and names them /GS0, /GS1, … by this same order. Empty when no alpha was
   // set (opaque only).
   [[nodiscard]] std::span<const double> fill_alphas() const noexcept;
+  // The distinct stroke-alpha values this stream emitted `gs /GSs<n>` for, in
+  // first-encountered order. Empty when no stroke alpha was set (opaque only).
+  [[nodiscard]] std::span<const double> stroke_alphas() const noexcept;
   // True if draw_standard_text was used (writer must emit /Font Helvetica).
   [[nodiscard]] bool needs_standard_font() const noexcept;
   // B1.PDF.3: count of Unicode code points dropped from searchable overlay

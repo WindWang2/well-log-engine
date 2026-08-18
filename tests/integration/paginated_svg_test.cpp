@@ -236,8 +236,14 @@ void fixed_mode_paginates_with_repeating_bands_and_continuous_depths() {
   require(result.has_value(), "fixed export must succeed");
 
   const auto text = std::string{result.value().text()};
-  const auto svg_count = count_occurrences(text, "<svg ");
+  // Fixed mode emits a single root <svg> wrapper (data-export-pages) plus one
+  // nested <svg> per page (data-export-page). Count the per-page viewports,
+  // not the wrapper (#854).
+  const auto page_svg_count = count_occurrences(text, "data-export-page=\"");
+  const auto svg_count = page_svg_count;
   require(svg_count >= 2, "fixed mode over a tall scene must produce >=2 pages");
+  require(text.find("data-export-pages=\"17\"") != std::string::npos,
+          "fixed mode root must report the expected page count");
   require(text.find("data-export-page-count=\"17\"") != std::string::npos,
           "fixed mode must report the expected page count");
 
@@ -289,8 +295,10 @@ void fixed_mode_paginates_with_repeating_bands_and_continuous_depths() {
   }
 
   // Physical-dimension correctness: each page sized page_width x page_height.
-  require(count_occurrences(text, "width=\"120mm\"") == svg_count,
-          "every page must carry the physical page width");
+  // The outer root <svg> shares the page width, so width appears once more than
+  // the per-page count; height="50mm" is unique to the per-page viewports.
+  require(count_occurrences(text, "width=\"120mm\"") == svg_count + 1,
+          "every page plus the root wrapper must carry the physical page width");
   require(count_occurrences(text, "height=\"50mm\"") == svg_count,
           "every page must carry the physical page height");
 
@@ -357,7 +365,7 @@ void fixed_crop_marks_emitted_per_page() {
   const auto plain = PaginatedSvgExporter::write(*scene, snapshot);
   require(plain.has_value(), "plain fixed export must succeed");
   const auto plain_text = std::string{plain.value().text()};
-  const auto svg_count = count_occurrences(plain_text, "<svg ");
+  const auto svg_count = count_occurrences(plain_text, "data-export-page=\"");
   require(count_occurrences(plain_text, "data-export-role=\"crop-mark\"") == 0,
           "crop marks must be off by default");
 
@@ -365,7 +373,7 @@ void fixed_crop_marks_emitted_per_page() {
   const auto marked = PaginatedSvgExporter::write(*scene, snapshot);
   require(marked.has_value(), "marked fixed export must succeed");
   const auto marked_text = std::string{marked.value().text()};
-  const auto marked_svgs = count_occurrences(marked_text, "<svg ");
+  const auto marked_svgs = count_occurrences(marked_text, "data-export-page=\"");
   require(marked_svgs == svg_count,
           "crop marks must not change the page count");
   require(count_occurrences(marked_text, "data-export-role=\"crop-mark\"") ==
@@ -383,6 +391,43 @@ void continuous_crop_marks_emitted() {
   const auto text = std::string{result.value().text()};
   require(count_occurrences(text, "data-export-role=\"crop-mark\"") == 8,
           "continuous page must carry 8 crop-mark lines");
+}
+
+void continuous_mode_reserves_legend_band_below_body() {
+  // #839: continuous mode previously drew no legend (SVG) or overpainted the
+  // body (PDF). The SVG continuous page now grows by the reserved legend band
+  // and emits legend entries below the body.
+  const auto scene = prepare_tall_scene();
+  auto snapshot = make_snapshot(PaginationMode::continuous, Millimetres{297.0});
+  const auto result = PaginatedSvgExporter::write(*scene, snapshot);
+  require(result.has_value(), "continuous export must succeed");
+  const auto text = std::string{result.value().text()};
+
+  // Page height = scene_height*scale + top + bottom + legend_band (one entry).
+  const double scale = (snapshot.page.page_width.value -
+                        snapshot.page.margins.left.value -
+                        snapshot.page.margins.right.value) /
+                       scene->physical_width().value;
+  const double legend_band_mm = 4.0;  // one visible curve layer.
+  const double expected_height = scene->physical_height().value * scale +
+                                 snapshot.page.margins.top.value +
+                                 snapshot.page.margins.bottom.value +
+                                 legend_band_mm;
+  const auto height_key = text.find("height=\"");
+  require(height_key != std::string::npos, "continuous page must have height");
+  const auto height_start = height_key + std::strlen("height=\"");
+  const auto height_end = text.find('"', height_start);
+  const auto height_mm =
+      std::stod(text.substr(height_start, height_end - height_start));
+  require_near(height_mm, expected_height,
+               "continuous page height must include the reserved legend band");
+
+  // The legend entry must exist and sit below the body.
+  require(text.find("data-export-role=\"legend\"") != std::string::npos,
+          "continuous page must emit a legend band");
+  require(text.find(">Gamma Ray") != std::string::npos &&
+              text.find("API<") != std::string::npos,
+          "continuous legend must carry the curve name and unit");
 }
 
 void aggregate_pixel_height_is_positive_and_scale_aware() {
@@ -554,6 +599,32 @@ void depth_ruler_emits_authoritative_ticks() {
   require(text.find("data-export-role=\"ruler\" x=\"1\"") !=
               std::string::npos,
           "ruler labels must sit in the left margin strip");
+
+  // #838: the ruler tick y must be in PAGE-mm space, matching the body group's
+  // transform (translate(margins.left, margins.top) scale(scale, scale)).
+  // Scene physical height 400 mm, printable width 100 mm, scene width 80 mm
+  // → scale = 1.25. Tick at depth D maps to t = (D-1000)/800.
+  const double scale = 100.0 / 80.0;
+  const double content_top = snapshot.page.margins.top.value;
+  const auto expected_y = [&](double depth) {
+    const double t = (depth - 1000.0) / 800.0;
+    return content_top + t * scene->physical_height().value * scale;
+  };
+  // Find the tick line for 1200 m and assert its y2 matches the body
+  // transform. The label text ">1200<" comes after the line, so scan the line
+  // element directly.
+  const auto label_pos = text.find(">1200<");
+  require(label_pos != std::string::npos, "1200 m tick label must exist");
+  const auto line_start = text.rfind("<line ", label_pos);
+  require(line_start != std::string::npos, "1200 m tick line must exist");
+  const auto y2_key = text.find("y2=\"", line_start);
+  require(y2_key != std::string::npos && y2_key < label_pos,
+          "tick line must have a y2 attribute before the label");
+  const auto y_start = y2_key + std::strlen("y2=\"");
+  const auto y_end = text.find('"', y_start);
+  const auto y = std::stod(text.substr(y_start, y_end - y_start));
+  require_near(y, expected_y(1200.0),
+               "ruler tick y must align with the scaled body transform");
 }
 
 [[nodiscard]] std::string format_export_number(double value) {
@@ -570,6 +641,9 @@ void depth_ruler_emits_authoritative_ticks() {
 
 [[nodiscard]] std::vector<std::string_view>
 split_svg_documents(std::string_view text) {
+  // Fixed mode now emits one outer root <svg> (data-export-pages) containing
+  // nested per-page <svg> viewports (data-export-page). Return only the actual
+  // pages, not the wrapper (#854).
   std::vector<std::string_view> pages;
   std::size_t pos = 0;
   while (pos < text.size()) {
@@ -580,7 +654,10 @@ split_svg_documents(std::string_view text) {
     const auto end = text.find("</svg>", start);
     require(end != std::string_view::npos, "each page <svg> must close");
     const auto stop = end + std::strlen("</svg>");
-    pages.push_back(text.substr(start, stop - start));
+    const auto page_attrs = text.substr(start, end - start);
+    if (page_attrs.find("data-export-page=") != std::string_view::npos) {
+      pages.push_back(text.substr(start, stop - start));
+    }
     pos = stop;
   }
   return pages;
@@ -732,8 +809,8 @@ void fixed_pages_omit_out_of_window_curve_points() {
       std::string{PaginatedSvgExporter::write(*scene, four).value().text()};
   const auto eight_text =
       std::string{PaginatedSvgExporter::write(*scene, eight).value().text()};
-  const auto four_pages = count_occurrences(four_text, "<svg ");
-  const auto eight_pages = count_occurrences(eight_text, "<svg ");
+  const auto four_pages = count_occurrences(four_text, "data-export-page=\"");
+  const auto eight_pages = count_occurrences(eight_text, "data-export-page=\"");
   require(eight_pages > four_pages,
           "shorter pages must produce more fixed pages");
   const auto four_lineto = count_occurrences(four_text, " L ");
@@ -964,6 +1041,7 @@ int main() {
   fixed_mode_paginates_with_repeating_bands_and_continuous_depths();
   fixed_crop_marks_emitted_per_page();
   continuous_crop_marks_emitted();
+  continuous_mode_reserves_legend_band_below_body();
   aggregate_pixel_height_is_positive_and_scale_aware();
   single_scene_exporter_is_unchanged();
   invalid_scene_or_snapshot_is_rejected();

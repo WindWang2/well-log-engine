@@ -492,6 +492,97 @@ void non_circle_symbol_exports_real_geometry() {
           "the diamond path must be M + three line segments + Z");
 }
 
+// #840: SVG must emit stroke-dashoffset so dashed polylines keep phase parity
+// with GL/PDF.
+void dashed_polyline_svg_emits_dash_offset() {
+  CustomLayerSource source{.id = custom_source_id,
+                           .content_revision = DocumentRevision{1},
+                           .primitives = {},
+                           .clip = std::nullopt};
+  source.primitives.push_back(CustomPrimitive{CustomPolyline{
+      .points = {PhysicalPoint{Millimetres{10.0}, Millimetres{20.0}},
+                 PhysicalPoint{Millimetres{40.0}, Millimetres{20.0}}},
+      .closed = false,
+      .color = RgbaColor{10, 20, 200, 255},
+      .width = Millimetres{0.5},
+      .dash_pattern = DashPattern{
+          .segments = {Millimetres{4.0}, Millimetres{2.0}},
+          .offset = 1.5},
+  }});
+  auto builder = custom_presentation();
+  builder.add_custom_layer(CustomLayerSpec{
+      .id = custom_layer_id, .track_id = track_id,
+      .custom_source_id = custom_source_id, .z_order = 0, .visible = true});
+  const auto scene = prepare_custom(custom_document(source), builder);
+  const auto exported = SvgExporter::write(scene);
+  require(exported.has_value(), "dashed SVG export must succeed");
+  const auto text = std::string(exported.value().text());
+  require(text.find("stroke-dashoffset=\"1.5\"") != std::string::npos,
+          "SVG must emit the dash offset for phase parity");
+  require(text.find("stroke-dasharray=\"4 2\"") != std::string::npos,
+          "SVG must emit the dash array unchanged for even-length arrays");
+}
+
+// #840: odd-length dash arrays are legal in SVG (the spec duplicates them
+// implicitly) and are normalized explicitly in PDF/GL. The scene must accept
+// them and SVG must emit the dash array.
+void odd_length_dash_array_is_accepted() {
+  CustomLayerSource source{.id = custom_source_id,
+                           .content_revision = DocumentRevision{1},
+                           .primitives = {},
+                           .clip = std::nullopt};
+  source.primitives.push_back(CustomPrimitive{CustomPolyline{
+      .points = {PhysicalPoint{Millimetres{10.0}, Millimetres{20.0}},
+                 PhysicalPoint{Millimetres{40.0}, Millimetres{20.0}}},
+      .closed = false,
+      .color = RgbaColor{10, 20, 200, 255},
+      .width = Millimetres{0.5},
+      .dash_pattern = DashPattern{
+          .segments = {Millimetres{4.0}},
+          .offset = 0.0},
+  }});
+  auto builder = custom_presentation();
+  builder.add_custom_layer(CustomLayerSpec{
+      .id = custom_layer_id, .track_id = track_id,
+      .custom_source_id = custom_source_id, .z_order = 0, .visible = true});
+  const auto scene = prepare_custom(custom_document(source), builder);
+  const auto exported = SvgExporter::write(scene);
+  require(exported.has_value(), "odd-dash SVG export must succeed");
+  const auto text = std::string(exported.value().text());
+  require(text.find("stroke-dasharray=\"4\"") != std::string::npos,
+          "SVG must emit the odd-length dash array");
+}
+
+// #840: non-positive dash segments are rejected at scene-prepare time so no
+// backend is asked to render an invalid pattern.
+void zero_sum_dash_array_is_rejected() {
+  CustomLayerSource source{.id = custom_source_id,
+                           .content_revision = DocumentRevision{1},
+                           .primitives = {},
+                           .clip = std::nullopt};
+  source.primitives.push_back(CustomPrimitive{CustomPolyline{
+      .points = {PhysicalPoint{Millimetres{10.0}, Millimetres{20.0}},
+                 PhysicalPoint{Millimetres{40.0}, Millimetres{20.0}}},
+      .closed = false,
+      .color = RgbaColor{10, 20, 200, 255},
+      .width = Millimetres{0.5},
+      .dash_pattern = DashPattern{
+          .segments = {Millimetres{0.0}, Millimetres{0.0}},
+          .offset = 0.0},
+  }});
+  auto builder = custom_presentation();
+  builder.add_custom_layer(CustomLayerSpec{
+      .id = custom_layer_id, .track_id = track_id,
+      .custom_source_id = custom_source_id, .z_order = 0, .visible = true});
+  const auto presentation = builder.build();
+  detail::ScenePreparer::CurveLodMap curve_lods;
+  const auto scene = detail::ScenePreparer::prepare(
+      custom_document(source), presentation, curve_lods, {});
+  require(!scene.has_value(), "zero-sum dash array must be rejected");
+  require(scene.error().code == ErrorCode::invalid_presentation,
+          "bad dash pattern must use the presentation error code");
+}
+
 } // namespace
 
 int main() {
@@ -507,6 +598,9 @@ int main() {
   opengl_and_svg_consume_identical_custom_geometry();
   example_symbol_layer_renders();
   non_circle_symbol_exports_real_geometry();
+  dashed_polyline_svg_emits_dash_offset();
+  odd_length_dash_array_is_accepted();
+  zero_sum_dash_array_is_rejected();
   std::cout << "welllog.custom-layer: all cases passed\n";
   return 0;
 }
