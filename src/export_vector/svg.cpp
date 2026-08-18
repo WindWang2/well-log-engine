@@ -997,6 +997,11 @@ void append_layer_body(std::string &output, const PreparedScene &scene,
               append_number(output,
                             primitive.dash_pattern.segments[si].value);
             }
+            // ADR 0050 parity (#840): GL and PDF honour the dash phase; SVG
+            // previously omitted stroke-dashoffset so every dashed custom
+            // polyline was phase-shifted vs. the other backends.
+            output += "\" stroke-dashoffset=\"";
+            append_number(output, primitive.dash_pattern.offset);
           }
           output += "\" d=\"";
           bool first = true;

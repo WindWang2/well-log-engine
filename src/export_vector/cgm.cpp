@@ -432,13 +432,34 @@ void CgmBinaryWriter::polygon(
   if (points.size() < 3) {
     return;
   }
-  std::string params;
-  params.reserve(points.size() * 4);
-  for (const auto &p : points) {
-    append_i16_be(params, p.first);
-    append_i16_be(params, p.second);
+  // Chunk like polyline (#468 / #854): a single POLYGON parameter list is
+  // capped at 0x7FFF bytes by append_command, which previously truncated
+  // fill rings past 8191 vertices — silently dropping the tail and possibly
+  // cutting a ring between a point's x and y, producing a corrupted polygon
+  // with zero diagnostics. Each continuation chunk repeats the previous
+  // chunk's last point so the fill areas stay connected without relying on
+  // viewer-side polygon chaining (the same connection trick polyline uses).
+  constexpr std::size_t max_points_per_command = 8191;
+  std::size_t offset = 0;
+  bool first_chunk = true;
+  while (offset < points.size()) {
+    const auto budget = first_chunk ? max_points_per_command
+                                    : max_points_per_command - 1;
+    const auto count = std::min(budget, points.size() - offset);
+    std::string params;
+    params.reserve((count + (first_chunk ? 0 : 1)) * 4);
+    if (!first_chunk) {
+      append_i16_be(params, points[offset - 1].first);
+      append_i16_be(params, points[offset - 1].second);
+    }
+    for (std::size_t i = 0; i < count; ++i) {
+      append_i16_be(params, points[offset + i].first);
+      append_i16_be(params, points[offset + i].second);
+    }
+    append_command(impl_->bytes, 4, 7, params);
+    offset += count;
+    first_chunk = false;
   }
-  append_command(impl_->bytes, 4, 7, params);
 }
 
 void CgmBinaryWriter::rectangle_polyline(std::int16_t x, std::int16_t y,
@@ -794,16 +815,30 @@ CgmSceneExporter::write(const PreparedScene &scene,
         w.rectangle_polyline(x, y, rw, rh);
       }
 
-      // Headers only on first picture (continuous) or every picture.
+      // Headers only on first picture (continuous) or every picture. Multi-curve
+      // tracks stack their header labels vertically (4 mm per line, matching the
+      // legend row pitch) so they never overprint each other at the same (x, y)
+      // (#854); single-curve tracks keep the historic position.
       w.text_colour(40, 40, 40);
       w.character_height(std::max<std::int16_t>(1, clamp_i16(3.0 * scale)));
-      for (const auto &entry : scene.track_header_entries()) {
+      constexpr double header_line_step_mm = 4.0;
+      const auto headers = scene.track_header_entries();
+      for (std::size_t header_index = 0; header_index < headers.size();
+           ++header_index) {
+        const auto &entry = headers[header_index];
         double sx = 2.0;
         double sy = win.top_mm + 5.0;
         for (const auto &track : scene.tracks()) {
           if (track.id == entry.track_id) {
             sx = track.clip.left.value + 1.0;
-            sy = std::max(track.clip.top.value, win.top_mm) + 4.0;
+            std::size_t line = 0;
+            for (std::size_t prior = 0; prior < header_index; ++prior) {
+              if (headers[prior].track_id == entry.track_id) {
+                ++line;
+              }
+            }
+            sy = std::max(track.clip.top.value, win.top_mm) + 4.0 +
+                 static_cast<double>(line) * header_line_step_mm;
             break;
           }
         }

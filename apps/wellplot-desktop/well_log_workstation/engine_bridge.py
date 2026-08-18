@@ -118,7 +118,8 @@ def probe_engine() -> EngineCapability:
 
             ext = None
             for entry in sys.path:
-                for name in ("_QtWidgets.abi3.so", "_QtWidgets.so"):
+                for name in ("_QtWidgets.abi3.so", "_QtWidgets.so",
+                             "_QtWidgets.abi3.pyd", "_QtWidgets.pyd"):
                     candidate = Path(entry) / "welllog" / name
                     if candidate.is_file():
                         spec = importlib.util.spec_from_file_location(

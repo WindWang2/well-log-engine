@@ -609,11 +609,12 @@ void pdf_page_physical_dimensions_match_request() {
   }
 
   // Continuous mode: the page height is DERIVED from the scene's physical depth
-  // scaled to the printable width plus margins — assert the single MediaBox
-  // carries that derived height (margins + scale are observable here, criterion
-  // 2). Scene is 400 mm tall, 80 mm wide; printable width = 120−10−10 = 100 mm,
-  // so scale = 100/80 = 1.25; derived body height = 400·1.25 = 500 mm; page
-  // height = 500 + top/bottom margins (10+10) = 520 mm.
+  // scaled to the printable width plus margins PLUS the reserved legend band
+  // (#839) — assert the single MediaBox carries that derived height. Scene is
+  // 400 mm tall, 80 mm wide; printable width = 120−10−10 = 100 mm, so scale =
+  // 100/80 = 1.25; derived body height = 400·1.25 = 500 mm; legend band = 4 mm
+  // for one visible curve layer; page height = 500 + margins (10+10) + legend(4)
+  // = 524 mm.
   const auto cont_snap =
       make_snapshot(PaginationMode::continuous, Millimetres{297.0});
   const auto cont_bytes = std::string{build_pdf(*scene, cont_snap).bytes()};
@@ -621,11 +622,11 @@ void pdf_page_physical_dimensions_match_request() {
   require(cont_boxes.size() == 1, "continuous mode must emit one page");
   const auto expected_cont_w =
       cont_snap.page.page_width.value * points_per_millimetre;
-  const auto expected_cont_h = 520.0 * points_per_millimetre;
+  const auto expected_cont_h = 524.0 * points_per_millimetre;
   require_near(cont_boxes[0].first, expected_cont_w,
                "continuous page width must equal the requested physical width");
   require_near(cont_boxes[0].second, expected_cont_h,
-               "continuous page height must equal the margins+scale-derived "
+               "continuous page height must equal the margins+scale+legend-derived "
                "physical height");
 }
 
@@ -640,8 +641,9 @@ void asymmetric_margins_anchor_body_at_printable_top() {
   const auto scene = prepare(scene_data.document, scene_data.presentation);
   auto snap = make_snapshot(PaginationMode::continuous, Millimetres{297.0});
   // Asymmetric: top 10, bottom 25. Scene 400 mm tall, 80 wide; printable width
-  // 120−10−10=100 → scale 1.25; derived body height 400·1.25=500 mm; page
-  // height = 500 + top(10) + bottom(25) = 535 mm.
+  // 120−10−10=100 → scale 1.25; derived body height 400·1.25=500 mm; legend
+  // band = 4 mm for one visible curve layer; page height = 500 + top(10) +
+  // bottom(25) + legend(4) = 539 mm.
   snap.page.margins.top = Millimetres{10.0};
   snap.page.margins.bottom = Millimetres{25.0};
   const auto doc = build_pdf(*scene, snap);
@@ -650,9 +652,9 @@ void asymmetric_margins_anchor_body_at_printable_top() {
   require(cm.size() == 6,
           "page cm must be parsed from inflated streams without qpdf (#761)");
   require(cm[3] < 0.0, "page cm d-operand must be negative (y-flip)");
-  // f = (page_height_mm − margins.top)·pmm = (535 − 10)·pmm = 525·pmm.
+  // f = (page_height_mm − margins.top)·pmm = (539 − 10)·pmm = 529·pmm.
   const auto expected_f =
-      (535.0 - snap.page.margins.top.value) * points_per_millimetre;
+      (539.0 - snap.page.margins.top.value) * points_per_millimetre;
   require_near(cm[5], expected_f,
                "page cm f must anchor scene-y=0 at the printable top for "
                "asymmetric margins (the #193 M1 regression)");
@@ -676,10 +678,12 @@ void svg_structure_is_correct() {
           "continuous page must carry a footer");
 
   // Fixed: N pages, each with header/legend/footer/body roles + page numbers.
+  // The fixed document now has one outer root <svg> plus nested per-page <svg>
+  // viewports (#854), so page count is the number of data-export-page attributes.
   const auto fixed_text =
       std::string{build_svg(*scene, make_snapshot(PaginationMode::fixed,
                                                    Millimetres{50.0})).text()};
-  const auto svg_count = count_occurrences(fixed_text, "<svg ");
+  const auto svg_count = count_occurrences(fixed_text, "data-export-page=\"");
   require(svg_count >= 2, "fixed mode over a tall scene must produce >=2 pages");
   require(count_occurrences(fixed_text, "data-export-role=\"header\"") ==
               2 * svg_count,
@@ -709,9 +713,9 @@ void pagination_depth_ranges_are_continuous() {
   const auto scene = prepare(scene_data.document, scene_data.presentation);
   const auto snap = make_snapshot(PaginationMode::fixed, Millimetres{50.0});
 
-  // SVG depth windows.
+  // SVG depth windows. Count per-page viewports, not the outer root wrapper.
   const auto text = std::string{build_svg(*scene, snap).text()};
-  const auto svg_count = count_occurrences(text, "<svg ");
+  const auto svg_count = count_occurrences(text, "data-export-page=\"");
   std::vector<std::pair<double, double>> windows;
   std::size_t pos = 0;
   while ((pos = text.find("data-page-depth-top=\"", pos)) != std::string::npos) {
@@ -896,9 +900,10 @@ void snapshot_metadata_round_trips_in_both() {
   const auto scene = prepare(scene_data.document, scene_data.presentation);
   const auto snap = make_snapshot(PaginationMode::fixed, Millimetres{50.0});
 
-  // SVG: every page root carries the snapshot metadata.
+  // SVG: every page root carries the snapshot metadata (outer root wrapper does
+  // not, so count per-page viewports).
   const auto text = std::string{build_svg(*scene, snap).text()};
-  const auto svg_count = count_occurrences(text, "<svg ");
+  const auto svg_count = count_occurrences(text, "data-export-page=\"");
   require(count_occurrences(text, "data-document-revision=\"7\"") == svg_count,
           "every page must carry the document revision");
   require(count_occurrences(text, "data-presentation-version=\"42\"") ==

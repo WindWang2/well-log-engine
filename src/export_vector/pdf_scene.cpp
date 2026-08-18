@@ -109,6 +109,8 @@ pdf_scene_error(ErrorCode code, MessageKey message) noexcept {
 using export_layout::clip_line_to_tile;
 using export_layout::compute_page_windows;
 using export_layout::legend_band_height_mm;
+using export_layout::legend_entry_count;
+using export_layout::legend_row_height_mm;
 using export_layout::printable_depth_height_mm;
 using export_layout::printable_height;
 using export_layout::printable_width;
@@ -149,6 +151,17 @@ void set_solid_fill(PdfPathStream &stream, RgbaColor color) noexcept {
   stream.set_fill_color(color.red, color.green, color.blue);
   if (color.alpha < 255) {
     stream.set_fill_alpha(static_cast<double>(color.alpha) / 255.0);
+  }
+}
+
+// Sets the STROKING colour + alpha (`/CA`, PDF 32000-1 §11.6.4.2) for a solid
+// RgbaColor stroke. Without /CA a semi-transparent stroke renders fully opaque
+// in PDF while GL blends and SVG honours stroke-opacity (#854 item 7, the
+// missing piece of #476). Shared by curve/marker/symbol/custom-stroke emission.
+void set_solid_stroke(PdfPathStream &stream, RgbaColor color) noexcept {
+  stream.set_stroke_color(color.red, color.green, color.blue);
+  if (color.alpha < 255) {
+    stream.set_stroke_alpha(static_cast<double>(color.alpha) / 255.0);
   }
 }
 
@@ -511,6 +524,7 @@ void emit_symbol(PdfPathStream &stream, const PreparedSymbol &symbol,
   stream.set_stroke_color(layer.color.red, layer.color.green, layer.color.blue);
   if (layer.color.alpha < 255) {
     stream.set_fill_alpha(static_cast<double>(layer.color.alpha) / 255.0);
+    stream.set_stroke_alpha(static_cast<double>(layer.color.alpha) / 255.0);
   }
   switch (symbol.kind) {
   case SymbolKind::circle: {
@@ -578,6 +592,11 @@ void emit_marker_symbol(PdfPathStream &stream, const PreparedMarker &marker,
                         layer.line_color.blue);
   stream.set_stroke_color(layer.line_color.red, layer.line_color.green,
                           layer.line_color.blue);
+  if (layer.line_color.alpha < 255) {
+    stream.set_fill_alpha(static_cast<double>(layer.line_color.alpha) / 255.0);
+    stream.set_stroke_alpha(static_cast<double>(layer.line_color.alpha) /
+                            255.0);
+  }
   switch (kind) {
   case SymbolKind::circle:
     emit_circle_path(stream, cx, cy, half);
@@ -638,7 +657,7 @@ void emit_curve_layer(PdfPathStream &stream, const PreparedScene &scene,
   if (!layer.visible || layer.segment_count == 0) {
     return;
   }
-  stream.set_stroke_color(layer.color.red, layer.color.green, layer.color.blue);
+  set_solid_stroke(stream, layer.color);
   stream.set_line_width(layer.line_width.value);
   const auto segments = scene.curve_segments();
   const auto points = scene.curve_points();
@@ -879,13 +898,20 @@ void emit_text_string(PdfPathStream &stream, TextEngine *text_engine,
 // text engine; searchable Latin overlay (B1.PDF.2) works without a text engine.
 void emit_page_bands(PdfPathStream &stream, const PreparedScene &scene,
                      const ExportSnapshot &snapshot, std::uint32_t page_index,
-                     std::uint32_t page_count, double window_top_mm,
-                     double window_bottom_mm, TextEngine *text_engine,
+                     std::uint32_t page_count, double page_height_mm,
+                     double window_top_mm, double window_bottom_mm,
+                     TextEngine *text_engine,
                      bool searchable_text) noexcept {
   const auto &page = snapshot.page;
   const auto content_left = page.margins.left.value;
   const auto content_top = page.margins.top.value;
-  const auto printable_h = printable_height(page);
+  // Bands are emitted in PAGE-mm space (the band cm at the call site). The
+  // printable height is derived from the page's actual height (the continuous
+  // page grows by the reserved legend band, #839; the fixed page is the spec
+  // height), NOT from page.page_height which is the nominal spec page and
+  // differs from the continuous window height.
+  const auto printable_h = page_height_mm - page.margins.top.value -
+                           page.margins.bottom.value;
   const auto label_color = RgbaColor{0, 0, 0, 255};
   const auto band_font_size = 3.0;
   if (page.repeat_headers) {
@@ -920,9 +946,17 @@ void emit_page_bands(PdfPathStream &stream, const PreparedScene &scene,
       const double span = depth_bottom - depth_top;
       const double y_span = window_bottom_mm - window_top_mm;
       constexpr double ruler_font = 2.4;
+      // The tick y comes from scene millimetres but is emitted in PAGE-mm
+      // space: map scene-y → page-y exactly like the body cm (scene-y =
+      // window_top lands at content_top, scaled by the body scale) so the
+      // ticks align with the depth grid (#838). Before this fix the raw
+      // scene-mm y was used, drifting ~40 mm at default scale and falling off
+      // the page for t >= 0.92 / fixed pages past the first.
+      const double body_scale =
+          printable_width(page) / scene.physical_width().value;
       for (const double value : ticks.values) {
         const double t = (value - depth_top) / span;
-        const double y_mm = window_top_mm + t * y_span;
+        const double y_mm = content_top + t * y_span * body_scale;
         stream.save_state();
         stream.set_stroke_color(0x33, 0x33, 0x33);
         stream.set_line_width(0.4);
@@ -939,8 +973,8 @@ void emit_page_bands(PdfPathStream &stream, const PreparedScene &scene,
   if (page.show_depth_range) {
     const auto depth_top = scene_y_to_depth(scene, window_top_mm);
     const auto depth_bottom = scene_y_to_depth(scene, window_bottom_mm);
-    const auto footer_y =
-        page.page_height.value - page.margins.bottom.value + band_font_size;
+    const auto footer_y = page_height_mm - page.margins.bottom.value +
+                          band_font_size;
     std::string footer = "depth ";
     append_number(footer, depth_top);
     footer += " .. ";
@@ -950,8 +984,13 @@ void emit_page_bands(PdfPathStream &stream, const PreparedScene &scene,
   }
   if (page.repeat_legend) {
     const auto headers = scene.track_header_entries();
+    // Cap the legend at the printable height's row budget like the SVG
+    // backend (#839): the continuous page never enumerated past the budget
+    // and could paint an unbounded legend over curve geometry.
+    const auto emitted_legend_entries = legend_entry_count(scene, page);
     double legend_y = content_top + printable_h - band_font_size;
-    for (const auto &entry : headers) {
+    for (std::size_t i = 0; i < emitted_legend_entries; ++i) {
+      const auto &entry = headers[i];
       // Legend colour swatch (pure geometry — always emitted).
       stream.set_fill_color(entry.color.red, entry.color.green, entry.color.blue);
       stream.rect(content_left, legend_y - 2.0, 3.0, 2.0).fill();
@@ -964,7 +1003,7 @@ void emit_page_bands(PdfPathStream &stream, const PreparedScene &scene,
       mnemonic += entry.unit;
       emit_text_string(stream, text_engine, mnemonic, content_left + 4.0,
                        legend_y, band_font_size, label_color, searchable_text);
-      legend_y -= 4.0;
+      legend_y -= legend_row_height_mm;
     }
   }
 }
@@ -996,6 +1035,10 @@ void emit_custom_layer(PdfPathStream &stream, const PreparedScene &scene,
     if (primitive.kind == CustomPrimitiveKind::polyline) {
       stream.set_stroke_color(primitive.color.red, primitive.color.green,
                               primitive.color.blue);
+      if (primitive.color.alpha < 255) {
+        stream.set_stroke_alpha(static_cast<double>(primitive.color.alpha) /
+                                255.0);
+      }
       stream.set_line_width(primitive.stroke_width.value);
       if (!primitive.dash_pattern.segments.empty()) {
         std::vector<double> dash_array;
@@ -1073,7 +1116,11 @@ void emit_custom_layer(PdfPathStream &stream, const PreparedScene &scene,
 // printed page.
 void emit_crop_marks(PdfPathStream &stream, const ExportPageSpec &page) noexcept {
   constexpr double mark_length_mm = 5.0;
-  constexpr double stroke_width_pt = 0.85;  // 0.3 mm at 72 dpi points
+  // 0.3 mm stroke (matches the SVG/Qt backends). The emitter runs in the
+  // page-mm band space, so the width is expressed in mm; the previous 0.85
+  // (a mistaken "0.3 mm at 72 dpi" as *points* in what is already a page-mm
+  // cm) drew ~2.83x too thick (#854).
+  constexpr double stroke_width_mm = 0.3;
   const double w = page.page_width.value;
   const double h = page.page_height.value;
   const double left = page.margins.left.value;
@@ -1081,7 +1128,7 @@ void emit_crop_marks(PdfPathStream &stream, const ExportPageSpec &page) noexcept
   const double right = w - page.margins.right.value;
   const double bottom = h - page.margins.bottom.value;
   stream.set_stroke_color(0, 0, 0);
-  stream.set_line_width(stroke_width_pt);
+  stream.set_line_width(stroke_width_mm);
   const auto mark = [&stream](double x1, double y1, double x2, double y2) {
     stream.move_to(x1, y1).line_to(x2, y2).stroke();
   };
@@ -1442,8 +1489,8 @@ PdfSceneExporter::write(const PreparedScene &scene,
       stream.concat_matrix(points_per_millimetre, 0.0, 0.0,
                            -points_per_millimetre, 0.0, page_height_pt);
       emit_page_bands(stream, scene, snapshot, page_index, page_count,
-                      window.window_top_mm, window.window_bottom_mm,
-                      text_engine, searchable_text);
+                      window.height_mm, window.window_top_mm,
+                      window.window_bottom_mm, text_engine, searchable_text);
       if (page.crop_marks) {
         emit_crop_marks(stream, page);
       }

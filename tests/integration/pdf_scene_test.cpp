@@ -60,7 +60,7 @@ void require(bool condition, std::string_view message) {
 
 // Builds the exact normalized-colour operator string the writer emits for an
 // sRGB triple + operator (rg = fill, RG = stroke), reproducing its
-// append_number (to_chars general, shortest round-trip) so the assertion is
+// append_number (fixed-point 6 decimals, trimmed, #854) so the assertion is
 // robust to the exact digit count. Used to assert each primitive kind is
 // emitted by its unique colour rather than a generic path operator.
 [[nodiscard]] std::string color_operator(std::uint8_t r, std::uint8_t g,
@@ -73,9 +73,18 @@ void require(bool condition, std::string_view message) {
     std::array<char, 48> buffer{};
     const auto res =
         std::to_chars(buffer.data(), buffer.data() + buffer.size(), v,
-                      std::chars_format::general);
-    return res.ec == std::errc{} ? std::string(buffer.data(), res.ptr)
-                                 : std::string{"0"};
+                      std::chars_format::fixed, 6);
+    if (res.ec != std::errc{}) {
+      return std::string{"0"};
+    }
+    auto *end = res.ptr;
+    while (end > buffer.data() && end[-1] == '0') {
+      --end;
+    }
+    if (end > buffer.data() && end[-1] == '.') {
+      --end;
+    }
+    return std::string(buffer.data(), static_cast<std::size_t>(end - buffer.data()));
   };
   std::string out = component(r / 255.0);
   out.push_back(' ');
@@ -691,7 +700,8 @@ void semi_transparent_fill_uses_extgstate() {
   require(bytes.find("/Type /ExtGState /ca ") != std::string::npos,
           "a /ca ExtGState object must be embedded");
   // The alpha (180/255 ≈ 0.706) must round-trip in the ExtGState object.
-  require(bytes.find("0.705882352941176") != std::string::npos,
+  // The writer now uses fixed-point 6 decimals with trimmed zeros (#854).
+  require(bytes.find("0.705882") != std::string::npos,
           "the alpha value (180/255) must be recorded in the ExtGState object");
 }
 
@@ -831,6 +841,50 @@ void crop_marks_emit_corner_strokes() {
           "crop marks must add exactly 8 stroked registration lines");
 }
 
+// #854-6: the hand-rolled PDF number formatter must never emit scientific
+// notation ("5e-05"), which PDF 32000-1 §7.3.3 rejects.
+void pdf_numbers_use_fixed_point_not_scientific() {
+  PdfPathStream stream;
+  stream.move_to(1.0e-5, 2.0e-5).line_to(3.0e-5, 4.0e-5).stroke();
+  const auto ops = std::string{stream.operators()};
+  require(ops.find('e') == std::string::npos &&
+              ops.find('E') == std::string::npos,
+          "PDF coordinates must not use scientific notation");
+  require(ops.find("0.00001") != std::string::npos,
+          "tiny coordinates must still be emitted as fixed-point decimals");
+}
+
+// #854-7: semi-transparent strokes must select a /CA ExtGState (stroke alpha),
+// not only /ca (fill alpha).
+void semi_transparent_stroke_uses_stroke_alpha_extgstate() {
+  PdfPathStream stream;
+  stream.set_stroke_color(200, 0, 0);
+  stream.set_stroke_alpha(0.5);
+  stream.move_to(0.0, 0.0).line_to(10.0, 10.0).stroke();
+  const auto ops = std::string{stream.operators()};
+  require(ops.find("/GSs0 gs") != std::string::npos,
+          "semi-transparent stroke must select a /GSs<n> ExtGState");
+  const auto alphas = stream.stroke_alphas();
+  require(alphas.size() == 1 && alphas[0] == 0.5,
+          "stream must record the stroke alpha value");
+}
+
+// #840: PDF must normalize odd-length dash arrays by duplication (PDF 32000-1
+// §8.4.3.6) and reject non-positive segments.
+void pdf_dash_array_normalization_and_validation() {
+  PdfPathStream ok;
+  const std::array<double, 1> odd{4.0};
+  ok.set_dash(odd, 0.0);
+  require(std::string{ok.operators()}.find("[4 4] 0 d") != std::string::npos,
+          "odd-length dash array must be duplicated in PDF");
+
+  PdfPathStream bad;
+  const std::array<double, 2> zero_sum{0.0, 0.0};
+  bad.set_dash(zero_sum, 0.0);
+  require(std::string{bad.operators()}.find("[] 0 d") != std::string::npos,
+          "non-positive dash array must fall back to solid in PDF");
+}
+
 int main() {
   pdf_is_structurally_complete();
   external_tools_accept_the_pdf();
@@ -843,6 +897,9 @@ int main() {
   page_transform_y_flips_scene_orientation();
   layered_pdf_emits_ocg_per_track();
   crop_marks_emit_corner_strokes();
+  pdf_numbers_use_fixed_point_not_scientific();
+  semi_transparent_stroke_uses_stroke_alpha_extgstate();
+  pdf_dash_array_normalization_and_validation();
   std::cout << "welllog.pdf-scene: all cases passed\n";
   return EXIT_SUCCESS;
 }

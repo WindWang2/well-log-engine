@@ -1030,6 +1030,26 @@ render_export(const PreparedScene &scene, const ExportSnapshot &snapshot,
         ihdr[9] = geom.channels == 1 ? 0 : 6;
         write_png_chunk(out, "IHDR", ihdr, 13);
 
+        // pHYs: physical pixel density in pixels per metre (PNG spec §11.3.4.3)
+        // so DPI-aware viewers open the PNG at the export density instead of
+        // the 96 dpi default (#854). The report records the same geom.dpi; the
+        // file previously carried no resolution metadata while the TIFF path
+        // emitted 282/283 tags.
+        unsigned char phys[9] = {};
+        const auto pixels_per_metre = static_cast<std::uint32_t>(std::lround(
+            static_cast<double>(geom.dpi) * 1000.0 / 25.4));
+        phys[0] = static_cast<unsigned char>((pixels_per_metre >> 24U) & 0xffU);
+        phys[1] = static_cast<unsigned char>((pixels_per_metre >> 16U) & 0xffU);
+        phys[2] = static_cast<unsigned char>((pixels_per_metre >> 8U) & 0xffU);
+        phys[3] = static_cast<unsigned char>(pixels_per_metre & 0xffU);
+        // Same X and Y density.
+        phys[4] = phys[0];
+        phys[5] = phys[1];
+        phys[6] = phys[2];
+        phys[7] = phys[3];
+        phys[8] = 1; // unit = metre
+        write_png_chunk(out, "pHYs", phys, 9);
+
         z_stream stream{};
         if (deflateInit(&stream, Z_DEFAULT_COMPRESSION) != Z_OK) {
           return false;

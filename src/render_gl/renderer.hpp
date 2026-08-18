@@ -49,11 +49,26 @@ struct GlUploadProgress {
 struct GlAtlasDebugStats {
   std::uint64_t atlas_bytes_copied{};
   std::uint64_t tex_image_2d_calls{};
+  // Pattern tiles the shelf packer could not fit (atlas exhausted); the
+  // interval falls back to a solid fill. Non-zero means the GL output is
+  // degraded vs. the vector backends — previously this was silent (#855).
+  std::uint64_t pattern_tiles_dropped{};
 };
 
 [[nodiscard]] WELLLOG_RENDER_GL_API GlAtlasDebugStats &
 gl_atlas_debug_stats() noexcept;
 WELLLOG_RENDER_GL_API void reset_gl_atlas_debug_stats() noexcept;
+
+// Observability for GL dash handling (#840): one process-wide instance so
+// shared-library builds share counters with the test binary (mirroring
+// GlAtlasDebugStats).
+struct GlDashDebugStats {
+  std::uint64_t dash_arrays_fell_back_to_solid{};
+};
+
+[[nodiscard]] WELLLOG_RENDER_GL_API GlDashDebugStats &
+gl_dash_debug_stats() noexcept;
+WELLLOG_RENDER_GL_API void reset_gl_dash_debug_stats() noexcept;
 
 class WELLLOG_RENDER_GL_API GlRenderer {
 public:
