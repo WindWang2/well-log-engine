@@ -347,23 +347,28 @@ void atomic_write_failure_cleans_temp_and_preserves_target() {
   require(read_file(target) == original,
           "failed write must leave the pre-existing target byte-identical");
 
-  const auto ro_dir = dir.path / "ro";
-  std::filesystem::create_directories(ro_dir);
-  const auto ro_target = ro_dir / "denied.csv";
-  std::filesystem::permissions(ro_dir, std::filesystem::perms::owner_read |
-                                           std::filesystem::perms::owner_exec);
+  // I/O-failure path, portably: make the TARGET itself a directory so the
+  // final rename fails on every platform. (The previous approach removed the
+  // write bit on the parent directory, which POSIX honors but Windows
+  // ignores for directories — the read-only DOS attribute does not block
+  // file creation inside, so the write succeeded and this test failed on
+  // windows-latest.) The temp file lands in a writable directory, so this
+  // still exercises the rename-failure cleanup contract.
+  const auto denied_dir = dir.path / "denied";
+  std::filesystem::create_directories(denied_dir);
+  const auto ro_target = denied_dir / "denied.csv";
+  std::filesystem::create_directories(ro_target);
   const auto io_fail = export_table::write_file_atomic(
       ro_target, [](std::ostream &out) {
         out << "SHOULD-NOT-LAND\n";
         return true;
       });
-  std::filesystem::permissions(ro_dir, std::filesystem::perms::owner_all);
-  require(!io_fail.has_value(), "unwritable directory must fail");
+  require(!io_fail.has_value(), "unwritable target must fail");
   require(io_fail.error().code == ErrorCode::internal_error,
           "I/O failure maps to internal_error");
-  require(!std::filesystem::exists(ro_target),
-          "failed I/O must not create the visible target");
-  require(count_tmp_siblings(ro_dir) == 0,
+  require(std::filesystem::is_directory(ro_target),
+          "failed I/O must not replace the visible target");
+  require(count_tmp_siblings(denied_dir) == 0,
           "failed I/O must not leave a sibling temp");
 }
 
