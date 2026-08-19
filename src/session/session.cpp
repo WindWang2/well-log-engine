@@ -1101,25 +1101,32 @@ struct WellLogSession::Impl {
   // bottom to the new tail depth (follow_latest).
   std::unordered_map<EntityId, AppendViewportMode, EntityIdHash>
       append_viewport_modes;
-  // Multi-well surface layout (#160, ADR 0012). Empty = independent single-well
-  // mode (prepared_scene(doc) only). Non-empty wells share Display Depth via
-  // shared_depth_viewport when set.
+  // Multi-well surface layout (#160, ADR 0012). Empty = implicit
+  // one-placement surface (single well) resolved from focused_well or the
+  // session's single prepared document. Non-empty wells share Display Depth
+  // via shared_depth_viewport when set.
   std::vector<WellPlacement> well_layout;
   Millimetres well_layout_gap{4.0};
   std::optional<DepthViewport> shared_depth_viewport;
   std::optional<std::uint32_t> shared_pixel_height;
   std::optional<std::pair<double, double>> surface_horizontal_view;
+  // Focused well of the unified surface (ADR 0011 engine-owned interaction
+  // state). Anchors the implicit one-placement surface, selection gestures
+  // and the crosshair when no explicit layout is active.
+  std::optional<EntityId> focused_well;
+  // Virtualization counters published by the last prepared_surface_scene().
+  SurfaceStatistics surface_statistics{};
   // Composed-surface cache (issue #465): prepared_surface_scene() used to
   // deep-compose every call, so multi-well paintGL/update_pointer re-copied
   // ALL well geometry per frame (and the fresh shared_ptr forced a full GPU
   // re-upload per frame). Keyed on placements (document id, left offset,
-  // scene pointer identity), height, horizontal view and a generation bumped
-  // by every layout/overlay mutation; per-well prepared-scene changes fail
-  // the key naturally via the scene pointers.
+  // scene pointer identity), height and a generation bumped by every
+  // layout/overlay mutation; per-well prepared-scene changes fail the key
+  // naturally via the scene pointers. The horizontal cull window is not part
+  // of the key — it only selects which wells enter `placements`.
   struct SurfaceCacheKey {
     std::vector<std::tuple<EntityId, double, const void *>> placements;
     double height{};
-    std::optional<std::pair<double, double>> view;
     std::uint64_t generation{};
     bool operator==(const SurfaceCacheKey &other) const = default;
   };
@@ -1197,6 +1204,39 @@ struct WellLogSession::Impl {
       state.selection = selection->second;
     }
     return state;
+  }
+
+  // Resolves the document of the implicit one-placement surface (single
+  // well): the focused well when its scene exists, else the session's single
+  // prepared document. Nullopt when an explicit layout is active or no
+  // unambiguous single well resolves.
+  [[nodiscard]] std::optional<EntityId>
+  implicit_surface_document() const noexcept {
+    if (!well_layout.empty()) {
+      return std::nullopt;
+    }
+    if (focused_well.has_value()) {
+      if (prepared_scenes.contains(*focused_well)) {
+        return focused_well;
+      }
+      return std::nullopt;
+    }
+    if (prepared_scenes.size() == 1) {
+      return prepared_scenes.begin()->first;
+    }
+    return std::nullopt;
+  }
+
+  // Effective width of one placement (explicit width, else the prepared
+  // scene's width, else 0). Mirrors the fallback compose/pick use.
+  [[nodiscard]] double placement_width(const WellPlacement &well) const noexcept {
+    if (well.width.value > 0.0) {
+      return well.width.value;
+    }
+    const auto scene = prepared_scenes.find(well.document_id);
+    return scene == prepared_scenes.end() || scene->second == nullptr
+               ? 0.0
+               : scene->second->physical_width().value;
   }
 
   void publish_history_changed(EntityId document_id,
@@ -2323,10 +2363,12 @@ WellLogSession::execute(const SetWellLayoutCommand &command) {
 Result<CommandReceipt>
 WellLogSession::execute(const ClearWellLayoutCommand &) {
   impl_->well_layout.clear();
-    ++impl_->surface_generation;
   impl_->shared_depth_viewport.reset();
   impl_->shared_pixel_height.reset();
   impl_->surface_horizontal_view.reset();
+  impl_->surface_statistics = SurfaceStatistics{};
+  // The focused well survives a layout clear: the session falls back to the
+  // implicit one-placement surface for it.
   ++impl_->surface_generation;
   if (impl_->state_version != std::numeric_limits<std::uint64_t>::max()) {
     ++impl_->state_version;
@@ -2388,7 +2430,10 @@ WellLogSession::execute(const SetSurfaceHorizontalViewCommand &command) {
                  .message = MessageKey::presentation_invalid,
                  .arguments = {}};
   }
-  ++impl_->surface_generation;
+  // No surface_generation bump: the compose cache key pins the actual
+  // placement set, so panning the window without changing which wells
+  // intersect it keeps the composed scene (and its GPU resources) alive.
+  // A cull-set change naturally produces a different key.
   impl_->surface_horizontal_view =
       std::pair<double, double>{command.left_mm, command.right_mm};
   if (impl_->state_version != std::numeric_limits<std::uint64_t>::max()) {
@@ -2397,12 +2442,134 @@ WellLogSession::execute(const SetSurfaceHorizontalViewCommand &command) {
   return CommandReceipt{
       .state_version = impl_->state_version,
       .document_id = impl_->well_layout.empty()
-                         ? EntityId{}
+                         ? impl_->focused_well.value_or(EntityId{})
                          : impl_->well_layout.front().document_id,
       .document_revision = DocumentRevision{},
       .asynchronous_preparation_started = false,
       .diagnostic_id = std::nullopt,
   };
+}
+
+Result<CommandReceipt>
+WellLogSession::execute(const PanSurfaceHorizontalCommand &command) {
+  try {
+    if (!std::isfinite(command.delta_mm)) {
+      return Error{.code = ErrorCode::invalid_presentation,
+                   .severity = Severity::error,
+                   .entity_id = std::nullopt,
+                   .message = MessageKey::presentation_invalid,
+                   .arguments = {}};
+    }
+    if (impl_->well_layout.empty() ||
+        !impl_->surface_horizontal_view.has_value()) {
+      return Error{.code = ErrorCode::invalid_presentation,
+                   .severity = Severity::error,
+                   .entity_id = std::nullopt,
+                   .message = MessageKey::presentation_invalid,
+                   .arguments = {}};
+    }
+    const auto &[left, right] = *impl_->surface_horizontal_view;
+    auto total = 0.0;
+    for (const auto &well : impl_->well_layout) {
+      if (!well.visible) {
+        continue;
+      }
+      total = std::max(total, well.left.value + impl_->placement_width(well));
+    }
+    if (!(total > 0.0)) {
+      return Error{.code = ErrorCode::invalid_presentation,
+                   .severity = Severity::error,
+                   .entity_id = std::nullopt,
+                   .message = MessageKey::presentation_invalid,
+                   .arguments = {}};
+    }
+    const auto span = right - left;
+    // Clamp the shifted window to the surface extent; a no-op shift (already
+    // at an edge) succeeds without invalidating anything.
+    const auto next_left =
+        std::clamp(left + command.delta_mm, 0.0, std::max(0.0, total - span));
+    if (next_left == left) {
+      return CommandReceipt{
+          .state_version = impl_->state_version,
+          .document_id = impl_->well_layout.front().document_id,
+          .document_revision = DocumentRevision{},
+          .asynchronous_preparation_started = false,
+          .diagnostic_id = std::nullopt,
+      };
+    }
+    return execute(SetSurfaceHorizontalViewCommand{
+        .left_mm = next_left,
+        .right_mm = next_left + span,
+    });
+  } catch (...) {
+    return Error{.code = ErrorCode::internal_error,
+                 .severity = Severity::error,
+                 .entity_id = std::nullopt,
+                 .message = MessageKey::internal_error,
+                 .arguments = {}};
+  }
+}
+
+Result<CommandReceipt>
+WellLogSession::execute(const SetFocusedWellCommand &command) {
+  try {
+    if (command.document_id.is_nil() ||
+        !impl_->documents.contains(command.document_id)) {
+      return Error{.code = ErrorCode::document_not_found,
+                   .severity = Severity::error,
+                   .entity_id = command.document_id,
+                   .message = MessageKey::document_structure_invalid,
+                   .arguments = {}};
+    }
+    if (impl_->focused_well == command.document_id) {
+      return CommandReceipt{
+          .state_version = impl_->state_version,
+          .document_id = command.document_id,
+          .document_revision =
+              impl_->documents.at(command.document_id)->revision(),
+          .asynchronous_preparation_started = false,
+          .diagnostic_id = std::nullopt,
+      };
+    }
+    if (impl_->state_version == std::numeric_limits<std::uint64_t>::max()) {
+      return Error{.code = ErrorCode::internal_error,
+                   .severity = Severity::error,
+                   .entity_id = std::nullopt,
+                   .message = MessageKey::internal_error,
+                   .arguments = {}};
+    }
+    impl_->focused_well = command.document_id;
+    const auto next_state_version = impl_->state_version + 1;
+    const auto revision = impl_->documents.at(command.document_id)->revision();
+    const auto event = ViewEvent{
+        .kind = ViewEventKind::focused_well_changed,
+        .state_version = next_state_version,
+        .document_id = command.document_id,
+        .document_revision = revision,
+    };
+    impl_->state_version = next_state_version;
+    impl_->events.push_back(event);
+    impl_->notify_observers(event);
+    return CommandReceipt{
+        .state_version = next_state_version,
+        .document_id = command.document_id,
+        .document_revision = revision,
+        .asynchronous_preparation_started = false,
+        .diagnostic_id = std::nullopt,
+    };
+  } catch (const std::bad_alloc &) {
+    return Error{.code = ErrorCode::resource_exhausted,
+                 .severity = Severity::error,
+                 .entity_id = std::nullopt,
+                 .message = MessageKey::resource_exhausted,
+                 .arguments = {}};
+  } catch (...) {
+    return Error{.code = ErrorCode::internal_error,
+                 .severity = Severity::error,
+                 .entity_id = std::nullopt,
+                 .message = MessageKey::internal_error,
+                 .arguments = {}};
+  }
 }
 
 Result<CommandReceipt>
@@ -4970,8 +5137,30 @@ WellLogSession::shared_depth_viewport() const noexcept {
 std::shared_ptr<const PreparedScene>
 WellLogSession::prepared_surface_scene() const noexcept {
   try {
-    if (impl_ == nullptr || impl_->well_layout.empty()) {
+    if (impl_ == nullptr) {
       return nullptr;
+    }
+    // Unified surface: single well IS the one-placement surface. With no
+    // explicit layout the focused (or single) document's prepared scene is
+    // returned unchanged — no compose, no copy, same identity as
+    // prepared_scene(doc), so GPU resources are shared trivially.
+    if (impl_->well_layout.empty()) {
+      const auto implicit = impl_->implicit_surface_document();
+      if (!implicit.has_value()) {
+        return nullptr;
+      }
+      const auto scene = impl_->prepared_scenes.find(*implicit);
+      auto tracks = std::uint64_t{};
+      if (scene != impl_->prepared_scenes.end() && scene->second != nullptr) {
+        tracks = scene->second->tracks().size();
+      }
+      impl_->surface_statistics =
+          SurfaceStatistics{.visible_wells = 1,
+                            .culled_wells = 0,
+                            .visible_tracks = tracks,
+                            .culled_tracks = 0};
+      return scene == impl_->prepared_scenes.end() ? nullptr
+                                                   : scene->second;
     }
     std::vector<WellScenePlacement> placements;
     const auto view = impl_->surface_horizontal_view;
@@ -4981,6 +5170,10 @@ WellLogSession::prepared_surface_scene() const noexcept {
       double right{};
     };
     std::vector<WellSpan> spans;
+    auto visible_wells = std::uint64_t{};
+    auto culled_wells = std::uint64_t{};
+    auto visible_tracks = std::uint64_t{};
+    auto culled_tracks = std::uint64_t{};
     for (const auto &well : impl_->well_layout) {
       if (!well.visible) {
         continue;
@@ -4990,15 +5183,17 @@ WellLogSession::prepared_surface_scene() const noexcept {
           scene_it->second == nullptr) {
         continue;
       }
-      const auto width =
-          well.width.value > 0.0 ? well.width.value
-                                 : scene_it->second->physical_width().value;
+      const auto width = impl_->placement_width(well);
       const auto right = well.left.value + width;
       if (view.has_value()) {
         if (right <= view->first || well.left.value >= view->second) {
+          ++culled_wells;
+          culled_tracks += scene_it->second->tracks().size();
           continue;
         }
       }
+      ++visible_wells;
+      visible_tracks += scene_it->second->tracks().size();
       placements.push_back(WellScenePlacement{
           .document_id = well.document_id,
           .left = well.left,
@@ -5008,6 +5203,11 @@ WellLogSession::prepared_surface_scene() const noexcept {
                                .left = well.left.value,
                                .right = right});
     }
+    impl_->surface_statistics =
+        SurfaceStatistics{.visible_wells = visible_wells,
+                          .culled_wells = culled_wells,
+                          .visible_tracks = visible_tracks,
+                          .culled_tracks = culled_tracks};
     if (placements.empty()) {
       return nullptr;
     }
@@ -5018,9 +5218,12 @@ WellLogSession::prepared_surface_scene() const noexcept {
       }
     }
     // Cache hit short-circuits the deep compose (issue #465): the key pins
-    // every input — placement ids/offsets/scene-pointer identity, height,
-    // horizontal view, and a generation bumped by each layout/overlay/view
-    // mutation.
+    // every input — placement ids/offsets/scene-pointer identity, height, and
+    // a generation bumped by each layout/overlay mutation. The horizontal
+    // window is deliberately NOT part of the key: it only changes WHICH wells
+    // survive culling, and the surviving set is already pinned by the
+    // placements, so panning without a cull-set change keeps the composed
+    // scene (and its uploaded GPU resources) identical.
     Impl::SurfaceCacheKey key;
     key.placements.reserve(placements.size());
     for (const auto &placement : placements) {
@@ -5029,7 +5232,6 @@ WellLogSession::prepared_surface_scene() const noexcept {
                                   placement.scene.get());
     }
     key.height = height.value;
-    key.view = impl_->surface_horizontal_view;
     key.generation = impl_->surface_generation;
     if (impl_->surface_cache_scene != nullptr &&
         impl_->surface_cache_key == key) {
@@ -5164,8 +5366,25 @@ WellLogSession::prepared_surface_scene() const noexcept {
 std::optional<CurvePick>
 WellLogSession::pick_surface_curve(const CurvePickQuery &query) const noexcept {
   try {
-    if (impl_ == nullptr || impl_->well_layout.empty()) {
+    if (impl_ == nullptr) {
       return std::nullopt;
+    }
+    // Implicit one-placement surface: pick directly on the well scene (the
+    // composed identity would be wasteful and lossy).
+    if (impl_->well_layout.empty()) {
+      const auto implicit = impl_->implicit_surface_document();
+      if (!implicit.has_value()) {
+        return std::nullopt;
+      }
+      const auto scene = impl_->prepared_scenes.find(*implicit);
+      if (scene == impl_->prepared_scenes.end() || scene->second == nullptr) {
+        return std::nullopt;
+      }
+      auto hit = scene->second->pick_curve(query);
+      if (hit.has_value()) {
+        hit->document_id = *implicit;
+      }
+      return hit;
     }
     std::vector<WellScenePlacement> placements;
     const auto view = impl_->surface_horizontal_view;
@@ -5178,9 +5397,7 @@ WellLogSession::pick_surface_curve(const CurvePickQuery &query) const noexcept {
           scene_it->second == nullptr) {
         continue;
       }
-      const auto width =
-          well.width.value > 0.0 ? well.width.value
-                                 : scene_it->second->physical_width().value;
+      const auto width = impl_->placement_width(well);
       if (view.has_value()) {
         const auto right = well.left.value + width;
         if (right <= view->first || well.left.value >= view->second) {
@@ -5200,7 +5417,104 @@ WellLogSession::pick_surface_curve(const CurvePickQuery &query) const noexcept {
 }
 
 std::optional<DepthViewport>
+WellLogSession::surface_depth_viewport() const noexcept {
+  if (impl_ == nullptr) {
+    return std::nullopt;
+  }
+  if (!impl_->well_layout.empty() &&
+      impl_->shared_depth_viewport.has_value()) {
+    return impl_->shared_depth_viewport;
+  }
+  const auto anchor = impl_->focused_well.has_value()
+                          ? impl_->focused_well
+                          : impl_->implicit_surface_document();
+  if (anchor.has_value()) {
+    const auto found = impl_->viewports.find(*anchor);
+    if (found != impl_->viewports.end()) {
+      return found->second;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<CrosshairState>
+WellLogSession::surface_crosshair() const noexcept {
+  if (impl_ == nullptr) {
+    return std::nullopt;
+  }
+  // SetCrosshairCommand broadcasts across visible layout wells, so every
+  // member carries the same state; anchor on the focused well, else the
+  // first visible layout member, else the implicit single well.
+  std::optional<EntityId> resolved = impl_->focused_well;
+  if (!resolved.has_value() && !impl_->well_layout.empty()) {
+    for (const auto &well : impl_->well_layout) {
+      if (well.visible) {
+        resolved = well.document_id;
+        break;
+      }
+    }
+  }
+  if (!resolved.has_value()) {
+    resolved = impl_->implicit_surface_document();
+  }
+  if (resolved.has_value()) {
+    const auto found = impl_->crosshairs.find(*resolved);
+    if (found != impl_->crosshairs.end()) {
+      return found->second;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<double> WellLogSession::surface_width_mm() const noexcept {
+  if (impl_ == nullptr) {
+    return std::nullopt;
+  }
+  if (impl_->well_layout.empty()) {
+    const auto implicit = impl_->implicit_surface_document();
+    if (!implicit.has_value()) {
+      return std::nullopt;
+    }
+    const auto scene = impl_->prepared_scenes.find(*implicit);
+    if (scene == impl_->prepared_scenes.end() || scene->second == nullptr) {
+      return std::nullopt;
+    }
+    return scene->second->physical_width().value;
+  }
+  auto total = 0.0;
+  for (const auto &well : impl_->well_layout) {
+    if (!well.visible) {
+      continue;
+    }
+    total = std::max(total, well.left.value + impl_->placement_width(well));
+  }
+  return total > 0.0 ? std::optional<double>{total} : std::nullopt;
+}
+
+std::optional<std::pair<double, double>>
+WellLogSession::surface_horizontal_view() const noexcept {
+  return impl_ == nullptr ? std::nullopt : impl_->surface_horizontal_view;
+}
+
+WellLogSession::SurfaceStatistics
+WellLogSession::surface_statistics() const noexcept {
+  return impl_ == nullptr ? SurfaceStatistics{} : impl_->surface_statistics;
+}
+
+std::optional<EntityId> WellLogSession::focused_well() const noexcept {
+  return impl_ == nullptr ? std::nullopt : impl_->focused_well;
+}
+
+std::optional<DepthViewport>
 WellLogSession::viewport(EntityId document_id) const noexcept {
+  // Unified-surface delegation: layout members report the shared Display
+  // Depth window (SetViewportCommand keeps them in sync), so single- and
+  // multi-well callers read one state.
+  if (impl_ != nullptr && !impl_->well_layout.empty() &&
+      impl_->shared_depth_viewport.has_value() &&
+      layout_contains(impl_->well_layout, document_id)) {
+    return impl_->shared_depth_viewport;
+  }
   const auto found = impl_->viewports.find(document_id);
   return found == impl_->viewports.end()
              ? std::nullopt
