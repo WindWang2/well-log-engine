@@ -134,6 +134,7 @@ Curve Crossover Fill 的边界由两条曲线映射后的横坐标决定：
 - Cross-Well Overlay 在井布局完成后计算，引用多井变换结果。
 - 井间连接带和层位线在同一 Render Surface 中绘制，保证无 Widget 边界断裂。
 - Overlay 的 Z 顺序必须显式，不能依赖注册顺序偶然决定。
+- 水平 Surface 视口（`GlRenderFrame::horizontal`，left/span 毫米）是渲染期 uniform：水平 pan 不触发 re-upload。缺省（无 horizontal）保持整幅 fit-to-width（与旧版逐像素一致）。Surface 拾取（`pick_surface_curve`）按井左移查询、返回各自 Reference Depth——不得假设 `reference_depth == display_depth`，除非 identity transform。
 
 ## 8. Pattern Fill
 

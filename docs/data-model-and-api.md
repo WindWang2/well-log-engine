@@ -292,6 +292,17 @@ struct MultiWellScene {
 
 Multi-Well Scene 在一个 Session 和一个 Render Surface 中存在。垂直 Viewport 共享 Display Depth 域；每口井可以有独立 Depth Transform 和 Track 组。
 
+### 10.1 统一 Surface Canvas（ADR 0055）
+
+单井是 one-placement Surface 的特例：无显式 layout 时 `prepared_surface_scene()` 解析隐式单井 surface（focused well，否则唯一已 prepare 的文档），`pick_surface_curve()` 走同一路径。Surface 交互状态：
+
+- `SetFocusedWellCommand` / `focused_well()`：focused well 是 engine 持有的交互状态；
+- `PanDepthCommand` / `ZoomDepthAtCommand` / `ResetViewportCommand`：layout 成员上委托 shared Display Depth 视口（单井 per-document，同一条命令）；
+- `SetSurfaceHorizontalViewCommand` / `PanSurfaceHorizontalCommand`：水平窗口（surface 毫米）与带边界 clamp 的平移；
+- `surface_depth_viewport()` / `surface_crosshair()` / `surface_width_mm()` / `surface_horizontal_view()` / `surface_statistics()`：单井与连井共用的统一访问器（visible/culled wells/tracks 虚拟化计数）。
+
+Compose cache 键只钉真实输入（placements + 高度 + layout/overlay generation）：水平平移不改变剔除集合时组合场景指针不变，GPU 资源全量复用。
+
 ## 11. Session、Command 与 Event
 
 ### 11.1 Session 持有
