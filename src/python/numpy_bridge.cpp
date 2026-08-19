@@ -12,6 +12,9 @@
 #include <welllog/export/svg.hpp>
 #include <welllog/qtwidgets/well_log_view.hpp>
 #include <welllog/scene/axis_ticks.hpp>
+#include <welllog/scene/inspect.hpp>
+#include <welllog/scene/presentation_index.hpp>
+#include <welllog/session/track_commands.hpp>
 
 #include <QByteArray>
 #include <QThread>
@@ -19,6 +22,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
@@ -3176,6 +3180,968 @@ PyObject *export_scene_cgm(WellLogView *view, const QString &document_id,
   } catch (...) {
     set_welllog_error("WellLogError", "internal_error",
                       "unexpected native failure during CGM export");
+    return nullptr;
+  }
+}
+
+
+// --- Track/Data workflow commands + hover/selection introspection ----------
+//
+// apply_track_command maps one payload dict to one C++ track command
+// (track_commands.hpp). Ids for created entities are generated HERE (QUuid)
+// and passed explicitly so the report can return them — the host addresses
+// later edits with them.
+
+namespace {
+
+bool dict_get_bool_optional(PyObject *dict, const char *key, bool *out) {
+  auto *item = PyDict_GetItemString(dict, key);
+  if (item == nullptr) {
+    return false;
+  }
+  const auto truth = PyObject_IsTrue(item);
+  if (truth < 0) {
+    PyErr_Clear();
+    return false;
+  }
+  *out = truth != 0;
+  return true;
+}
+
+[[nodiscard]] std::optional<std::vector<EntityId>>
+dict_get_id_list(PyObject *dict, const char *key) {
+  auto *item = PyDict_GetItemString(dict, key);
+  if (item == nullptr || !PyList_Check(item)) {
+    return std::nullopt;
+  }
+  std::vector<EntityId> ids;
+  const auto count = PyList_Size(item);
+  ids.reserve(static_cast<std::size_t>(count));
+  for (Py_ssize_t index = 0; index < count; ++index) {
+    auto *entry = PyList_GetItem(item, index);
+    QString text;
+    if (entry == nullptr || !PyUnicode_Check(entry)) {
+      continue;
+    }
+    Py_ssize_t size = 0;
+    const char *utf8 = PyUnicode_AsUTF8AndSize(entry, &size);
+    if (utf8 == nullptr) {
+      PyErr_Clear();
+      continue;
+    }
+    text = QString::fromUtf8(utf8, static_cast<qsizetype>(size));
+    const auto parsed = parse_id(text, key);
+    if (!parsed) {
+      return std::nullopt;
+    }
+    ids.push_back(*parsed);
+  }
+  return ids;
+}
+
+[[nodiscard]] EntityId generate_bridge_id() {
+  const auto text =
+      QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+  return EntityId::parse(text).value();
+}
+
+// report = {"revision": n, "state_version": n, ...optional generated ids}
+[[nodiscard]] PyObject *
+command_report(const CommandReceipt &receipt) {
+  auto *report = PyDict_New();
+  if (report == nullptr) {
+    return nullptr;
+  }
+  auto *revision =
+      PyLong_FromUnsignedLongLong(receipt.document_revision.value);
+  if (revision == nullptr ||
+      PyDict_SetItemString(report, "revision", revision) != 0) {
+    Py_XDECREF(revision);
+    Py_DECREF(report);
+    return nullptr;
+  }
+  Py_DECREF(revision);
+  auto *version = PyLong_FromUnsignedLongLong(receipt.state_version);
+  if (version == nullptr ||
+      PyDict_SetItemString(report, "state_version", version) != 0) {
+    Py_XDECREF(version);
+    Py_DECREF(report);
+    return nullptr;
+  }
+  Py_DECREF(version);
+  return report;
+}
+
+[[nodiscard]] bool report_set_id(PyObject *report, const char *key,
+                                 EntityId value) {
+  auto *text = PyUnicode_FromString(value.to_string().c_str());
+  if (text == nullptr) {
+    return false;
+  }
+  const auto ok = PyDict_SetItemString(report, key, text) == 0;
+  Py_DECREF(text);
+  return ok;
+}
+
+[[nodiscard]] PyObject *apply_track_command_impl(WellLogView *view,
+                                                 PyObject *payload) {
+  if (view == nullptr) {
+    set_welllog_error("WellLogValidationError", "invalid_view",
+                      "WellLogView is no longer valid");
+    return nullptr;
+  }
+  if (QThread::currentThread() != view->thread()) {
+    set_welllog_error("WellLogThreadError", "thread_violation",
+                      "track commands must run on the Qt GUI thread");
+    return nullptr;
+  }
+  if (payload == nullptr || !PyDict_Check(payload)) {
+    set_welllog_error("WellLogValidationError", "invalid_document",
+                      "payload must be a dict");
+    return nullptr;
+  }
+  QString op;
+  if (!dict_get_string(payload, "op", &op)) {
+    set_welllog_error("WellLogValidationError", "invalid_document",
+                      "payload.op must be a string");
+    return nullptr;
+  }
+  QString document_id_text;
+  if (!dict_get_string(payload, "document_id", &document_id_text)) {
+    set_welllog_error("WellLogValidationError", "invalid_document",
+                      "payload.document_id is required");
+    return nullptr;
+  }
+  const auto document_id = parse_id(document_id_text, "document_id");
+  if (!document_id) {
+    return nullptr;
+  }
+  auto &session = view->session();
+
+  const auto require_id_field =
+      [&](const char *key, const char *role) -> std::optional<EntityId> {
+    QString text;
+    if (!dict_get_string(payload, key, &text)) {
+      set_welllog_error("WellLogValidationError", "invalid_document",
+                        (std::string{"payload."} + key + " is required")
+                            .c_str());
+      return std::nullopt;
+    }
+    return parse_id(text, role);
+  };
+  const auto optional_id_field =
+      [&](const char *key) -> EntityId {
+    QString text;
+    if (!dict_get_string(payload, key, &text) || text.isEmpty()) {
+      return EntityId{};
+    }
+    return *parse_id(text, key);
+  };
+
+  if (op == QStringLiteral("add_track")) {
+    double width_mm = 40.0;
+    dict_get_float_optional(payload, "width_mm", &width_mm);
+    bool visible = true;
+    dict_get_bool_optional(payload, "visible", &visible);
+    double header_height_mm = 0.0;
+    dict_get_float_optional(payload, "header_height_mm", &header_height_mm);
+    double header_font_size_mm = 2.5;
+    dict_get_float_optional(payload, "header_font_size_mm",
+                            &header_font_size_mm);
+    const auto track_id = optional_id_field("track_id");
+    const auto effective_track_id =
+        track_id.is_nil() ? generate_bridge_id() : track_id;
+    const auto result = session.execute(AddTrackCommand{
+        .document_id = *document_id,
+        .track_id = effective_track_id,
+        .width = Millimetres{width_mm},
+        .z_order = std::nullopt,
+        .header = TrackHeaderSpec{.height = Millimetres{header_height_mm},
+                                  .font_size =
+                                      Millimetres{header_font_size_mm}},
+        .visible = visible,
+    });
+    if (!result.has_value()) {
+      set_result_error(result.error(), "add_track");
+      return nullptr;
+    }
+    auto *report = command_report(result.value());
+    if (report == nullptr ||
+        !report_set_id(report, "track_id", effective_track_id)) {
+      Py_XDECREF(report);
+      return nullptr;
+    }
+    return report;
+  }
+  if (op == QStringLiteral("remove_track")) {
+    const auto track_id = require_id_field("track_id", "track_id");
+    if (!track_id) {
+      return nullptr;
+    }
+    const auto result = session.execute(RemoveTrackCommand{
+        .document_id = *document_id, .track_id = *track_id});
+    if (!result.has_value()) {
+      set_result_error(result.error(), "remove_track");
+      return nullptr;
+    }
+    return command_report(result.value());
+  }
+  if (op == QStringLiteral("reorder_tracks")) {
+    const auto ordered = dict_get_id_list(payload, "track_ids");
+    if (!ordered.has_value()) {
+      set_welllog_error("WellLogValidationError", "invalid_document",
+                        "payload.track_ids must be a list of UUIDs");
+      return nullptr;
+    }
+    const auto result = session.execute(ReorderTracksCommand{
+        .document_id = *document_id, .ordered_track_ids = *ordered});
+    if (!result.has_value()) {
+      set_result_error(result.error(), "reorder_tracks");
+      return nullptr;
+    }
+    return command_report(result.value());
+  }
+  if (op == QStringLiteral("resize_track")) {
+    const auto track_id = require_id_field("track_id", "track_id");
+    if (!track_id) {
+      return nullptr;
+    }
+    double width_mm = 0.0;
+    if (!dict_get_float(payload, "width_mm", &width_mm) || width_mm <= 0.0) {
+      set_welllog_error("WellLogValidationError", "invalid_presentation",
+                        "payload.width_mm must be a positive number");
+      return nullptr;
+    }
+    const auto result = session.execute(ResizeTrackCommand{
+        .document_id = *document_id,
+        .track_id = *track_id,
+        .width = Millimetres{width_mm},
+    });
+    if (!result.has_value()) {
+      set_result_error(result.error(), "resize_track");
+      return nullptr;
+    }
+    return command_report(result.value());
+  }
+  if (op == QStringLiteral("set_track_header")) {
+    const auto track_id = require_id_field("track_id", "track_id");
+    if (!track_id) {
+      return nullptr;
+    }
+    double height_mm = 0.0;
+    double font_size_mm = 2.5;
+    dict_get_float_optional(payload, "height_mm", &height_mm);
+    dict_get_float_optional(payload, "font_size_mm", &font_size_mm);
+    const auto result = session.execute(SetTrackHeaderCommand{
+        .document_id = *document_id,
+        .track_id = *track_id,
+        .header = TrackHeaderSpec{.height = Millimetres{height_mm},
+                                  .font_size = Millimetres{font_size_mm}},
+    });
+    if (!result.has_value()) {
+      set_result_error(result.error(), "set_track_header");
+      return nullptr;
+    }
+    return command_report(result.value());
+  }
+  if (op == QStringLiteral("set_track_visibility")) {
+    const auto track_id = require_id_field("track_id", "track_id");
+    if (!track_id) {
+      return nullptr;
+    }
+    bool visible = true;
+    dict_get_bool_optional(payload, "visible", &visible);
+    const auto result = session.execute(SetTrackVisibilityCommand{
+        .document_id = *document_id, .track_id = *track_id,
+        .visible = visible});
+    if (!result.has_value()) {
+      set_result_error(result.error(), "set_track_visibility");
+      return nullptr;
+    }
+    return command_report(result.value());
+  }
+  if (op == QStringLiteral("bind_curve")) {
+    const auto curve_id = require_id_field("curve_id", "curve_id");
+    if (!curve_id) {
+      return nullptr;
+    }
+    const auto track_id = require_id_field("track_id", "track_id");
+    if (!track_id) {
+      return nullptr;
+    }
+    const auto scale_id = optional_id_field("scale_id");
+    const auto layer_id_raw = optional_id_field("layer_id");
+    const auto layer_id =
+        layer_id_raw.is_nil() ? generate_bridge_id() : layer_id_raw;
+    bool auto_range = true;
+    dict_get_bool_optional(payload, "auto_range", &auto_range);
+    QString color_text;
+    dict_get_string_optional(payload, "color", &color_text);
+    double line_width_mm = 0.35;
+    dict_get_float_optional(payload, "line_width_mm", &line_width_mm);
+    const auto result = session.execute(BindCurveToTrackCommand{
+        .document_id = *document_id,
+        .curve_id = *curve_id,
+        .track_id = *track_id,
+        .layer_id = layer_id,
+        .scale_id = scale_id,
+        .auto_range = auto_range,
+        .color = parse_hex_color(
+            color_text,
+            RgbaColor{.red = 0x1F, .green = 0x72, .blue = 0xB8,
+                      .alpha = 0xFF}),
+        .line_width = Millimetres{line_width_mm},
+        .z_order = std::nullopt,
+    });
+    if (!result.has_value()) {
+      set_result_error(result.error(), "bind_curve");
+      return nullptr;
+    }
+    auto *report = command_report(result.value());
+    if (report == nullptr || !report_set_id(report, "layer_id", layer_id)) {
+      Py_XDECREF(report);
+      return nullptr;
+    }
+    if (!scale_id.is_nil()) {
+      if (!report_set_id(report, "scale_id", scale_id)) {
+        Py_DECREF(report);
+        return nullptr;
+      }
+    }
+    return report;
+  }
+  if (op == QStringLiteral("unbind_curve")) {
+    const auto layer_id = require_id_field("layer_id", "layer_id");
+    if (!layer_id) {
+      return nullptr;
+    }
+    const auto result = session.execute(UnbindCurveFromTrackCommand{
+        .document_id = *document_id, .layer_id = *layer_id});
+    if (!result.has_value()) {
+      set_result_error(result.error(), "unbind_curve");
+      return nullptr;
+    }
+    return command_report(result.value());
+  }
+  if (op == QStringLiteral("move_curve_layer")) {
+    const auto layer_id = require_id_field("layer_id", "layer_id");
+    if (!layer_id) {
+      return nullptr;
+    }
+    const auto target_track_id =
+        require_id_field("target_track_id", "target_track_id");
+    if (!target_track_id) {
+      return nullptr;
+    }
+    const auto result = session.execute(MoveCurveLayerCommand{
+        .document_id = *document_id,
+        .layer_id = *layer_id,
+        .target_track_id = *target_track_id,
+        .target_scale_id = optional_id_field("target_scale_id"),
+    });
+    if (!result.has_value()) {
+      set_result_error(result.error(), "move_curve_layer");
+      return nullptr;
+    }
+    return command_report(result.value());
+  }
+  if (op == QStringLiteral("duplicate_curve_layer")) {
+    const auto layer_id = require_id_field("layer_id", "layer_id");
+    if (!layer_id) {
+      return nullptr;
+    }
+    const auto new_layer_raw = optional_id_field("new_layer_id");
+    const auto new_layer_id =
+        new_layer_raw.is_nil() ? generate_bridge_id() : new_layer_raw;
+    const auto result = session.execute(DuplicateCurveLayerCommand{
+        .document_id = *document_id,
+        .layer_id = *layer_id,
+        .new_layer_id = new_layer_id,
+    });
+    if (!result.has_value()) {
+      set_result_error(result.error(), "duplicate_curve_layer");
+      return nullptr;
+    }
+    auto *report = command_report(result.value());
+    if (report == nullptr ||
+        !report_set_id(report, "new_layer_id", new_layer_id)) {
+      Py_XDECREF(report);
+      return nullptr;
+    }
+    return report;
+  }
+  if (op == QStringLiteral("reorder_curve_layers")) {
+    const auto track_id = require_id_field("track_id", "track_id");
+    if (!track_id) {
+      return nullptr;
+    }
+    const auto ordered = dict_get_id_list(payload, "layer_ids");
+    if (!ordered.has_value()) {
+      set_welllog_error("WellLogValidationError", "invalid_document",
+                        "payload.layer_ids must be a list of UUIDs");
+      return nullptr;
+    }
+    const auto result = session.execute(ReorderCurveLayersCommand{
+        .document_id = *document_id,
+        .track_id = *track_id,
+        .ordered_layer_ids = *ordered,
+    });
+    if (!result.has_value()) {
+      set_result_error(result.error(), "reorder_curve_layers");
+      return nullptr;
+    }
+    return command_report(result.value());
+  }
+  if (op == QStringLiteral("set_layer_visibility")) {
+    const auto layer_id = require_id_field("layer_id", "layer_id");
+    if (!layer_id) {
+      return nullptr;
+    }
+    bool visible = true;
+    dict_get_bool_optional(payload, "visible", &visible);
+    const auto result = session.execute(SetCurveLayerVisibilityCommand{
+        .document_id = *document_id, .layer_id = *layer_id,
+        .visible = visible});
+    if (!result.has_value()) {
+      set_result_error(result.error(), "set_layer_visibility");
+      return nullptr;
+    }
+    return command_report(result.value());
+  }
+  if (op == QStringLiteral("set_layer_style")) {
+    const auto layer_id = require_id_field("layer_id", "layer_id");
+    if (!layer_id) {
+      return nullptr;
+    }
+    QString color_text;
+    dict_get_string_optional(payload, "color", &color_text);
+    const bool has_color = !color_text.isEmpty();
+    double line_width_mm = 0.0;
+    const bool has_width =
+        dict_get_float(payload, "line_width_mm", &line_width_mm) &&
+        line_width_mm > 0.0;
+    const auto result = session.execute(SetCurveLayerStyleCommand{
+        .document_id = *document_id,
+        .layer_id = *layer_id,
+        .color =
+            has_color
+                ? std::optional<RgbaColor>{parse_hex_color(
+                      color_text,
+                      RgbaColor{.red = 0, .green = 0, .blue = 0, .alpha = 255})}
+                : std::optional<RgbaColor>{},
+        .line_width = has_width
+                          ? std::optional<Millimetres>{Millimetres{
+                                line_width_mm}}
+                          : std::optional<Millimetres>{},
+    });
+    if (!result.has_value()) {
+      set_result_error(result.error(), "set_layer_style");
+      return nullptr;
+    }
+    return command_report(result.value());
+  }
+  if (op == QStringLiteral("set_scale")) {
+    const auto scale_id = require_id_field("scale_id", "scale_id");
+    if (!scale_id) {
+      return nullptr;
+    }
+    QString mode_text;
+    dict_get_string_optional(payload, "mode", &mode_text);
+    std::optional<ScaleMode> mode;
+    if (!mode_text.isEmpty()) {
+      mode = mode_text == QStringLiteral("logarithmic")
+                 ? ScaleMode::logarithmic
+                 : ScaleMode::linear;
+    }
+    QString direction_text;
+    dict_get_string_optional(payload, "direction", &direction_text);
+    std::optional<ScaleDirection> direction;
+    if (!direction_text.isEmpty()) {
+      direction = direction_text == QStringLiteral("right_to_left")
+                      ? ScaleDirection::right_to_left
+                      : ScaleDirection::left_to_right;
+    }
+    double minimum = 0.0;
+    double maximum = 0.0;
+    const auto has_minimum =
+        dict_get_float(payload, "minimum", &minimum) && std::isfinite(minimum);
+    const auto has_maximum =
+        dict_get_float(payload, "maximum", &maximum) && std::isfinite(maximum);
+    QString unit_text;
+    dict_get_string_optional(payload, "unit", &unit_text);
+    std::optional<std::string> unit;
+    if (!unit_text.isEmpty()) {
+      unit = unit_text.toStdString();
+    }
+    const auto result = session.execute(SetTrackScaleCommand{
+        .document_id = *document_id,
+        .scale_id = *scale_id,
+        .mode = mode,
+        .minimum = has_minimum ? std::optional<double>{minimum}
+                               : std::optional<double>{},
+        .maximum = has_maximum ? std::optional<double>{maximum}
+                               : std::optional<double>{},
+        .direction = direction,
+        .unit = unit,
+    });
+    if (!result.has_value()) {
+      set_result_error(result.error(), "set_scale");
+      return nullptr;
+    }
+    return command_report(result.value());
+  }
+  if (op == QStringLiteral("auto_range_scale")) {
+    const auto scale_id = require_id_field("scale_id", "scale_id");
+    if (!scale_id) {
+      return nullptr;
+    }
+    const auto result = session.execute(AutoRangeTrackScaleCommand{
+        .document_id = *document_id, .scale_id = *scale_id});
+    if (!result.has_value()) {
+      set_result_error(result.error(), "auto_range_scale");
+      return nullptr;
+    }
+    return command_report(result.value());
+  }
+  set_welllog_error("WellLogValidationError", "invalid_document",
+                    (std::string{"unknown track command op: "} +
+                     op.toStdString())
+                        .c_str());
+  return nullptr;
+}
+
+[[nodiscard]] PyObject *hover_info_impl(WellLogView *view) {
+  const auto pick = view->hover_pick();
+  if (!pick.has_value()) {
+    Py_RETURN_NONE;
+  }
+  const auto &session = view->session();
+  const auto document = session.document(pick->document_id);
+  const auto *presentation = session.presentation(pick->document_id);
+  if (document == nullptr || presentation == nullptr) {
+    Py_RETURN_NONE;
+  }
+  const auto info =
+      resolve_curve_pick(*document, *presentation, *pick);
+  if (!info.has_value()) {
+    Py_RETURN_NONE;
+  }
+  auto *dict = PyDict_New();
+  if (dict == nullptr) {
+    return nullptr;
+  }
+  const auto set_str = [&](const char *key, std::string_view value) {
+    auto *text = PyUnicode_FromStringAndSize(
+        value.data(), static_cast<Py_ssize_t>(value.size()));
+    if (text == nullptr || PyDict_SetItemString(dict, key, text) != 0) {
+      Py_XDECREF(text);
+      return false;
+    }
+    Py_DECREF(text);
+    return true;
+  };
+  const auto set_double = [&](const char *key, double value) {
+    auto *number = PyFloat_FromDouble(value);
+    if (number == nullptr || PyDict_SetItemString(dict, key, number) != 0) {
+      Py_XDECREF(number);
+      return false;
+    }
+    Py_DECREF(number);
+    return true;
+  };
+  const auto set_id = [&](const char *key, EntityId value) {
+    return set_str(key, value.to_string());
+  };
+  if (!set_id("document_id", info->document_id) ||
+      !set_id("track_id", info->track_id) ||
+      !set_id("layer_id", info->layer_id) ||
+      !set_id("curve_id", info->curve_id) ||
+      !set_id("scale_id", info->scale_id) ||
+      !set_id("sampling_axis_id", info->sampling_axis_id) ||
+      !set_str("mnemonic", info->mnemonic) ||
+      !set_str("display_name", info->display_name) ||
+      !set_str("unit", info->unit) ||
+      !set_str("scale_unit", info->scale_unit) ||
+      !set_double("reference_depth", info->reference_depth) ||
+      !set_double("display_depth", info->display_depth) ||
+      !set_double("raw_value", info->raw_value) ||
+      !set_double("scale_minimum", info->scale_minimum) ||
+      !set_double("scale_maximum", info->scale_maximum)) {
+    Py_DECREF(dict);
+    return nullptr;
+  }
+  auto *sample_index =
+      PyLong_FromUnsignedLongLong(info->sample_index);
+  if (sample_index == nullptr ||
+      PyDict_SetItemString(dict, "sample_index", sample_index) != 0) {
+    Py_XDECREF(sample_index);
+    Py_DECREF(dict);
+    return nullptr;
+  }
+  Py_DECREF(sample_index);
+  const char *qc = "valid";
+  switch (info->qc_state) {
+  case QcState::suspect:
+    qc = "suspect";
+    break;
+  case QcState::invalid:
+    qc = "invalid";
+    break;
+  case QcState::user_excluded:
+    qc = "user_excluded";
+    break;
+  case QcState::valid:
+    break;
+  }
+  if (!set_str("qc_state", qc) ||
+      !set_str("scale_mode",
+               info->scale_mode == ScaleMode::logarithmic ? "logarithmic"
+                                                          : "linear") ||
+      !set_str("scale_direction",
+               info->scale_direction == ScaleDirection::right_to_left
+                   ? "right_to_left"
+                   : "left_to_right")) {
+    Py_DECREF(dict);
+    return nullptr;
+  }
+  auto *derived = info->derived ? Py_True : Py_False;
+  if (PyDict_SetItemString(dict, "derived", derived) != 0) {
+    Py_DECREF(dict);
+    return nullptr;
+  }
+  if (info->derived) {
+    if (!set_str("algorithm_id", info->algorithm_id) ||
+        !set_str("algorithm_version", info->algorithm_version)) {
+      Py_DECREF(dict);
+      return nullptr;
+    }
+    auto *stale = info->derived_freshness == DerivedFreshness::stale
+                      ? Py_True
+                      : Py_False;
+    if (PyDict_SetItemString(dict, "derived_stale", stale) != 0) {
+      Py_DECREF(dict);
+      return nullptr;
+    }
+  }
+  return dict;
+}
+
+[[nodiscard]] PyObject *selection_state_impl(WellLogView *view) {
+  const auto document_id = view->document_id();
+  if (!document_id.has_value()) {
+    Py_RETURN_NONE;
+  }
+  const auto &session = view->session();
+  const auto selection = session.selection(*document_id);
+  if (!selection.has_value()) {
+    Py_RETURN_NONE;
+  }
+  auto *dict = PyDict_New();
+  if (dict == nullptr) {
+    return nullptr;
+  }
+  const auto set_double = [&](const char *key, double value) {
+    auto *number = PyFloat_FromDouble(value);
+    if (number == nullptr || PyDict_SetItemString(dict, key, number) != 0) {
+      Py_XDECREF(number);
+      return false;
+    }
+    Py_DECREF(number);
+    return true;
+  };
+  auto *axis_id =
+      PyUnicode_FromString(selection->sampling_axis_id.to_string().c_str());
+  auto *first = PyLong_FromUnsignedLongLong(selection->first_row);
+  auto *last = PyLong_FromUnsignedLongLong(selection->last_row);
+  auto *valid = selection->valid ? Py_True : Py_False;
+  if (axis_id == nullptr || first == nullptr || last == nullptr ||
+      PyDict_SetItemString(dict, "sampling_axis_id", axis_id) != 0 ||
+      PyDict_SetItemString(dict, "first_row", first) != 0 ||
+      PyDict_SetItemString(dict, "last_row", last) != 0 ||
+      PyDict_SetItemString(dict, "valid", valid) != 0 ||
+      !set_double("top", selection->reference_depth_range.top) ||
+      !set_double("bottom", selection->reference_depth_range.bottom)) {
+    Py_XDECREF(axis_id);
+    Py_XDECREF(first);
+    Py_XDECREF(last);
+    Py_DECREF(dict);
+    return nullptr;
+  }
+  Py_DECREF(axis_id);
+  Py_DECREF(first);
+  Py_DECREF(last);
+  return dict;
+}
+
+[[nodiscard]] PyObject *presentation_state_impl(WellLogView *view,
+                                                const QString &document_id) {
+  const auto parsed = parse_id(document_id, "document_id");
+  if (!parsed) {
+    return nullptr;
+  }
+  const auto *presentation = view->session().presentation(*parsed);
+  if (presentation == nullptr) {
+    Py_RETURN_NONE;
+  }
+  const PresentationBindingIndex index{*presentation};
+  auto *dict = PyDict_New();
+  if (dict == nullptr) {
+    return nullptr;
+  }
+  auto *tracks = PyList_New(0);
+  auto *scales = PyList_New(0);
+  auto *layers = PyList_New(0);
+  if (tracks == nullptr || scales == nullptr || layers == nullptr) {
+    Py_XDECREF(tracks);
+    Py_XDECREF(scales);
+    Py_XDECREF(layers);
+    Py_DECREF(dict);
+    return nullptr;
+  }
+  const auto make_entry = []() -> PyObject * { return PyDict_New(); };
+  const auto put_double = [](PyObject *entry, const char *key,
+                             double value) -> bool {
+    auto *number = PyFloat_FromDouble(value);
+    if (number == nullptr || PyDict_SetItemString(entry, key, number) != 0) {
+      Py_XDECREF(number);
+      return false;
+    }
+    Py_DECREF(number);
+    return true;
+  };
+  const auto put_id = [](PyObject *entry, const char *key,
+                         EntityId value) -> bool {
+    auto *text = PyUnicode_FromString(value.to_string().c_str());
+    if (text == nullptr || PyDict_SetItemString(entry, key, text) != 0) {
+      Py_XDECREF(text);
+      return false;
+    }
+    Py_DECREF(text);
+    return true;
+  };
+  const auto put_long = [](PyObject *entry, const char *key,
+                           long long value) -> bool {
+    auto *number = PyLong_FromLongLong(value);
+    if (number == nullptr || PyDict_SetItemString(entry, key, number) != 0) {
+      Py_XDECREF(number);
+      return false;
+    }
+    Py_DECREF(number);
+    return true;
+  };
+  const auto put_bool = [](PyObject *entry, const char *key,
+                           bool value) -> bool {
+    auto *flag = value ? Py_True : Py_False;
+    return PyDict_SetItemString(entry, key, flag) == 0;
+  };
+  for (const auto *track : index.tracks_in_z_order()) {
+    auto *entry = make_entry();
+    if (entry == nullptr ||
+        !put_id(entry, "id", track->id) ||
+        !put_double(entry, "width_mm", track->width.value) ||
+        !put_long(entry, "z_order", track->z_order) ||
+        !put_bool(entry, "visible", track->visible) ||
+        !put_double(entry, "header_height_mm", track->header.height.value)) {
+      Py_XDECREF(entry);
+      goto fail;
+    }
+    if (PyList_Append(tracks, entry) != 0) {
+      Py_DECREF(entry);
+      goto fail;
+    }
+    Py_DECREF(entry);
+  }
+  for (const auto &scale : presentation->scales()) {
+    auto *entry = make_entry();
+    if (entry == nullptr ||
+        !put_id(entry, "id", scale.id) ||
+        !put_id(entry, "track_id", scale.track_id) ||
+        !put_double(entry, "minimum", scale.minimum) ||
+        !put_double(entry, "maximum", scale.maximum)) {
+      Py_XDECREF(entry);
+      goto fail;
+    }
+    {
+      auto *mode = PyUnicode_FromString(
+          scale.mode == ScaleMode::logarithmic ? "logarithmic" : "linear");
+      auto *unit =
+          PyUnicode_FromString(scale.unit.c_str());
+      auto *direction =
+          PyUnicode_FromString(scale.direction ==
+                                       ScaleDirection::right_to_left
+                                   ? "right_to_left"
+                                   : "left_to_right");
+      if (mode == nullptr || unit == nullptr || direction == nullptr ||
+          PyDict_SetItemString(entry, "mode", mode) != 0 ||
+          PyDict_SetItemString(entry, "unit", unit) != 0 ||
+          PyDict_SetItemString(entry, "direction", direction) != 0) {
+        Py_XDECREF(mode);
+        Py_XDECREF(unit);
+        Py_XDECREF(direction);
+        Py_DECREF(entry);
+        goto fail;
+      }
+      Py_DECREF(mode);
+      Py_DECREF(unit);
+      Py_DECREF(direction);
+    }
+    if (PyList_Append(scales, entry) != 0) {
+      Py_DECREF(entry);
+      goto fail;
+    }
+    Py_DECREF(entry);
+  }
+  for (const auto &layer : presentation->curve_layers()) {
+    auto *entry = make_entry();
+    if (entry == nullptr ||
+        !put_id(entry, "id", layer.id) ||
+        !put_id(entry, "track_id", layer.track_id) ||
+        !put_id(entry, "curve_id", layer.curve_id) ||
+        !put_id(entry, "scale_id", layer.scale_id) ||
+        !put_double(entry, "line_width_mm", layer.line_width.value) ||
+        !put_long(entry, "z_order", layer.z_order) ||
+        !put_bool(entry, "visible", layer.visible)) {
+      Py_XDECREF(entry);
+      goto fail;
+    }
+    {
+      char color[10];
+      std::snprintf(color, sizeof(color), "#%02x%02x%02x%02x",
+                    layer.color.red, layer.color.green, layer.color.blue,
+                    layer.color.alpha);
+      auto *text = PyUnicode_FromString(color);
+      if (text == nullptr ||
+          PyDict_SetItemString(entry, "color", text) != 0) {
+        Py_XDECREF(text);
+        Py_DECREF(entry);
+        goto fail;
+      }
+      Py_DECREF(text);
+    }
+    if (PyList_Append(layers, entry) != 0) {
+      Py_DECREF(entry);
+      goto fail;
+    }
+    Py_DECREF(entry);
+  }
+  if (PyDict_SetItemString(dict, "tracks", tracks) != 0 ||
+      PyDict_SetItemString(dict, "scales", scales) != 0 ||
+      PyDict_SetItemString(dict, "curve_layers", layers) != 0) {
+    goto fail;
+  }
+  Py_DECREF(tracks);
+  Py_DECREF(scales);
+  Py_DECREF(layers);
+  return dict;
+
+fail:
+  Py_DECREF(tracks);
+  Py_DECREF(scales);
+  Py_DECREF(layers);
+  Py_DECREF(dict);
+  return nullptr;
+}
+
+} // namespace
+
+PyObject *apply_track_command(WellLogView *view, PyObject *payload) noexcept {
+  try {
+    return apply_track_command_impl(view, payload);
+  } catch (const std::bad_alloc &) {
+    return PyErr_NoMemory();
+  } catch (const std::exception &exc) {
+    set_welllog_error("WellLogError", "internal_error", exc.what());
+    return nullptr;
+  } catch (...) {
+    set_welllog_error("WellLogError", "internal_error",
+                      "unexpected native failure during track command");
+    return nullptr;
+  }
+}
+
+PyObject *hover_info(WellLogView *view) noexcept {
+  try {
+    return hover_info_impl(view);
+  } catch (const std::bad_alloc &) {
+    return PyErr_NoMemory();
+  } catch (...) {
+    set_welllog_error("WellLogError", "internal_error",
+                      "unexpected native failure during hover inspect");
+    return nullptr;
+  }
+}
+
+PyObject *selection_state(WellLogView *view) noexcept {
+  try {
+    return selection_state_impl(view);
+  } catch (const std::bad_alloc &) {
+    return PyErr_NoMemory();
+  } catch (...) {
+    set_welllog_error("WellLogError", "internal_error",
+                      "unexpected native failure reading selection");
+    return nullptr;
+  }
+}
+
+PyObject *set_row_selection(WellLogView *view, const QString &axis_id,
+                            unsigned long long first_row,
+                            unsigned long long last_row) noexcept {
+  try {
+    const auto document_id = view->document_id();
+    if (!document_id.has_value()) {
+      set_welllog_error("WellLogValidationError", "invalid_document",
+                        "view has no document");
+      return nullptr;
+    }
+    const auto axis = parse_id(axis_id, "axis_id");
+    if (!axis) {
+      return nullptr;
+    }
+    const auto result = view->session().execute(SetRowSelectionCommand{
+        .document_id = *document_id,
+        .sampling_axis_id = *axis,
+        .first_row = first_row,
+        .last_row = last_row,
+    });
+    if (!result.has_value()) {
+      set_result_error(result.error(), "set_row_selection");
+      return nullptr;
+    }
+    auto *dict = PyDict_New();
+    if (dict == nullptr) {
+      return nullptr;
+    }
+    auto *first = PyLong_FromUnsignedLongLong(first_row);
+    auto *last = PyLong_FromUnsignedLongLong(last_row);
+    if (first == nullptr || last == nullptr ||
+        PyDict_SetItemString(dict, "first_row", first) != 0 ||
+        PyDict_SetItemString(dict, "last_row", last) != 0) {
+      Py_XDECREF(first);
+      Py_XDECREF(last);
+      Py_DECREF(dict);
+      return nullptr;
+    }
+    Py_DECREF(first);
+    Py_DECREF(last);
+    return dict;
+  } catch (const std::bad_alloc &) {
+    return PyErr_NoMemory();
+  } catch (...) {
+    set_welllog_error("WellLogError", "internal_error",
+                      "unexpected native failure during row selection");
+    return nullptr;
+  }
+}
+
+PyObject *presentation_state(WellLogView *view,
+                             const QString &document_id) noexcept {
+  try {
+    return presentation_state_impl(view, document_id);
+  } catch (const std::bad_alloc &) {
+    return PyErr_NoMemory();
+  } catch (...) {
+    set_welllog_error("WellLogError", "internal_error",
+                      "unexpected native failure reading presentation");
     return nullptr;
   }
 }

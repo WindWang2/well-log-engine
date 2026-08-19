@@ -89,5 +89,42 @@ export_scene_pdf(WellLogView *view, const QString &document_id,
 export_scene_cgm(WellLogView *view, const QString &document_id,
                  double page_height_mm = 0.0) noexcept;
 
+// --- Track/Data workflow (ADR 0055/0056) ------------------------------------
+//
+// One payload dict → one validated, undoable C++ track command. Payload:
+// {"op": str, "document_id": str, ...op fields...}. Supported ops: add_track,
+// remove_track, reorder_tracks, resize_track, set_track_header,
+// set_track_visibility, bind_curve, unbind_curve, move_curve_layer,
+// duplicate_curve_layer, reorder_curve_layers, set_layer_visibility,
+// set_layer_style, set_scale, auto_range_scale. Returns
+// {"revision": n, "state_version": n, ...ids of created entities...}.
+[[nodiscard]] PyObject *
+apply_track_command(WellLogView *view, PyObject *payload) noexcept;
+
+// Resolves the view's hover pick into the full inspect dict (mnemonic, unit,
+// QC state, scale context, derived provenance) or None when nothing is
+// hovered. The C++ side resolves everything — Python only receives the
+// coalesced result.
+[[nodiscard]] PyObject *hover_info(WellLogView *view) noexcept;
+
+// The view document's shared Selection Set entry as a dict
+// {sampling_axis_id, first_row, last_row, top, bottom, valid} or None.
+[[nodiscard]] PyObject *selection_state(WellLogView *view) noexcept;
+
+// Drives the session selection from table rows (ADR 0024 table→graphics):
+// issues a SetRowSelectionCommand for the view's document on `axis_id`.
+// Returns {first_row, last_row} or raises.
+[[nodiscard]] PyObject *
+set_row_selection(WellLogView *view, const QString &axis_id,
+                  unsigned long long first_row,
+                  unsigned long long last_row) noexcept;
+
+// The document's live presentation as a dict {tracks: [...], scales: [...],
+// curve_layers: [...]} (id/track/curve/scale bindings, widths, z-orders,
+// visibility, style) or None when no presentation is set. The track manager
+// and data tree read this; the binding index orders tracks by z.
+[[nodiscard]] PyObject *presentation_state(WellLogView *view,
+                                           const QString &document_id) noexcept;
+
 } // namespace python
 } // namespace welllog
