@@ -813,6 +813,26 @@ if(WELLLOG_BUILD_BENCHMARKS)
         welllog_dense_curve_benchmark
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
     )
+
+    # Unified Surface Canvas benchmark: single-well (one-placement),
+    # correlation (N placements + transforms + overlays), horizontal
+    # virtualization, and an explicit --large 100-track scenario.
+    add_executable(welllog_surface_canvas_benchmark
+        benchmarks/surface_canvas_benchmark.cpp
+    )
+    target_compile_features(
+        welllog_surface_canvas_benchmark
+        PRIVATE cxx_std_20
+    )
+    welllog_enable_warnings(welllog_surface_canvas_benchmark)
+    target_link_libraries(
+        welllog_surface_canvas_benchmark
+        PRIVATE WellLog::RenderGL WellLog::Session Qt6::Gui
+    )
+    target_include_directories(
+        welllog_surface_canvas_benchmark
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
 endif()
 
 install(
