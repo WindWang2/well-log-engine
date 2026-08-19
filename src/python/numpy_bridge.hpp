@@ -22,6 +22,16 @@ submit_curve(WellLogView *view, PyObject *depth, PyObject *values,
 [[nodiscard]] PyObject *
 submit_multi_track(WellLogView *view, PyObject *payload) noexcept;
 
+// Retained Session updates for a document submitted through submit_multi_track.
+// Both payloads use read-only buffer views and run atomically on the GUI thread.
+[[nodiscard]] PyObject *append_curves(WellLogView *view,
+                                      PyObject *payload) noexcept;
+[[nodiscard]] PyObject *patch_document(WellLogView *view,
+                                       PyObject *payload) noexcept;
+[[nodiscard]] PyObject *document_metrics(WellLogView *view,
+                                          const QString &document_id) noexcept;
+[[nodiscard]] PyObject *poll_session(WellLogView *view) noexcept;
+
 // Multi-well section (#170): payload is a dict with wells/gap/shared
 // viewport/overlays (see workbench welllog_multi_well_adapter.plan_to_submit_payload).
 [[nodiscard]] PyObject *

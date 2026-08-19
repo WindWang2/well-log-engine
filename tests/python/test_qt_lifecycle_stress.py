@@ -154,6 +154,43 @@ class QtLifecycleStressTest(unittest.TestCase):
         QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
         self.app.processEvents()
 
+    def test_async_lod_view_shutdown_releases_large_pinned_buffers(self) -> None:
+        """Destroy while native LOD work may still retain Python buffers.
+
+        The documented ownership contract requires the Session shutdown path to
+        join/cancel safely and release both owners without a GUI-thread or GIL
+        deadlock.  The sample count intentionally exceeds the async threshold.
+        """
+        view = WellLogView()
+        depth = np.arange(1000.0, 101_000.0, dtype=np.float64)
+        values = np.sin(depth / 100.0).astype(np.float32)
+        depth.flags.writeable = False
+        values.flags.writeable = False
+        depth_ref = weakref.ref(depth)
+        values_ref = weakref.ref(values)
+        view.submit_curve(
+            depth,
+            values,
+            "c7300000-0000-4000-8000-000000000021",
+            "c7300000-0000-4000-8000-000000000022",
+            "c7300000-0000-4000-8000-000000000023",
+            "GR",
+            "m",
+            "API",
+        )
+        del depth
+        del values
+        gc.collect()
+        self.assertIsNotNone(depth_ref())
+        self.assertIsNotNone(values_ref())
+
+        view.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.app.processEvents()
+        gc.collect()
+        self.assertIsNone(depth_ref())
+        self.assertIsNone(values_ref())
+
 
 if __name__ == "__main__":
     unittest.main()

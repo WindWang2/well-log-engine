@@ -2505,6 +2505,10 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         if (stop_token.stop_requested()) {
           return cancellation_error();
         }
+        if (layer.semantic_filter.has_value() &&
+            interval.semantic != *layer.semantic_filter) {
+          continue;
+        }
         if (!interval.pattern_id.is_nil() &&
             !pattern_ids.contains(interval.pattern_id)) {
           return presentation_error(interval.id);

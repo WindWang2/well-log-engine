@@ -67,6 +67,38 @@
                 </inject-code>
             </add-function>
             <add-function
+                signature="append_curves(PyObject*@payload@)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::append_curves(
+                        %CPPSELF, %PYARG_1);
+                </inject-code>
+            </add-function>
+            <add-function
+                signature="patch_document(PyObject*@payload@)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::patch_document(
+                        %CPPSELF, %PYARG_1);
+                </inject-code>
+            </add-function>
+            <add-function
+                signature="document_metrics(QString@document_id@)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::document_metrics(
+                        %CPPSELF, %1);
+                </inject-code>
+            </add-function>
+            <add-function signature="poll_session()" return-type="PyObject*">
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::poll_session(%CPPSELF);
+                </inject-code>
+            </add-function>
+            <add-function
                 signature="submit_multi_well_section(PyObject*@payload@)"
                 return-type="PyObject*"
             >
