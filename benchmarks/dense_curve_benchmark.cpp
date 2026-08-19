@@ -282,8 +282,8 @@ int main(int argc, char **argv) {
                       .top = measured_viewport->top,
                       .bottom = measured_viewport->bottom,
                   },
-              .crosshair = std::nullopt,
-              .draw_scene = scene_available,
+              .horizontal = std::nullopt,
+              .crosshair = std::nullopt,              .draw_scene = scene_available,
           })) {
         return EXIT_FAILURE;
       }

@@ -389,9 +389,13 @@ uniform vec2 viewportPixels;
 uniform float viewportCenter;
 uniform float viewportHalfSpan;
 uniform float halfWidthPixels;
+uniform float sceneWidthMm;
+uniform float horizontalLeftMm;
+uniform float horizontalSpanMm;
 
 vec2 mapPoint(vec2 pointValue) {
-    float x = pointValue.x * 2.0 - 1.0;
+    float xMm = pointValue.x * sceneWidthMm;
+    float x = (xMm - horizontalLeftMm) / horizontalSpanMm * 2.0 - 1.0;
     float y = -(pointValue.y - viewportCenter) / viewportHalfSpan;
     return vec2(x, y);
 }
@@ -814,6 +818,9 @@ struct GlRenderer::Impl {
   GlInt viewport_center_uniform{-1};
   GlInt viewport_half_span_uniform{-1};
   GlInt half_width_uniform{-1};
+  GlInt scene_width_uniform{-1};
+  GlInt horizontal_left_uniform{-1};
+  GlInt horizontal_span_uniform{-1};
   GlInt color_uniform{-1};
   GlUInt solid_program{};
   GlUInt pattern_program{};
@@ -971,6 +978,12 @@ bool GlRenderer::initialize(GlProcResolver resolver,
         impl_->gl.get_uniform_location(impl_->program, "viewportHalfSpan");
     impl_->half_width_uniform =
         impl_->gl.get_uniform_location(impl_->program, "halfWidthPixels");
+    impl_->scene_width_uniform =
+        impl_->gl.get_uniform_location(impl_->program, "sceneWidthMm");
+    impl_->horizontal_left_uniform =
+        impl_->gl.get_uniform_location(impl_->program, "horizontalLeftMm");
+    impl_->horizontal_span_uniform =
+        impl_->gl.get_uniform_location(impl_->program, "horizontalSpanMm");
     impl_->color_uniform =
         impl_->gl.get_uniform_location(impl_->program, "curveColor");
 
@@ -2153,7 +2166,11 @@ bool GlRenderer::render(const GlRenderFrame &frame) noexcept {
       frame.physical_pixels_per_millimetre <= 0.0 ||
       !std::isfinite(frame.viewport.top) ||
       !std::isfinite(frame.viewport.bottom) ||
-      frame.viewport.top >= frame.viewport.bottom) {
+      frame.viewport.top >= frame.viewport.bottom ||
+      (frame.horizontal.has_value() &&
+       (!std::isfinite(frame.horizontal->left_mm) ||
+        !std::isfinite(frame.horizontal->span_mm) ||
+        frame.horizontal->span_mm <= 0.0))) {
     return false;
   }
   ++impl_->frame_stamp; // advance LRU recency for image-texture eviction
@@ -2194,18 +2211,30 @@ bool GlRenderer::render(const GlRenderFrame &frame) noexcept {
                        static_cast<GlFloat>(viewport_half_span));
   impl_->gl.enable(gl_scissor_test);
   if (frame.draw_scene) {
+    // Horizontal surface window (unified canvas): scene x ∈ [left, left+span]
+    // maps to the framebuffer width. Absent → legacy fit-to-scene-width.
+    const auto horizontal = frame.horizontal.value_or(GlHorizontalView{
+        .left_mm = 0.0, .span_mm = impl_->physical_width});
     const auto scissor_for = [&](const PhysicalRect &clip) {
-      const auto scissor_left = static_cast<int>(
-          std::floor(clip.left.value / impl_->physical_width *
-                     static_cast<double>(frame.pixel_width)));
-      const auto scissor_width = static_cast<int>(
-          std::ceil(clip.width.value / impl_->physical_width *
-                    static_cast<double>(frame.pixel_width)));
-      impl_->gl.scissor(std::max(0, scissor_left), 0,
-                        std::max(0, scissor_width), frame.pixel_height);
+      const auto scissor_left = static_cast<int>(std::floor(
+          (clip.left.value - horizontal.left_mm) / horizontal.span_mm *
+          static_cast<double>(frame.pixel_width)));
+      const auto scissor_right = static_cast<int>(std::ceil(
+          (clip.left.value + clip.width.value - horizontal.left_mm) /
+          horizontal.span_mm * static_cast<double>(frame.pixel_width)));
+      const auto clamped_left =
+          std::clamp(scissor_left, 0, std::max(0, frame.pixel_width));
+      const auto clamped_right =
+          std::clamp(scissor_right, 0, std::max(0, frame.pixel_width));
+      impl_->gl.scissor(clamped_left, 0,
+                        std::max(0, clamped_right - clamped_left),
+                        frame.pixel_height);
     };
     const auto mm_scale_x =
-        static_cast<GlFloat>(2.0 / impl_->physical_width);
+        static_cast<GlFloat>(2.0 / horizontal.span_mm);
+    const auto mm_offset_x =
+        static_cast<GlFloat>(-1.0 - 2.0 * horizontal.left_mm /
+                                        horizontal.span_mm);
     const auto mm_scale_y =
         static_cast<GlFloat>(-impl_->depth_span /
                              (impl_->scene_height * viewport_half_span));
@@ -2225,7 +2254,7 @@ bool GlRenderer::render(const GlRenderFrame &frame) noexcept {
         impl_->gl.use_program(program);
         current_program = program;
         impl_->gl.uniform_2f(scale_uniform, mm_scale_x, mm_scale_y);
-        impl_->gl.uniform_2f(offset_uniform, -1.0F, mm_offset_y);
+        impl_->gl.uniform_2f(offset_uniform, mm_offset_x, mm_offset_y);
       }
     };
     impl_->gl.bind_vertex_array(impl_->primitives.vertex_array);
@@ -2285,6 +2314,12 @@ bool GlRenderer::render(const GlRenderFrame &frame) noexcept {
         static_cast<GlFloat>(viewport_center - impl_->scene_depth_center));
     impl_->gl.uniform_1f(impl_->viewport_half_span_uniform,
                          static_cast<GlFloat>(viewport_half_span));
+    impl_->gl.uniform_1f(impl_->scene_width_uniform,
+                         static_cast<GlFloat>(impl_->physical_width));
+    impl_->gl.uniform_1f(impl_->horizontal_left_uniform,
+                         static_cast<GlFloat>(horizontal.left_mm));
+    impl_->gl.uniform_1f(impl_->horizontal_span_uniform,
+                         static_cast<GlFloat>(horizontal.span_mm));
     for (const auto &batch : impl_->batches) {
       scissor_for(batch.clip);
       impl_->gl.uniform_1f(
