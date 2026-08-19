@@ -117,6 +117,7 @@ struct WellLogView::Impl {
   std::optional<CurvePick> hover_pick;
   std::optional<CurvePick> click_pick;
   double drag_last_top{};
+  double drag_last_left{};
   bool dragging{};
   bool drag_moved{};
   bool framebuffer_stencil_verified{};
@@ -279,6 +280,12 @@ void WellLogView::set_document_id(EntityId document_id) noexcept {
   }
   impl_->document_id =
       document_id.is_nil() ? std::nullopt : std::optional{document_id};
+  // The view's document is the focused well of the unified surface: single
+  // well and correlation layouts share one interaction model.
+  if (impl_->document_id.has_value()) {
+    static_cast<void>(impl_->session->execute(
+        SetFocusedWellCommand{.document_id = *impl_->document_id}));
+  }
   for (const auto &diagnostic : impl_->session->diagnostics()) {
     impl_->last_diagnostic_id =
         std::max(impl_->last_diagnostic_id, diagnostic.id);
@@ -391,6 +398,35 @@ void WellLogView::resizeGL(int width, int height) {
   Q_UNUSED(height)
 }
 
+std::optional<std::pair<double, double>>
+WellLogView::horizontal_window() const noexcept {
+  // The unified surface scrolls horizontally only when it is wider than the
+  // widget's physical width; a narrower surface keeps the legacy
+  // fit-to-width mapping (pixel-identical to the single-well behaviour).
+  const auto surface_width = impl_->session->surface_width_mm();
+  if (!surface_width.has_value() || width() <= 0) {
+    return std::nullopt;
+  }
+  const auto pixel_ratio = devicePixelRatioF();
+  const auto pixels_per_millimetre =
+      logicalDpiX() / 25.4 * static_cast<double>(pixel_ratio);
+  if (!(pixels_per_millimetre > 0.0)) {
+    return std::nullopt;
+  }
+  const auto device_width =
+      static_cast<double>(width()) * static_cast<double>(pixel_ratio);
+  const auto span_mm = device_width / pixels_per_millimetre;
+  if (!std::isfinite(span_mm) || span_mm <= 0.0 ||
+      *surface_width <= span_mm) {
+    return std::nullopt;
+  }
+  auto left_mm = 0.0;
+  if (const auto window = impl_->session->surface_horizontal_view()) {
+    left_mm = std::clamp(window->first, 0.0, *surface_width - span_mm);
+  }
+  return std::make_pair(left_mm, span_mm);
+}
+
 void WellLogView::paintGL() {
   using clock = std::chrono::steady_clock;
   const auto frame_t0 = clock::now();
@@ -407,19 +443,58 @@ void WellLogView::paintGL() {
       static_cast<int>(static_cast<double>(height()) * pixel_ratio);
   const auto prepare_t0 = clock::now();
   if (impl_->document_id.has_value()) {
-    const auto current_viewport = impl_->session->viewport(*impl_->document_id);
-    const auto current_pixel_height =
-        impl_->session->viewport_pixel_height(*impl_->document_id);
+    // Push the widget's physical metrics onto the session so LOD density
+    // matches. On an active surface the shared metrics update every well;
+    // single wells keep the per-document command.
+    const auto shared =
+        impl_->session->shared_depth_viewport().has_value() &&
+        impl_->document_id.has_value() &&
+        std::any_of(impl_->session->well_layout().begin(),
+                    impl_->session->well_layout().end(),
+                    [focused = *impl_->document_id](
+                        const WellPlacement &well) {
+                      return well.document_id == focused;
+                    });
     const auto desired_pixel_height =
         static_cast<std::uint32_t>(std::max(1, pixel_height));
-    if (current_viewport.has_value() &&
-        current_pixel_height !=
-            std::optional<std::uint32_t>{desired_pixel_height}) {
-      static_cast<void>(impl_->session->execute(SetViewportMetricsCommand{
-          .document_id = *impl_->document_id,
-          .viewport = *current_viewport,
-          .pixel_height = desired_pixel_height,
-      }));
+    if (shared) {
+      const auto current = impl_->session->shared_depth_viewport();
+      const auto current_height =
+          impl_->session->viewport_pixel_height(*impl_->document_id);
+      if (current.has_value() &&
+          current_height !=
+              std::optional<std::uint32_t>{desired_pixel_height}) {
+        static_cast<void>(impl_->session->execute(SetSharedDepthViewportCommand{
+            .viewport = *current,
+            .pixel_height = desired_pixel_height,
+        }));
+      }
+    } else {
+      const auto current_viewport =
+          impl_->session->viewport(*impl_->document_id);
+      const auto current_pixel_height =
+          impl_->session->viewport_pixel_height(*impl_->document_id);
+      if (current_viewport.has_value() &&
+          current_pixel_height !=
+              std::optional<std::uint32_t>{desired_pixel_height}) {
+        static_cast<void>(impl_->session->execute(SetViewportMetricsCommand{
+            .document_id = *impl_->document_id,
+            .viewport = *current_viewport,
+            .pixel_height = desired_pixel_height,
+        }));
+      }
+    }
+    // Keep the session's horizontal cull window in sync with the visible
+    // surface window so off-screen wells are virtualized out of composition.
+    if (const auto window = horizontal_window()) {
+      const auto current = impl_->session->surface_horizontal_view();
+      if (!current.has_value() || current->first != window->first ||
+          current->second - current->first != window->second) {
+        static_cast<void>(impl_->session->execute(SetSurfaceHorizontalViewCommand{
+            .left_mm = window->first,
+            .right_mm = window->first + window->second,
+        }));
+      }
     }
     impl_->session->poll_async();
     const auto snapshot =
@@ -481,23 +556,18 @@ void WellLogView::paintGL() {
     std::shared_ptr<const PreparedScene> scene;
     std::optional<DepthViewport> viewport;
     std::optional<CrosshairState> crosshair;
-    // Multi-well surface (#160/#170): when a layout is active, paint the
-    // composed surface so all wells share one view / shared Display Depth.
-    if (!impl_->session->well_layout().empty()) {
+    // Unified surface canvas: single well = one-placement surface, layouts =
+    // N placements; both resolve through the same accessors — no single/multi
+    // branch. The view's document gate only applies to the implicit
+    // one-placement surface (an explicit layout renders without a focused
+    // document, matching the historical correlation behaviour).
+    const auto has_layout = !impl_->session->well_layout().empty();
+    if (has_layout || impl_->document_id.has_value()) {
       scene = impl_->session->prepared_surface_scene();
-      viewport = impl_->session->shared_depth_viewport();
-      if (!viewport.has_value() && impl_->document_id.has_value()) {
-        viewport = impl_->session->viewport(*impl_->document_id);
-      }
-      const auto layout = impl_->session->well_layout();
-      if (!layout.empty()) {
-        crosshair = impl_->session->crosshair(layout.front().document_id);
-      }
-    } else if (impl_->document_id.has_value()) {
-      scene = impl_->session->prepared_scene(*impl_->document_id);
-      viewport = impl_->session->viewport(*impl_->document_id);
-      crosshair = impl_->session->crosshair(*impl_->document_id);
+      viewport = impl_->session->surface_depth_viewport();
+      crosshair = impl_->session->surface_crosshair();
     }
+    const auto horizontal = horizontal_window();
     if (scene != nullptr) {
       frame.lod_points =
           static_cast<std::uint64_t>(scene->curve_points().size());
@@ -575,6 +645,14 @@ void WellLogView::paintGL() {
                       .bottom = current_viewport.bottom,
                   };
                 }(),
+            .horizontal =
+                horizontal.has_value()
+                    ? std::optional<detail::GlHorizontalView>{
+                          detail::GlHorizontalView{
+                              .left_mm = horizontal->first,
+                              .span_mm = horizontal->second,
+                          }}
+                    : std::nullopt,
             .crosshair =
                 crosshair.has_value()
                     ? std::optional<detail::GlCrosshair>{detail::GlCrosshair{
@@ -659,6 +737,7 @@ void WellLogView::mousePressEvent(QMouseEvent *event) {
     impl_->dragging = true;
     impl_->drag_moved = false;
     impl_->drag_last_top = event->position().y();
+    impl_->drag_last_left = event->position().x();
     update_pointer(event->position().x(), event->position().y());
     event->accept();
     return;
@@ -674,6 +753,10 @@ void WellLogView::mouseMoveEvent(QMouseEvent *event) {
     return;
   }
   if (impl_->dragging && impl_->document_id.has_value() && height() > 0) {
+    // Vertical: pan the shared Display Depth window (PanDepthCommand
+    // delegates to the surface viewport; single and multi-well share the
+    // semantics). Horizontal: pan the surface window when the surface is
+    // wider than the widget (horizontal virtualization is active).
     const auto delta = event->position().y() - impl_->drag_last_top;
     const auto viewport = impl_->session->viewport(*impl_->document_id);
     if (viewport.has_value() && delta != 0.0) {
@@ -687,9 +770,29 @@ void WellLogView::mouseMoveEvent(QMouseEvent *event) {
               .has_value()) {
         impl_->drag_moved = true;
         impl_->drag_last_top = event->position().y();
-        update();
       }
     }
+    const auto delta_left = event->position().x() - impl_->drag_last_left;
+    const auto window = horizontal_window();
+    if (delta_left != 0.0 && window.has_value() && width() > 0) {
+      const auto delta_mm =
+          -delta_left / static_cast<double>(width()) * window->second;
+      if (impl_->session
+              ->execute(
+                  PanSurfaceHorizontalCommand{.delta_mm = delta_mm})
+              .has_value()) {
+        impl_->drag_moved = true;
+        impl_->drag_last_left = event->position().x();
+      } else {
+        // The session window may lag one paint behind an activated surface;
+        // establish it so the next move pans.
+        static_cast<void>(impl_->session->execute(SetSurfaceHorizontalViewCommand{
+            .left_mm = window->first,
+            .right_mm = window->first + window->second,
+        }));
+      }
+    }
+    update();
   }
   update_pointer(event->position().x(), event->position().y());
   event->accept();
@@ -839,8 +942,12 @@ void WellLogView::begin_selection_drag(double pixel_top) noexcept {
     }
     const auto vertical_fraction =
         std::clamp(pixel_top / static_cast<double>(height()), 0.0, 1.0);
-    const auto depth =
+    const auto display_depth =
         viewport->top + vertical_fraction * (viewport->bottom - viewport->top);
+    // Selection is Reference-Depth based (ADR 0024): invert the well's
+    // DepthTransform so the gesture lands on the axis coordinate.
+    const auto reference_depth = map_display_to_reference(
+        impl_->session->depth_transform(*impl_->document_id), display_depth);
     // Resolve the axis: prefer the hovered curve's axis; else the document's
     // first Sampling Axis (the primary axis). A nil axis aborts the gesture.
     EntityId axis_id;
@@ -859,13 +966,14 @@ void WellLogView::begin_selection_drag(double pixel_top) noexcept {
       return;
     }
     impl_->selecting = true;
-    impl_->selection_anchor_depth = depth;
+    impl_->selection_anchor_depth = reference_depth;
     impl_->selection_axis_id = axis_id;
     // Issue an initial zero-band selection so the host sees the gesture start.
     static_cast<void>(impl_->session->execute(SetSelectionCommand{
         .document_id = *impl_->document_id,
         .sampling_axis_id = axis_id,
-        .reference_depth_range = {.top = depth, .bottom = depth},
+        .reference_depth_range = {.top = reference_depth,
+                                  .bottom = reference_depth},
     }));
   } catch (...) {
     publish_fatal_error();
@@ -884,10 +992,13 @@ void WellLogView::update_selection_drag(double pixel_top) noexcept {
     }
     const auto vertical_fraction =
         std::clamp(pixel_top / static_cast<double>(height()), 0.0, 1.0);
-    const auto depth =
+    const auto display_depth =
         viewport->top + vertical_fraction * (viewport->bottom - viewport->top);
-    const auto top = std::min(depth, impl_->selection_anchor_depth);
-    const auto bottom = std::max(depth, impl_->selection_anchor_depth);
+    const auto reference_depth = map_display_to_reference(
+        impl_->session->depth_transform(*impl_->document_id), display_depth);
+    const auto top = std::min(reference_depth, impl_->selection_anchor_depth);
+    const auto bottom =
+        std::max(reference_depth, impl_->selection_anchor_depth);
     static_cast<void>(impl_->session->execute(SetSelectionCommand{
         .document_id = *impl_->document_id,
         .sampling_axis_id = impl_->selection_axis_id,
@@ -903,18 +1014,15 @@ void WellLogView::update_pointer(double left, double top) noexcept {
     if (!impl_->document_id.has_value() || width() <= 0 || height() <= 0) {
       return;
     }
-    const auto multi = !impl_->session->well_layout().empty();
-    const auto scene =
-        multi ? impl_->session->prepared_surface_scene()
-              : impl_->session->prepared_scene(*impl_->document_id);
-    const auto viewport =
-        multi ? (impl_->session->shared_depth_viewport().has_value()
-                     ? impl_->session->shared_depth_viewport()
-                     : impl_->session->viewport(*impl_->document_id))
-              : impl_->session->viewport(*impl_->document_id);
+    // Unified surface picking: the same accessors serve one-placement and
+    // N-placement surfaces; pick_surface_curve resolves the owning well and
+    // returns per-well Reference Depths (correct under DepthTransforms).
+    const auto scene = impl_->session->prepared_surface_scene();
+    const auto viewport = impl_->session->surface_depth_viewport();
     if (scene == nullptr || !viewport.has_value()) {
       return;
     }
+    const auto horizontal = horizontal_window();
     const auto horizontal_fraction =
         std::clamp(left / static_cast<double>(width()), 0.0, 1.0);
     const auto vertical_fraction =
@@ -933,19 +1041,27 @@ void WellLogView::update_pointer(double left, double top) noexcept {
     const auto reference_range = scene->reference_depth_range();
     const auto reference_span = reference_range.bottom - reference_range.top;
     const auto viewport_span = viewport->bottom - viewport->top;
-    const auto physical_width = scene->physical_width().value;
+    const auto physical_width = horizontal.has_value()
+                                    ? horizontal->second
+                                    : scene->physical_width().value;
     const auto physical_height = scene->physical_height().value;
     if (reference_span <= 0.0 || viewport_span <= 0.0 ||
         physical_width <= 0.0 || physical_height <= 0.0) {
       return;
     }
-    const auto reference_depth = display_depth;
-    const auto next_hover = scene->pick_curve(CurvePickQuery{
+    // The scene y mapping treats the presentation range as Display Depth
+    // space (the documented contract when a DepthTransform is active).
+    const auto scene_left_mm =
+        horizontal.has_value()
+            ? horizontal->first + horizontal_fraction * horizontal->second
+            : horizontal_fraction * physical_width;
+    const auto scene_top_mm = (display_depth - reference_range.top) /
+                              reference_span * physical_height;
+    const auto next_hover = impl_->session->pick_surface_curve(CurvePickQuery{
         .scene_position =
             PhysicalPoint{
-                .left = Millimetres{horizontal_fraction * physical_width},
-                .top = Millimetres{(reference_depth - reference_range.top) /
-                                   reference_span * physical_height},
+                .left = Millimetres{scene_left_mm},
+                .top = Millimetres{scene_top_mm},
             },
         .tolerance = DeviceIndependentPixels{6.0},
         .horizontal_device_independent_pixels_per_millimetre =
@@ -964,27 +1080,55 @@ void WellLogView::update_pointer(double left, double top) noexcept {
 }
 
 void WellLogView::handle_session_event(ViewEvent event) noexcept {
-  if (!impl_->document_id.has_value() ||
-      event.document_id != *impl_->document_id) {
+  if (event.kind == ViewEventKind::focused_well_changed) {
+    // An external SetFocusedWellCommand moves the view's document without a
+    // round-trip command (impl_->document_id is the same state).
+    if (!event.document_id.is_nil()) {
+      impl_->document_id = event.document_id;
+      emit documentChanged(
+          QString::fromStdString(event.document_id.to_string()),
+          static_cast<quint64>(event.document_revision.value));
+    }
+    update();
+    schedule_coalesced_signals();
+    return;
+  }
+  // Unified surface events: any member of the active layout (or the implicit
+  // single well) refreshes the canvas — a non-focused well's prepared scene
+  // becoming ready must repaint, not just the focused document's events.
+  // Widget-facing signals below stay scoped to the focused document.
+  const auto focused = impl_->document_id;
+  const auto &layout = impl_->session->well_layout();
+  const auto surface_member = std::any_of(
+      layout.begin(), layout.end(),
+      [&event](const WellPlacement &well) {
+        return well.document_id == event.document_id;
+      });
+  const auto for_focused =
+      focused.has_value() && event.document_id == *focused;
+  if (!event.document_id.is_nil() && !for_focused && !surface_member) {
     return;
   }
   switch (event.kind) {
   case ViewEventKind::viewport_changed:
-    impl_->viewport_signal_pending = true;
+    impl_->viewport_signal_pending = for_focused;
     update();
     break;
   case ViewEventKind::crosshair_changed:
-    impl_->crosshair_signal_pending = true;
+    impl_->crosshair_signal_pending = for_focused;
     update();
     break;
   case ViewEventKind::selection_changed:
   case ViewEventKind::selection_invalidated:
-    impl_->selection_signal_pending = true;
+    impl_->selection_signal_pending = for_focused;
     update();
     break;
   case ViewEventKind::documents_changed:
-    emit documentChanged(QString::fromStdString(event.document_id.to_string()),
-                         static_cast<quint64>(event.document_revision.value));
+    if (for_focused) {
+      emit documentChanged(
+          QString::fromStdString(event.document_id.to_string()),
+          static_cast<quint64>(event.document_revision.value));
+    }
     update();
     break;
   case ViewEventKind::presentation_changed:
@@ -993,6 +1137,10 @@ void WellLogView::handle_session_event(ViewEvent event) noexcept {
     update();
     break;
   case ViewEventKind::diagnostic_published: {
+    if (!for_focused) {
+      update();
+      break;
+    }
     const Diagnostic *published{};
     for (const auto &diagnostic : impl_->session->diagnostics()) {
       if (diagnostic.id > impl_->last_diagnostic_id &&
@@ -1018,6 +1166,8 @@ void WellLogView::handle_session_event(ViewEvent event) noexcept {
       }
     }
   } break;
+  case ViewEventKind::focused_well_changed:
+    break;
   }
   schedule_coalesced_signals();
 }
