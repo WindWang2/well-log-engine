@@ -1556,6 +1556,20 @@ if(WELLLOG_BUILD_TESTS)
     add_test(NAME welllog.depth-transform-overlay
              COMMAND welllog_depth_transform_overlay_tests)
 
+    # Unified Surface Canvas: single well = one-placement surface; one
+    # pan/zoom/reset path; horizontal virtualization with a stable compose
+    # cache; focused well state; DepthTransform-correct multi-well picking.
+    add_executable(welllog_unified_surface_tests
+        tests/integration/unified_surface_test.cpp
+    )
+    target_compile_features(welllog_unified_surface_tests PRIVATE cxx_std_20)
+    welllog_enable_warnings(welllog_unified_surface_tests)
+    target_link_libraries(
+        welllog_unified_surface_tests
+        PRIVATE WellLog::Scene WellLog::Session
+    )
+    add_test(NAME welllog.unified-surface COMMAND welllog_unified_surface_tests)
+
     # Arrow adapter tests need Arrow C++ for IPC fixtures + ExportArray round-trip.
     add_executable(welllog_observability_tests
         tests/integration/observability_test.cpp

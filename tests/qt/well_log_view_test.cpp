@@ -41,6 +41,9 @@ private slots:
   void external_session_events_refresh_and_coalesce_qt_signals();
   void asynchronous_failures_keep_their_diagnostic_identity();
   void cross_thread_public_mutations_are_queued_to_gui();
+  void unified_surface_picking_reports_owning_well();
+  void non_focused_well_update_becomes_visible();
+  void horizontal_drag_pans_surface_window();
 };
 
 struct PreparedViewFixture {
@@ -734,6 +737,338 @@ void WellLogViewTest::layered_scene_renders_intervals_patterns_symbols_and_text(
   QVERIFY(phase_samples > 0);
   QVERIFY2(phase_matches * 2 >= phase_samples,
            "pattern phase must repeat with the tile period");
+}
+
+// --- Unified Surface Canvas ---------------------------------------------------
+
+struct TwoWellFixture {
+  EntityId a_document;
+  EntityId b_document;
+  EntityId b_curve;
+  EntityId b_layer;
+  std::shared_ptr<WellLogSession> session;
+};
+
+// Two 40mm wells with a 4mm gap (84mm surface). Well A's middle sample sits
+// at surface x = 20mm; well B's (mirrored values 100/50/0) at surface
+// x = 44 + 20 = 64mm. Both curves pass through the vertical centre.
+TwoWellFixture two_well_fixture(bool b_layer_visible) {
+  TwoWellFixture fixture;
+  fixture.a_document = id("70000000-0000-4000-8000-000000000001");
+  fixture.b_document = id("70000000-0000-4000-8000-000000000011");
+  fixture.b_curve = id("70000000-0000-4000-8000-000000000013");
+  fixture.b_layer = id("70000000-0000-4000-8000-000000000016");
+  fixture.session = std::make_shared<WellLogSession>();
+
+  const auto add_well = [&](EntityId document, EntityId axis,
+                            EntityId curve, EntityId track, EntityId scale,
+                            EntityId layer, double v0, double v1, double v2,
+                            bool layer_visible) {
+    auto depths = std::make_shared<const std::vector<double>>(
+        std::initializer_list<double>{1000.0, 1001.0, 1002.0});
+    auto values = std::make_shared<const std::vector<double>>(
+        std::initializer_list<double>{v0, v1, v2});
+    WellLogDocumentBuilder builder(document, DocumentRevision{1});
+    builder.add_sampling_axis(SamplingAxis{
+        .id = axis,
+        .coordinates = BufferView::from_vector(depths),
+        .domain = DepthDomain::measured_depth,
+        .unit = "m",
+        .direction = AxisDirection::increasing,
+    });
+    builder.add_curve(Curve{
+        .id = curve,
+        .mnemonic = "GR",
+        .display_name = "GR",
+        .unit = "API",
+        .sampling_axis_id = axis,
+        .values = BufferView::from_vector(values),
+        .nulls = {},
+    });
+    require_command(fixture.session->execute(SetDocumentCommand{builder.build()}),
+                    "two-well SetDocumentCommand");
+    ScenePresentationBuilder presentation(
+        document,
+        ReferenceDepthRange{
+            .domain = DepthDomain::measured_depth,
+            .unit = "m",
+            .top = 1000.0,
+            .bottom = 1002.0,
+        },
+        Millimetres{100.0}, "unified-surface-qt");
+    presentation.add_track(TrackSpec{
+        .id = track, .width = Millimetres{40.0}, .z_order = 0});
+    presentation.add_scale(TrackScaleSpec{
+        .id = scale,
+        .track_id = track,
+        .mode = ScaleMode::linear,
+        .minimum = 0.0,
+        .maximum = 100.0,
+        .direction = ScaleDirection::left_to_right,
+        .unit = "API",
+    });
+    presentation.add_curve_layer(CurveLayerSpec{
+        .id = layer,
+        .track_id = track,
+        .curve_id = curve,
+        .scale_id = scale,
+        .color = RgbaColor{0x20, 0x20, 0x90, 0xff},
+        .line_width = Millimetres{2.0},
+        .z_order = 0,
+        .visible = layer_visible,
+    });
+    require_command(
+        fixture.session->execute(SetPresentationCommand{presentation.build()}),
+        "two-well SetPresentationCommand");
+  };
+
+  add_well(fixture.a_document, id("70000000-0000-4000-8000-000000000002"),
+           id("70000000-0000-4000-8000-000000000003"),
+           id("70000000-0000-4000-8000-000000000004"),
+           id("70000000-0000-4000-8000-000000000005"),
+           id("70000000-0000-4000-8000-000000000006"), 0.0, 50.0, 100.0,
+           true);
+  add_well(fixture.b_document, id("70000000-0000-4000-8000-000000000012"),
+           fixture.b_curve, id("70000000-0000-4000-8000-000000000014"),
+           id("70000000-0000-4000-8000-000000000015"), fixture.b_layer, 100.0,
+           50.0, 0.0, b_layer_visible);
+  require_command(fixture.session->execute(SetWellLayoutCommand{
+                      .wells = {{.document_id = fixture.a_document},
+                                {.document_id = fixture.b_document}},
+                      .gap = Millimetres{4.0},
+                      .pack_left_to_right = true,
+                  }),
+                  "two-well layout");
+  require_command(fixture.session->execute(SetSharedDepthViewportCommand{
+                      .viewport =
+                          DepthViewport{.top = 1000.0, .bottom = 1002.0},
+                      .pixel_height = 200,
+                  }),
+                  "two-well shared viewport");
+  return fixture;
+}
+
+void WellLogViewTest::unified_surface_picking_reports_owning_well() {
+  auto fixture = two_well_fixture(true);
+  WellLogView view(fixture.session);
+  view.set_document_id(fixture.a_document);
+  view.resize(200, 200);
+  view.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&view));
+  QTRY_VERIFY_WITH_TIMEOUT(view.capability_report().graphics_available, 5000);
+
+  // The view may fit the 84mm surface (narrow widget) or scroll it (wide
+  // physical surface). Compute the pixel for a surface millimetre either way.
+  const auto surface_width = *fixture.session->surface_width_mm();
+  const auto px_per_mm =
+      view.logicalDpiX() / 25.4 * static_cast<double>(view.devicePixelRatioF());
+  const auto widget_mm =
+      static_cast<double>(view.width()) *
+      static_cast<double>(view.devicePixelRatioF()) / px_per_mm;
+  std::optional<double> window_left;
+  std::optional<double> window_span;
+  if (surface_width > widget_mm) {
+    window_left = 0.0;
+    window_span = widget_mm;
+    require_command(
+        fixture.session->execute(SetSurfaceHorizontalViewCommand{
+            .left_mm = 0.0, .right_mm = widget_mm}),
+        "picking test window");
+  } else {
+    window_span = surface_width;
+  }
+  const auto x_for_surface_mm = [&](double mm) {
+    const auto live = fixture.session->surface_horizontal_view();
+    const auto left = live.has_value() ? live->first : window_left.value_or(0.0);
+    return (mm - left) / *window_span *
+           static_cast<double>(view.width());
+  };
+
+  // Hover well A's middle sample (surface x = 20mm, vertical centre).
+  QSignalSpy hover_spy(&view, &WellLogView::hoverChanged);
+  const auto hover_at = [&](double surface_mm) {
+    const auto local = QPointF{x_for_surface_mm(surface_mm), 100.0};
+    QMouseEvent event(QEvent::MouseMove, local,
+                      QPointF{view.mapToGlobal(local.toPoint())},
+                      Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&view, &event);
+  };
+  hover_at(20.0);
+  QTRY_VERIFY_WITH_TIMEOUT(view.hover_pick().has_value(), 5000);
+  QCOMPARE(view.hover_pick()->document_id, fixture.a_document);
+
+  // Pan the window so well B (64..84mm) is on-screen, then hover B's middle
+  // sample: the unified pick must report B — the legacy composed-scene pick
+  // always reported the FIRST well.
+  if (surface_width > widget_mm) {
+    const auto left = surface_width - widget_mm;
+    require_command(
+        fixture.session->execute(SetSurfaceHorizontalViewCommand{
+            .left_mm = left, .right_mm = surface_width}),
+        "picking test window pan");
+    QApplication::processEvents();
+  }
+  hover_at(64.0);
+  QTRY_VERIFY_WITH_TIMEOUT(
+      view.hover_pick().has_value() &&
+          view.hover_pick()->document_id == fixture.b_document,
+      5000);
+  // The coalesced hoverChanged signal fires on the 16ms signal timer; pump
+  // the loop until it lands.
+  QTRY_VERIFY_WITH_TIMEOUT(hover_spy.count() >= 1, 5000);
+}
+
+void WellLogViewTest::non_focused_well_update_becomes_visible() {
+  auto fixture = two_well_fixture(false);
+  WellLogView view(fixture.session);
+  // Well A is focused; well B's layer starts hidden.
+  view.set_document_id(fixture.a_document);
+  view.resize(200, 200);
+  view.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&view));
+  QTRY_VERIFY_WITH_TIMEOUT(view.capability_report().graphics_available, 5000);
+
+  // Right-align the surface window so well B (44..84mm) is on-screen.
+  const auto surface_width = *fixture.session->surface_width_mm();
+  const auto px_per_mm =
+      view.logicalDpiX() / 25.4 * static_cast<double>(view.devicePixelRatioF());
+  const auto widget_mm =
+      static_cast<double>(view.width()) *
+      static_cast<double>(view.devicePixelRatioF()) / px_per_mm;
+  if (surface_width > widget_mm) {
+    require_command(
+        fixture.session->execute(SetSurfaceHorizontalViewCommand{
+            .left_mm = surface_width - widget_mm,
+            .right_mm = surface_width}),
+        "refresh test window");
+  }
+  QApplication::processEvents();
+
+  const auto b_region_has_ink = [&view, surface_width, widget_mm]() {
+    const auto image = view.grabFramebuffer();
+    const auto window_left =
+        surface_width > widget_mm ? surface_width - widget_mm : 0.0;
+    const auto span = std::min(widget_mm, surface_width);
+    const auto b_left_px = std::clamp(
+        static_cast<int>((44.0 - window_left) / span *
+                         static_cast<double>(image.width())),
+        0, image.width() - 1);
+    for (int row = 0; row < image.height(); ++row) {
+      for (int left = b_left_px; left < image.width(); ++left) {
+        const auto color = image.pixelColor(left, row);
+        if (color.red() < 220 && color.green() < 220 && color.blue() < 230) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  QImage image;
+  QTRY_VERIFY_WITH_TIMEOUT(
+      (image = view.grabFramebuffer(),
+       image.pixelColor(image.width() / 2, image.height() / 2) ==
+           QColor{Qt::white} ||
+           true),
+      100);
+  QVERIFY2(!b_region_has_ink(), "hidden well B renders nothing");
+
+  // Re-present well B with a visible layer: the surface must refresh even
+  // though B is NOT the focused document.
+  ScenePresentationBuilder presentation(
+      fixture.b_document,
+      ReferenceDepthRange{
+          .domain = DepthDomain::measured_depth,
+          .unit = "m",
+          .top = 1000.0,
+          .bottom = 1002.0,
+      },
+      Millimetres{100.0}, "unified-surface-qt");
+  presentation.add_track(TrackSpec{
+      .id = id("70000000-0000-4000-8000-000000000014"),
+      .width = Millimetres{40.0},
+      .z_order = 0});
+  presentation.add_scale(TrackScaleSpec{
+      .id = id("70000000-0000-4000-8000-000000000015"),
+      .track_id = id("70000000-0000-4000-8000-000000000014"),
+      .mode = ScaleMode::linear,
+      .minimum = 0.0,
+      .maximum = 100.0,
+      .direction = ScaleDirection::left_to_right,
+      .unit = "API",
+  });
+  presentation.add_curve_layer(CurveLayerSpec{
+      .id = fixture.b_layer,
+      .track_id = id("70000000-0000-4000-8000-000000000014"),
+      .curve_id = fixture.b_curve,
+      .scale_id = id("70000000-0000-4000-8000-000000000015"),
+      .color = RgbaColor{0x20, 0x20, 0x90, 0xff},
+      .line_width = Millimetres{3.0},
+      .z_order = 0,
+      .visible = true,
+  });
+  require_command(
+      fixture.session->execute(SetPresentationCommand{presentation.build()}),
+      "well B visible presentation");
+  QTRY_VERIFY_WITH_TIMEOUT(b_region_has_ink(), 10000);
+}
+
+void WellLogViewTest::horizontal_drag_pans_surface_window() {
+  auto fixture = two_well_fixture(true);
+  WellLogView view(fixture.session);
+  view.set_document_id(fixture.a_document);
+  view.resize(200, 200);
+  view.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&view));
+  QTRY_VERIFY_WITH_TIMEOUT(view.capability_report().graphics_available, 5000);
+
+  const auto surface_width = *fixture.session->surface_width_mm();
+  const auto px_per_mm =
+      view.logicalDpiX() / 25.4 * static_cast<double>(view.devicePixelRatioF());
+  const auto widget_mm =
+      static_cast<double>(view.width()) *
+      static_cast<double>(view.devicePixelRatioF()) / px_per_mm;
+  if (surface_width <= widget_mm) {
+    // The surface fits the widget: no horizontal window can activate, so the
+    // interaction is a no-op by design (fit-to-width). Shrink the view until
+    // the surface scrolls.
+    view.resize(80, 200);
+    QApplication::processEvents();
+  }
+  const auto recheck_mm =
+      static_cast<double>(view.width()) *
+      static_cast<double>(view.devicePixelRatioF()) /
+      (view.logicalDpiX() / 25.4 *
+       static_cast<double>(view.devicePixelRatioF()));
+  QVERIFY2(*fixture.session->surface_width_mm() > recheck_mm,
+           "test requires a scrolling surface");
+
+  // Paint once so the view establishes the horizontal window.
+  static_cast<void>(view.grabFramebuffer());
+  QTRY_VERIFY_WITH_TIMEOUT(
+      fixture.session->surface_horizontal_view().has_value(), 5000);
+  const auto before = fixture.session->surface_horizontal_view();
+
+  const auto press_local = QPointF{100.0, 100.0};
+  QMouseEvent press(QEvent::MouseButtonPress, press_local,
+                    QPointF{view.mapToGlobal(press_local.toPoint())},
+                    Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(&view, &press);
+  const auto move_local = QPointF{40.0, 100.0};
+  QMouseEvent move(QEvent::MouseMove, move_local,
+                   QPointF{view.mapToGlobal(move_local.toPoint())},
+                   Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(&view, &move);
+  QMouseEvent release(QEvent::MouseButtonRelease, move_local,
+                      QPointF{view.mapToGlobal(move_local.toPoint())},
+                      Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(&view, &release);
+  QApplication::processEvents();
+
+  const auto after = fixture.session->surface_horizontal_view();
+  QVERIFY(after.has_value());
+  QVERIFY2(after->first > before.value_or(std::pair<double, double>{})
+                             .first,
+           "dragging left must pan the surface window right");
 }
 
 } // namespace
