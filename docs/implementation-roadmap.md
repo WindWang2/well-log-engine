@@ -308,3 +308,30 @@ WELLLOG_WARNINGS_AS_ERRORS
 9. 实现层次 LOD 标量参考版本，再做 SIMD/并行优化。
 10. 完成阶段 1/2 API Review 后再开始 Qt/OpenGL。
 
+
+
+## 14. Track/Data 工作流（2026-08，ADR 0055/0056/0057）
+
+已完成（本地测试 `welllog.track-commands` / `welllog.qt-table-selection-sync`
+/ `welllog.python.track-commands` / `welllog.track-command-benchmark` +
+desktop `tests/test_engine_track_commands.py`）：
+
+- 绑定索引：`DocumentBindingIndex`（core）+ `PresentationBindingIndex`
+  （scene），O(1) 解析全部 track/curve/scale/layer 绑定问题。
+- Session 工作流命令 15 条（track 增删/排序/宽度/header/可见性、曲线
+  bind/unbind/move/duplicate/reorder/可见性/样式、scale 编辑与显式
+  auto-range），全部走 ApplyPatchCommand；隐藏 track 语义（保槽位、无
+  geometry）；`EntityId::generate()`；`session.presentation()` 只读访问；
+  `resolve_curve_pick` 悬停检查。
+- TableModel 订阅 session selection 事件自动刷新（图形↔表格闭环无需宿主
+  轮询）。
+- Python：`apply_track_command` / `presentation_state` / `hover_info` /
+  `selection_state` / `set_row_selection`。
+- Desktop：`capture_engine_bindings` + `incremental_presentation_sync`
+  两阶段镜像（结构 + 值），display-set/属性面板/井道头拖拽全部优先走
+  增量命令，结构性变化回退整包重发。
+- 已知边界：补丁提交沿用的 document/presentation 替换 + 场景重准备成本
+  随呈现样本数缩放（20 万样本井约 15ms/次；1000 万样本基准约 0.8s/次，
+  命令层本身为 μs 级）——增量场景准备属后续渲染管线工作；桌面 display-set
+  模型一曲一线，跨井道移动暂为引擎 API 能力（已测），待桌面模型支持
+  多曲线井道后接入。

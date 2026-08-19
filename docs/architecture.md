@@ -44,7 +44,10 @@ WellLogEngine 是有状态、宿主无关的 C++20 SDK。它拥有测井场景�
 
 负责：
 
-- Entity ID、Document Revision、Result/Error；
+- Entity ID（含 `EntityId::generate()` 随机 v4）、Document Revision、
+  Result/Error；
+- DocumentBindingIndex（按 id 的 O(1) 实体解析、curve→axis、
+  curves_on_axis，ADR 0055）；
 - Buffer View、Null Bitmap、Sampling Axis；
 - WellLogDocument、Curve、Interval、Marker、QC Mask、Derived Curve；
 - Depth Transform 数学；
@@ -60,13 +63,21 @@ WellLogEngine 是有状态、宿主无关的 C++20 SDK。它拥有测井场景�
 - Track/Layer 布局、视口、Selection Set、活动工具；
 - View Command、View Event、撤销/重做；
 - Document Patch 暂存与提交事件；
+- Track/Data 工作流命令（ADR 0055/0056：track 增删/排序/宽度/可见性、
+  曲线 bind/unbind/move/duplicate/reorder、样式与比例尺编辑、显式
+  auto-range）——全部构造为 DocumentPatch 走 `ApplyPatchCommand`，无第二
+  mutation engine；
 - 任务调度、版本校验和 Diagnostic Stream。
 
 ### `WellLog::Scene`
 
 负责：
 
-- Track/Layer 布局和水平可见性裁切；
+- Track/Layer 布局和水平可见性裁切（隐藏 track 保留槽位、不产生
+  geometry/header）；
+- PresentationBindingIndex（track→scales/layers、curve→layers、
+  layer→track、scale→track 的 O(1) 绑定解析，ADR 0055）与
+  `resolve_curve_pick` 悬停检查（inspect.hpp）；
 - LOD 查询、区间裁切、标签布局；
 - Pattern 与文字整形；
 - 空间拾取索引；
