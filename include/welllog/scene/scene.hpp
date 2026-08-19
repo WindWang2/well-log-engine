@@ -151,6 +151,12 @@ struct TrackSpec {
   Millimetres width;
   std::int32_t z_order{};
   TrackHeaderSpec header{};
+  // A hidden track keeps its identity, width, scales, layers and header
+  // configuration in the presentation (all bindings stay validated) but its
+  // layers contribute no geometry and no header entries to the prepared
+  // scene. Layout still reserves the track's width, so hiding never shifts
+  // neighbouring tracks — the professional "grey out, don't reflow" policy.
+  bool visible{true};
 };
 
 struct TrackScaleSpec {

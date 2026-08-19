@@ -2102,6 +2102,16 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
       scales.emplace(scale.id, &scale);
     }
 
+    // Hidden tracks (TrackSpec::visible == false): every layer loop below
+    // skips them — the binding stays validated but contributes no geometry
+    // and no header entries.
+    std::unordered_set<EntityId, EntityIdHash> hidden_tracks;
+    for (const auto *track_pointer : ordered_tracks) {
+      if (!track_pointer->visible) {
+        hidden_tracks.insert(track_pointer->id);
+      }
+    }
+
     std::vector<const CurveLayerSpec *> ordered_layers;
     ordered_layers.reserve(presentation.curve_layers().size());
     for (const auto &layer : presentation.curve_layers()) {
@@ -2114,6 +2124,9 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         return cancellation_error();
       }
       const auto &layer = *layer_pointer;
+      if (hidden_tracks.contains(layer.track_id)) {
+        continue;
+      }
       const auto scale = scales.find(layer.scale_id);
       const auto curve =
           std::find_if(document.curves().begin(), document.curves().end(),
@@ -2491,6 +2504,9 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         return cancellation_error();
       }
       const auto &layer = *layer_pointer;
+      if (hidden_tracks.contains(layer.track_id)) {
+        continue;
+      }
       const auto bounds = track_bounds.find(layer.track_id);
       if (layer.id.is_nil() || !ids.insert(layer.id).second ||
           bounds == track_bounds.end() ||
@@ -2597,6 +2613,9 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         return cancellation_error();
       }
       const auto &layer = *layer_pointer;
+      if (hidden_tracks.contains(layer.track_id)) {
+        continue;
+      }
       const auto bounds = track_bounds.find(layer.track_id);
       const auto *upper_layer =
           find_prepared_curve_layer(layer.upper_curve_layer_id);
@@ -2741,6 +2760,9 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         return cancellation_error();
       }
       const auto &layer = *layer_pointer;
+      if (hidden_tracks.contains(layer.track_id)) {
+        continue;
+      }
       const auto bounds = track_bounds.find(layer.track_id);
       const auto *source = find_image_source(layer.image_source_id);
       if (layer.id.is_nil() || !ids.insert(layer.id).second ||
@@ -2867,6 +2889,9 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         return cancellation_error();
       }
       const auto &layer = *layer_pointer;
+      if (hidden_tracks.contains(layer.track_id)) {
+        continue;
+      }
       const auto bounds = track_bounds.find(layer.track_id);
       const auto *source = find_custom_source(layer.custom_source_id);
       if (layer.id.is_nil() || !ids.insert(layer.id).second ||
@@ -3185,6 +3210,9 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         return cancellation_error();
       }
       const auto &layer = *layer_pointer;
+      if (hidden_tracks.contains(layer.track_id)) {
+        continue;
+      }
       if (layer.id.is_nil() || !ids.insert(layer.id).second ||
           !track_bounds.contains(layer.track_id) ||
           !std::isfinite(layer.line_width.value) ||
@@ -3249,6 +3277,9 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         return cancellation_error();
       }
       const auto &layer = *layer_pointer;
+      if (hidden_tracks.contains(layer.track_id)) {
+        continue;
+      }
       const auto bounds = track_bounds.find(layer.track_id);
       if (layer.id.is_nil() || !ids.insert(layer.id).second ||
           bounds == track_bounds.end() ||
@@ -3451,6 +3482,9 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         return cancellation_error();
       }
       const auto &layer = *layer_pointer;
+      if (hidden_tracks.contains(layer.track_id)) {
+        continue;
+      }
       const auto first_run =
           static_cast<std::uint64_t>(scene->text_runs.size());
       for (const auto &annotation : document.annotations()) {
@@ -3536,7 +3570,7 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
       return std::string{buffer.data(), result.ptr};
     };
     for (const auto &track : presentation.tracks()) {
-      if (track.header.height.value <= 0.0) {
+      if (track.header.height.value <= 0.0 || !track.visible) {
         continue;
       }
       const auto line_height =
