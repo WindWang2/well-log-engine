@@ -1498,6 +1498,18 @@ WellLogSession::WellLogSession(PerformanceBudgets budgets)
     : impl_(std::make_unique<Impl>()) {
   impl_->budgets = budgets;
 }
+
+const std::unordered_map<EntityId, std::shared_ptr<const WellLogDocument>,
+                         EntityIdHash> &
+WellLogSession::documents_view() const noexcept {
+  return impl_->documents;
+}
+
+const std::unordered_map<EntityId, ScenePresentation, EntityIdHash> &
+WellLogSession::presentations_view() const noexcept {
+  return impl_->presentations;
+}
+
 WellLogSession::~WellLogSession() {
   // Cooperatively cancel + bounded-wait all LOD/frame workers before the Impl
   // is destroyed. Without this, the vector-of-unique_ptr<LodTask> destruction
@@ -5000,6 +5012,12 @@ std::shared_ptr<const WellLogDocument>
 WellLogSession::document(EntityId id) const noexcept {
   const auto found = impl_->documents.find(id);
   return found == impl_->documents.end() ? nullptr : found->second;
+}
+
+const ScenePresentation *
+WellLogSession::presentation(EntityId id) const noexcept {
+  const auto found = impl_->presentations.find(id);
+  return found == impl_->presentations.end() ? nullptr : &found->second;
 }
 
 std::shared_ptr<const PreparedScene>

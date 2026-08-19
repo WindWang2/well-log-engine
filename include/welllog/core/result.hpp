@@ -113,6 +113,20 @@ enum class MessageKey : std::uint16_t {
   // TST geometry inputs are invalid (Epic D). Appended so existing
   // message-key values remain unchanged.
   invalid_geometry,
+  // A track-data workflow command referenced an entity (track, scale, layer
+  // or curve) that does not exist on the current document/presentation
+  // (ADR 0055). Paired with ErrorCode::document_not_found.
+  track_entity_missing,
+  // A track-data workflow command produced an invalid binding (scale does
+  // not belong to the layer's track, curve/scale unit mismatch, or no
+  // presentation is set). Paired with ErrorCode::invalid_presentation.
+  track_binding_invalid,
+  // A reorder command's id list is not a complete permutation of the
+  // collection it reorders. Paired with ErrorCode::invalid_presentation.
+  track_order_incomplete,
+  // A scale edit produced an invalid range (non-finite, min >= max, or
+  // logarithmic with min <= 0). Paired with ErrorCode::invalid_presentation.
+  track_scale_range_invalid,
 };
 
 struct ErrorArgument {
