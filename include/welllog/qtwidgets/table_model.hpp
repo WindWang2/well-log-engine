@@ -100,11 +100,13 @@ public:
   // axis (a selection on another axis is ignored — multi-axis tables map their
   // own rows, table-and-export.md §4.1).
   //
-  // Attaches the model to a session's Selection Set for one axis. After this,
-  // call refresh_session_selection() whenever a selection_changed /
-  // selection_invalidated ViewEvent is delivered (the host marshals the event
-  // onto the GUI thread, ADR 0147). Passing a null session detaches. The
-  // document/axis ids must match this model's projection.
+  // Attaches the model to a session's Selection Set for one axis. The model
+  // subscribes to the session's selection events and refreshes its reflected
+  // span automatically (events are marshalled onto the model's thread via a
+  // queued invocation, so an async publication on a worker thread is safe).
+  // refresh_session_selection() forces an immediate refresh. Passing a null
+  // session detaches. The session must outlive the attachment (or be detached
+  // first). The document/axis ids must match this model's projection.
   void set_session_selection_source(WellLogSession *session,
                                     EntityId document_id,
                                     EntityId sampling_axis_id) noexcept;
