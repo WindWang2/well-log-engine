@@ -841,6 +841,189 @@ void crop_marks_emit_corner_strokes() {
           "crop marks must add exactly 8 stroked registration lines");
 }
 
+// #32: with draw_symbols=true every marker must still get its full-width
+// line stroked. A PDF path-painting operator (the symbol glyph's fill)
+// terminates the WHOLE path, so the old loop — which accumulated line
+// subpaths and emitted the symbol in between — let each symbol's fill
+// discard the pending un-stroked marker line (3 markers drew 0 lines). The
+// fix strokes each line before its symbol, matching the SVG backend's
+// per-marker <line/>-then-symbol order.
+void marker_lines_survive_symbol_emission() {
+  WellLogSession session;
+  session.set_text_engine(make_engine());
+  const auto marker_2 = id("70000000-0000-4000-8000-00000000000d");
+  const auto marker_3 = id("70000000-0000-4000-8000-00000000000e");
+
+  auto depths = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{1000.0, 1000.5, 1001.0, 1001.5, 1002.0});
+  auto values = std::make_shared<const std::vector<double>>(
+      std::initializer_list<double>{10.0, 20.0, 15.0, 25.0, 12.0});
+  WellLogDocumentBuilder document(document_id, DocumentRevision{9});
+  document.add_sampling_axis(SamplingAxis{
+      .id = axis_id,
+      .coordinates = BufferView::from_vector(depths),
+      .domain = DepthDomain::measured_depth,
+      .unit = "m",
+      .direction = AxisDirection::increasing,
+  });
+  document.add_curve(Curve{
+      .id = curve_id,
+      .mnemonic = "GR",
+      .display_name = "Gamma Ray",
+      .unit = "API",
+      .sampling_axis_id = axis_id,
+      .values = BufferView::from_vector(values),
+      .nulls = {},
+  });
+  document.add_marker(Marker{
+      .id = marker_id,
+      .reference_depth = 1000.5,
+      .semantic = MarkerSemantic::formation_top,
+      .label = {},
+  });
+  document.add_marker(Marker{
+      .id = marker_2,
+      .reference_depth = 1001.0,
+      .semantic = MarkerSemantic::formation_top,
+      .label = {},
+  });
+  document.add_marker(Marker{
+      .id = marker_3,
+      .reference_depth = 1001.5,
+      .semantic = MarkerSemantic::formation_top,
+      .label = {},
+  });
+  require(session.execute(SetDocumentCommand{document.build()}).has_value(),
+          "document must be accepted");
+
+  ScenePresentationBuilder presentation(
+      document_id,
+      ReferenceDepthRange{
+          .domain = DepthDomain::measured_depth,
+          .unit = "m",
+          .top = 1000.0,
+          .bottom = 1002.0,
+      },
+      Millimetres{100.0}, "font-fixture-v1");
+  presentation.add_track(TrackSpec{
+      .id = track_id,
+      .width = Millimetres{40.0},
+      .z_order = 0,
+  });
+  presentation.add_scale(TrackScaleSpec{
+      .id = scale_id,
+      .track_id = track_id,
+      .mode = ScaleMode::linear,
+      .minimum = 0.0,
+      .maximum = 30.0,
+      .direction = ScaleDirection::left_to_right,
+      .unit = "API",
+  });
+  presentation.add_curve_layer(CurveLayerSpec{
+      .id = curve_layer_id,
+      .track_id = track_id,
+      .curve_id = curve_id,
+      .scale_id = scale_id,
+      .color = RgbaColor{20, 120, 20, 255},
+      .line_width = Millimetres{0.5},
+      .z_order = 0,
+      .visible = true,
+  });
+  // Unique marker colour (nothing else in the scene uses it) so marker-line
+  // strokes and marker-symbol fills can be counted by colour context alone.
+  presentation.add_marker_layer(MarkerLayerSpec{
+      .id = marker_layer_id,
+      .track_id = track_id,
+      .z_order = 2,
+      .line_color = RgbaColor{201, 62, 96, 255},
+      .line_width = Millimetres{0.5},
+      .draw_labels = false,
+      .draw_symbols = true,
+      .symbol_size = Millimetres{3.0},
+  });
+  require(session.execute(SetPresentationCommand{presentation.build()})
+              .has_value(),
+          "presentation must be accepted");
+  auto scene = session.prepared_scene(document_id);
+  require(scene != nullptr, "scene must be prepared");
+  const auto snapshot = make_snapshot();
+  const auto result = PdfSceneExporter::write(*scene, snapshot);
+  require(result.has_value(), "marker-symbol PDF must build");
+  const auto inflated = inflate_content_stream(result.value().bytes());
+
+  // Walk the operator stream tracking the active stroke/fill colour and
+  // record the paint order of marker-coloured geometry: 'L' = a stroke whose
+  // path is exactly one horizontal m+l pair (a marker line), 'S' = a fill (a
+  // marker symbol glyph; formation_top draws a filled triangle_down).
+  // color_operator returns the op with its trailing newline; the walker
+  // compares newline-stripped lines.
+  const auto marker_rg_with_nl = color_operator(201, 62, 96, "RG");
+  const auto marker_fill_with_nl = color_operator(201, 62, 96, "rg");
+  const auto marker_rg =
+      marker_rg_with_nl.substr(0, marker_rg_with_nl.size() - 1);
+  const auto marker_fill =
+      marker_fill_with_nl.substr(0, marker_fill_with_nl.size() - 1);
+  std::string current_stroke;
+  std::string current_fill;
+  std::string paint_order;
+  std::size_t marker_lines = 0;
+  // string_view::substr stays inside `inflated`; std::string::substr would
+  // return a temporary the views would dangle into.
+  const std::string_view inflated_view = inflated;
+  std::vector<std::string_view> lines;
+  for (std::size_t start = 0; start < inflated_view.size();) {
+    const auto end = inflated_view.find('\n', start);
+    const auto stop =
+        end == std::string_view::npos ? inflated_view.size() : end;
+    lines.push_back(inflated_view.substr(start, stop - start));
+    start = stop + 1;
+  }
+  const auto y_of = [](std::string_view op_line) {
+    const auto first_space = op_line.find(' ');
+    const auto second_space = first_space == std::string_view::npos
+                                  ? std::string_view::npos
+                                  : op_line.find(' ', first_space + 1);
+    if (second_space == std::string_view::npos) {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    return std::strtod(op_line.data() + first_space + 1, nullptr);
+  };
+  for (std::size_t i = 0; i < lines.size(); ++i) {
+    const auto line = lines[i];
+    if (line.ends_with(" RG")) {
+      current_stroke = std::string{line};
+      continue;
+    }
+    if (line.ends_with(" rg")) {
+      current_fill = std::string{line};
+      continue;
+    }
+    if (line == "f") {
+      if (current_fill == marker_fill) {
+        paint_order.push_back('S');
+      }
+      continue;
+    }
+    if (line != "S" || current_stroke != marker_rg) {
+      continue;
+    }
+    // Marker-line stroke: the path must be exactly one horizontal m+l pair
+    // (the two operator lines right before the stroke).
+    require(i >= 2 && lines[i - 1].ends_with(" l") && lines[i - 2].ends_with(" m"),
+            "a marker-coloured stroke must paint a single m+l subpath (#32)");
+    require(y_of(lines[i - 1]) == y_of(lines[i - 2]),
+            "the marker line subpath must be horizontal (#32)");
+    ++marker_lines;
+    paint_order.push_back('L');
+  }
+  require(marker_lines == 3,
+          "all 3 marker lines must be stroked when draw_symbols=true (#32); "
+          "marker_lines=" +
+              std::to_string(marker_lines) + " paint_order=" + paint_order);
+  require(paint_order == "LSLSLS",
+          "each marker must paint line-then-symbol like the SVG backend (#32)");
+}
+
 // #854-6: the hand-rolled PDF number formatter must never emit scientific
 // notation ("5e-05"), which PDF 32000-1 §7.3.3 rejects.
 void pdf_numbers_use_fixed_point_not_scientific() {
@@ -897,6 +1080,7 @@ int main() {
   page_transform_y_flips_scene_orientation();
   layered_pdf_emits_ocg_per_track();
   crop_marks_emit_corner_strokes();
+  marker_lines_survive_symbol_emission();
   pdf_numbers_use_fixed_point_not_scientific();
   semi_transparent_stroke_uses_stroke_alpha_extgstate();
   pdf_dash_array_normalization_and_validation();
