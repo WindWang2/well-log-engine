@@ -1082,12 +1082,20 @@ void WellLogView::update_pointer(double left, double top) noexcept {
 void WellLogView::handle_session_event(ViewEvent event) noexcept {
   if (event.kind == ViewEventKind::focused_well_changed) {
     // An external SetFocusedWellCommand moves the view's document without a
-    // round-trip command (impl_->document_id is the same state).
+    // round-trip command (impl_->document_id is the same state). The signal
+    // fires only when the focus MOVED to a different document than the view
+    // already displays: a host-side submit re-focusing its own (freshly
+    // submitted) document would otherwise surface a duplicate
+    // documentChanged on top of the documents_changed event of the same
+    // revision (one submission must look like one document change).
     if (!event.document_id.is_nil()) {
+      const auto previous = impl_->document_id;
       impl_->document_id = event.document_id;
-      emit documentChanged(
-          QString::fromStdString(event.document_id.to_string()),
-          static_cast<quint64>(event.document_revision.value));
+      if (previous != event.document_id) {
+        emit documentChanged(
+            QString::fromStdString(event.document_id.to_string()),
+            static_cast<quint64>(event.document_revision.value));
+      }
     }
     update();
     schedule_coalesced_signals();
