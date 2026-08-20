@@ -819,3 +819,600 @@ def survey_depth_transform(
         return []
     points.sort(key=lambda p: p[0])
     return [{"reference": r, "display": d} for r, d in points]
+
+
+# ---------------------------------------------------------------------------
+# Track/Data workflow commands (ADR 0056/0057)
+#
+# The host presentation (display set + template) stays the persistence truth;
+# these wrappers mirror value-level edits into the engine session as one
+# validated, undoable command each instead of a full ``submit_multi_track``
+# re-submission. Structural changes (track/layer set or order changed) still
+# go through the full path.
+
+
+def track_command_supported(view: Any) -> bool:
+    """True when the engine view exposes apply_track_command."""
+    return hasattr(view, "apply_track_command")
+
+
+def apply_track_op(view: Any, op: str, **fields: Any) -> dict[str, Any]:
+    """Apply one engine track command; raises EngineSubmitError on failure."""
+    if not track_command_supported(view):
+        raise EngineSubmitError(
+            "WellLogView 不支持 apply_track_command（请升级 welllog 绑定）"
+        )
+    payload: dict[str, Any] = {"op": op, **fields}
+    try:
+        report = view.apply_track_command(payload)
+    except Exception as exc:  # noqa: BLE001
+        raise EngineSubmitError(str(exc)) from exc
+    return dict(report) if isinstance(report, dict) else {"raw": report}
+
+
+def engine_presentation_state(view: Any, document_id: str) -> dict | None:
+    """Live engine presentation {tracks, scales, curve_layers} or None."""
+    getter = getattr(view, "presentation_state", None)
+    if getter is None:
+        return None
+    try:
+        return getter(document_id)
+    except Exception:  # noqa: BLE001 — degrade to full re-submit
+        return None
+
+
+def engine_selection_state(view: Any) -> dict | None:
+    """The view document's shared Selection Set entry (ADR 0024) or None."""
+    getter = getattr(view, "selection_state", None)
+    if getter is None:
+        return None
+    try:
+        return getter()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def engine_set_row_selection(
+    view: Any, axis_id: str, first_row: int, last_row: int
+) -> dict | None:
+    """Drive the engine selection from table rows; None when unsupported."""
+    setter = getattr(view, "set_row_selection", None)
+    if setter is None:
+        return None
+    try:
+        return setter(axis_id, int(first_row), int(last_row))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def engine_hover_info(view: Any) -> dict | None:
+    """Resolved hover inspect dict (mnemonic/unit/QC/scale context) or None."""
+    getter = getattr(view, "hover_info", None)
+    if getter is None:
+        return None
+    try:
+        return getter()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _host_submission_tracks(presentation: HostPresentation) -> list:
+    """Visible curve tracks with layers, in ``submit_multi_track`` order."""
+    return [
+        track
+        for track in presentation.tracks
+        if track.visible and track.role == "curve" and track.layers
+    ]
+
+
+def _host_submission_width_mm(track: Any) -> float:
+    # Mirrors presentation_to_multi_track_payload's width rule exactly.
+    return max(20.0, float(track.width_fraction) * 120.0)
+
+
+def _layer_identity(layer: Any) -> str:
+    # Same identity rule presentation_to_multi_track_payload uses to bind
+    # curves: identity first, mnemonic fallback.
+    return getattr(layer, "identity", None) or layer.mnemonic.upper()
+
+
+def capture_engine_bindings(
+    view: Any,
+    document_id: str,
+    presentation: HostPresentation,
+    previous: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Snapshot engine entity ids keyed by host track id after a full submit.
+
+    ``submit_multi_track`` derives deterministic engine ids internally, so
+    right after a full submission this reads them back from
+    ``presentation_state`` and maps each host ``BoundTrack.id`` to its engine
+    track/scale ids, each layer identity to its engine layer id, and each
+    identity to the engine CURVE id (the engine document keeps curves across
+    unbinds, so a re-displayed curve can re-bind incrementally). When
+    ``previous`` is given, identities are matched through its curve-id cache
+    (exact); otherwise by submission position. The snapshot feeds
+    :func:`incremental_presentation_sync`; None when the state cannot be read
+    or the shapes do not line up (the caller then never syncs incrementally).
+    """
+    if not track_command_supported(view) or not _is_uuid(document_id):
+        return None
+    state = engine_presentation_state(view, document_id)
+    if state is None:
+        return None
+    host_tracks = _host_submission_tracks(presentation)
+    engine_tracks = sorted(
+        list(state.get("tracks", [])), key=lambda t: t.get("z_order", 0)
+    )
+    if len(host_tracks) != len(engine_tracks):
+        return None
+    engine_layers_by_track: dict[str, list[dict]] = {}
+    engine_curves: dict[str, str] = {}  # engine curve id → engine layer id
+    for layer in state.get("curve_layers", []):
+        engine_layers_by_track.setdefault(
+            str(layer.get("track_id", "")), []
+        ).append(layer)
+        engine_curves[str(layer.get("curve_id", ""))] = str(layer.get("id", ""))
+    scales_by_track: dict[str, list[dict]] = {}
+    for scale in state.get("scales", []):
+        scales_by_track.setdefault(scale.get("track_id", ""), []).append(scale)
+
+    # Identity → engine curve id, from the previous snapshot when available.
+    identity_to_curve: dict[str, str] = {}
+    if previous:
+        for entry in previous.values():
+            for identity, curve_id in entry.get("curves", {}).items():
+                identity_to_curve[identity] = curve_id
+
+    bindings: dict[str, Any] = {}
+    if previous and previous.get("__curves__"):
+        # Persistent identity → engine curve id cache (survives track
+        # removals; the engine document keeps the curves).
+        bindings["__curves__"] = dict(previous["__curves__"])
+    for host_track, engine_track in zip(host_tracks, engine_tracks):
+        engine_id = engine_track.get("id", "")
+        entry: dict[str, Any] = {
+            "engine_track": engine_id,
+            "engine_scale": None,
+            "layers": {},
+            "curves": {},
+        }
+        engine_layers = sorted(
+            engine_layers_by_track.get(engine_id, []),
+            key=lambda item: item.get("z_order", 0),
+        )
+        if len(engine_layers) != len(host_track.layers):
+            return None
+        matched: list[tuple[str, dict]] = []
+        unmatched: list[dict] = list(engine_layers)
+        for host_layer in host_track.layers:
+            identity = _layer_identity(host_layer)
+            curve_id = identity_to_curve.get(identity)
+            engine_layer = None
+            if curve_id and engine_curves.get(curve_id) in {
+                str(l.get("id", "")) for l in unmatched
+            }:
+                engine_layer = next(
+                    l
+                    for l in unmatched
+                    if str(l.get("id", "")) == engine_curves.get(curve_id)
+                )
+            if engine_layer is not None:
+                unmatched.remove(engine_layer)
+            else:
+                engine_layer = unmatched.pop(0) if unmatched else None
+            if engine_layer is None:
+                return None
+            entry["layers"][identity] = engine_layer.get("id", "")
+            entry["curves"][identity] = engine_layer.get("curve_id", "")
+            bindings.setdefault("__curves__", {})[identity] = (
+                engine_layer.get("curve_id", "")
+            )
+            matched.append((identity, engine_layer))
+        engine_scales = scales_by_track.get(engine_id, [])
+        if engine_scales:
+            entry["engine_scale"] = engine_scales[0].get("id", "")
+        bindings[str(host_track.id)] = entry
+    return bindings
+
+
+def incremental_presentation_sync(
+    view: Any,
+    presentation: HostPresentation,
+    bindings: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Mirror presentation edits into engine track commands.
+
+    Uses the ``capture_engine_bindings`` snapshot (host track id → engine
+    ids) and runs in two phases:
+
+    Phase A (structure) — ``reorder_tracks``, ``remove_track`` (a host track
+    that lost all layers leaves, cascading its scales/layers), ``add_track``
+    + ``bind_curve`` (a known track id reappearing with layers; curves are
+    still in the engine document, so binds reuse them), ``move_curve_layer``
+    and ``unbind_curve`` for membership changes.
+
+    Phase B (values, computed against the post-A engine state) —
+    ``resize_track``, ``set_scale``, ``set_layer_style``,
+    ``reorder_curve_layers``.
+
+    All commands ride the engine's ApplyPatchCommand engine — atomic,
+    undoable, O(changed presentation entities), never re-sending curve
+    buffers (ADR 0056/0057). Returns the refreshed bindings snapshot when
+    every difference was applied (the caller keeps it for the next sync);
+    None when the change is outside what the snapshot can express (an
+    unknown host track id, a NEW curve identity the engine document cannot
+    hold, no engine state, commands unsupported, or a rejected command) —
+    the caller then falls back to the full ``submit_multi_track`` path. A
+    rejected command changes nothing, so falling back is always safe.
+    """
+    if bindings is None or not track_command_supported(view):
+        return None
+    doc_id = presentation.well_document_id
+    if not _is_uuid(doc_id):
+        return None
+    state = engine_presentation_state(view, doc_id)
+    if state is None:
+        return None
+
+    host_by_id = {str(t.id): t for t in presentation.tracks}
+    host_tracks = _host_submission_tracks(presentation)
+    host_track_ids = {str(t.id) for t in host_tracks}
+
+    # Engine curve ids per identity, from the WHOLE snapshot (including
+    # tracks a previous sync removed — the engine document keeps their
+    # curves, so a re-checked track can re-bind them incrementally).
+    engine_curve_of_identity: dict[str, str] = dict(
+        bindings.get("__curves__", {})
+    )
+    for key, entry in bindings.items():
+        if key == "__curves__":
+            continue
+        for identity, curve_id in entry.get("curves", {}).items():
+            engine_curve_of_identity[identity] = curve_id
+
+    # Where each layer identity lives now (host truth).
+    host_track_of_identity: dict[str, Any] = {}
+    host_layer_of_identity: dict[str, Any] = {}
+    host_layer_order: dict[str, list[str]] = {}
+    for host_track in host_tracks:
+        identities = [_layer_identity(layer) for layer in host_track.layers]
+        host_layer_order[str(host_track.id)] = identities
+        for identity, host_layer in zip(identities, host_track.layers):
+            host_track_of_identity[identity] = host_track
+            host_layer_of_identity[identity] = host_layer
+    # A host layer the snapshot never bound = a NEW curve → the engine
+    # document may not hold it; the full path must submit it.
+    for identity in host_track_of_identity:
+        if identity not in engine_curve_of_identity:
+            return None
+    # A host track the snapshot never bound can only be handled when every
+    # one of its curves is already in the engine document (add_track +
+    # bind); otherwise the arrangement is structural for this snapshot.
+    for track_id_key in host_track_ids:
+        if track_id_key in bindings:
+            continue
+        identities = host_layer_order.get(track_id_key, [])
+        if not all(i in engine_curve_of_identity for i in identities):
+            return None
+    # Every engine track must be one the snapshot knows.
+    snapshot_engine_tracks = {
+        entry["engine_track"]
+        for key, entry in bindings.items()
+        if key != "__curves__"
+    }
+    for engine_track in state.get("tracks", []):
+        if str(engine_track.get("id", "")) not in snapshot_engine_tracks:
+            return None
+
+    # --- Phase A: structure -------------------------------------------------
+    phase_a: list[tuple[str, dict[str, Any]]] = []
+    # Working copy of the bindings this sync will keep updating. The
+    # "__curves__" cache (identity → engine curve id) survives track
+    # removals so a re-checked curve re-binds without a full submit.
+    live_bindings: dict[str, Any] = {
+        "__curves__": dict(engine_curve_of_identity),
+    }
+    for key, entry in bindings.items():
+        if key == "__curves__":
+            continue
+        live_bindings[key] = {
+            "engine_track": entry["engine_track"],
+            "engine_scale": entry.get("engine_scale"),
+            "layers": dict(entry.get("layers", {})),
+            "curves": dict(entry.get("curves", {})),
+        }
+
+    # Tracks to remove: snapshot tracks the host no longer submits (left the
+    # display set, hidden, or lost every layer — the payload builder skips
+    # them, so engine parity removes them, cascading scales/layers).
+    engine_state_track_ids = {
+        str(t.get("id", "")) for t in state.get("tracks", [])
+    }
+    removed_engine_tracks: set[str] = set()
+    for track_id_key, entry in bindings.items():
+        if track_id_key == "__curves__" or track_id_key in host_track_ids:
+            continue
+        removed_engine_tracks.add(entry["engine_track"])
+        if entry["engine_track"] in engine_state_track_ids:
+            phase_a.append((
+                "remove_track",
+                {"track_id": entry["engine_track"]},
+            ))
+        live_bindings.pop(track_id_key, None)
+
+    # Tracks to add: host submission tracks whose engine track is gone.
+    for host_track in host_tracks:
+        entry = live_bindings.get(str(host_track.id))
+        if entry is not None and entry["engine_track"] in engine_state_track_ids:
+            continue
+        width_mm = _host_submission_width_mm(host_track)
+        report = apply_track_op(
+            view,
+            "add_track",
+            document_id=doc_id,
+            width_mm=width_mm,
+        )
+        new_engine_track = str(report.get("track_id", ""))
+        if not new_engine_track:
+            return None
+        if entry is None:
+            # Brand-new slot: remember it so future syncs know the track.
+            entry = {
+                "engine_track": new_engine_track,
+                "engine_scale": None,
+                "layers": {},
+                "curves": {},
+            }
+            live_bindings[str(host_track.id)] = entry
+            for host_layer in host_track.layers:
+                identity = _layer_identity(host_layer)
+                entry["curves"][identity] = (
+                    engine_curve_of_identity.get(identity, "")
+                )
+                live_bindings["__curves__"][identity] = (
+                    engine_curve_of_identity.get(identity, "")
+                )
+        else:
+            entry["engine_track"] = new_engine_track
+        # Bind every layer (the engine document still holds the curves).
+        for host_layer in host_track.layers:
+            identity = _layer_identity(host_layer)
+            curve_id = engine_curve_of_identity.get(identity, "")
+            if not curve_id:
+                return None
+            bind_report = apply_track_op(
+                view,
+                "bind_curve",
+                document_id=doc_id,
+                curve_id=curve_id,
+                track_id=new_engine_track,
+                color=(host_layer.color or "#1972b8").lower(),
+            )
+            entry["layers"][identity] = str(bind_report.get("layer_id", ""))
+            entry["curves"][identity] = curve_id
+        entry["engine_scale"] = None  # generated scale, resolved in phase B
+
+    # Layer membership on surviving tracks: moves + unbinds + re-binds.
+    engine_layers_by_id = {
+        str(l.get("id", "")): l for l in state.get("curve_layers", [])
+    }
+    for track_id_key, entry in live_bindings.items():
+        if track_id_key == "__curves__":
+            continue
+        engine_track_id = entry["engine_track"]
+        if engine_track_id in removed_engine_tracks:
+            continue
+        for identity, engine_layer_id in list(entry.get("layers", {}).items()):
+            engine_layer = engine_layers_by_id.get(str(engine_layer_id))
+            host_track_now = host_track_of_identity.get(identity)
+            if host_track_now is None:
+                # Curve left the display set → remove the layer only; the
+                # engine document keeps the curve (data truth).
+                if engine_layer is not None:
+                    phase_a.append((
+                        "unbind_curve",
+                        {"layer_id": engine_layer_id},
+                    ))
+                entry["layers"].pop(identity, None)
+                continue
+            target = live_bindings.get(str(host_track_now.id))
+            if target is None:
+                return None
+            if engine_layer is None:
+                # Layer was unbound earlier; the engine document still holds
+                # the curve — re-bind with the host style.
+                curve_id = entry.get("curves", {}).get(identity, "")
+                if not curve_id:
+                    return None
+                host_layer = host_layer_of_identity[identity]
+                bind_report = apply_track_op(
+                    view,
+                    "bind_curve",
+                    document_id=doc_id,
+                    curve_id=curve_id,
+                    track_id=target["engine_track"],
+                    color=(host_layer.color or "#1972b8").lower(),
+                )
+                target["layers"][identity] = str(
+                    bind_report.get("layer_id", "")
+                )
+                target["curves"][identity] = curve_id
+                live_bindings["__curves__"][identity] = curve_id
+                entry["layers"].pop(identity, None)
+                continue
+            if str(engine_layer.get("track_id", "")) != target["engine_track"]:
+                phase_a.append((
+                    "move_curve_layer",
+                    {
+                        "layer_id": engine_layer_id,
+                        "target_track_id": target["engine_track"],
+                    },
+                ))
+                # The identity now belongs to the target track's entry.
+                target["layers"][identity] = engine_layer_id
+                if identity not in target.get("curves", {}):
+                    target["curves"][identity] = entry.get("curves", {}).get(
+                        identity, ""
+                    )
+                entry["layers"].pop(identity, None)
+
+    # Track order after adds/removals: engine z-order mirrors host order.
+    want_order = [
+        live_bindings[str(t.id)]["engine_track"]
+        for t in host_tracks
+        if str(t.id) in live_bindings
+    ]
+    for op, fields in phase_a:
+        fields = {"document_id": doc_id, **fields}
+        try:
+            apply_track_op(view, op, **fields)
+        except EngineSubmitError:
+            return None
+
+    # --- Phase B: values against the refreshed state ------------------------
+    state = engine_presentation_state(view, doc_id)
+    if state is None:
+        return None
+    engine_tracks_by_id = {
+        str(t.get("id", "")): t for t in state.get("tracks", [])
+    }
+    engine_layers_by_id = {
+        str(l.get("id", "")): l for l in state.get("curve_layers", [])
+    }
+    engine_order_now = [
+        t.get("id", "")
+        for t in sorted(
+            state.get("tracks", []), key=lambda item: item.get("z_order", 0)
+        )
+    ]
+    if engine_order_now != want_order:
+        try:
+            apply_track_op(
+                view,
+                "reorder_tracks",
+                document_id=doc_id,
+                track_ids=want_order,
+            )
+        except EngineSubmitError:
+            return None
+
+    phase_b: list[tuple[str, dict[str, Any]]] = []
+    for host_track in host_tracks:
+        entry = live_bindings.get(str(host_track.id))
+        if entry is None:
+            return None
+        engine_track = engine_tracks_by_id.get(entry["engine_track"])
+        if engine_track is None:
+            return None
+        engine_id = entry["engine_track"]
+
+        want_width = _host_submission_width_mm(host_track)
+        if abs(float(engine_track.get("width_mm", 0.0)) - want_width) > 1.0e-6:
+            phase_b.append((
+                "resize_track",
+                {"track_id": engine_id, "width_mm": want_width},
+            ))
+
+        if host_track.scale is not None:
+            engine_scale = next(
+                (
+                    sc
+                    for sc in state.get("scales", [])
+                    if sc.get("track_id") == engine_id
+                ),
+                None,
+            )
+            if engine_scale is not None:
+                entry["engine_scale"] = engine_scale.get("id")
+                fields: dict[str, Any] = {
+                    "scale_id": engine_scale.get("id", "")
+                }
+                changed = False
+                if (
+                    abs(
+                        float(engine_scale.get("minimum", 0.0))
+                        - float(host_track.scale.min)
+                    )
+                    > 1.0e-9
+                ):
+                    fields["minimum"] = float(host_track.scale.min)
+                    changed = True
+                if (
+                    abs(
+                        float(engine_scale.get("maximum", 0.0))
+                        - float(host_track.scale.max)
+                    )
+                    > 1.0e-9
+                ):
+                    fields["maximum"] = float(host_track.scale.max)
+                    changed = True
+                want_mode = (
+                    "logarithmic"
+                    if host_track.scale.mode == "log"
+                    else "linear"
+                )
+                if engine_scale.get("mode") != want_mode:
+                    fields["mode"] = want_mode
+                    changed = True
+                want_reverse = bool(
+                    getattr(host_track.scale, "reverse", False)
+                )
+                have_reverse = (
+                    engine_scale.get("direction") == "right_to_left"
+                )
+                if have_reverse != want_reverse:
+                    fields["direction"] = (
+                        "right_to_left" if want_reverse else "left_to_right"
+                    )
+                    changed = True
+                if changed:
+                    phase_b.append(("set_scale", fields))
+
+        # In-track layer order + colors.
+        identities = host_layer_order.get(str(host_track.id), [])
+        engine_layer_ids_in_track = [
+            l.get("id", "")
+            for l in sorted(
+                [
+                    l
+                    for l in state.get("curve_layers", [])
+                    if str(l.get("track_id", "")) == engine_id
+                ],
+                key=lambda item: item.get("z_order", 0),
+            )
+        ]
+        want_layer_ids = [
+            entry["layers"][identity]
+            for identity in identities
+            if identity in entry.get("layers", {})
+            and str(entry["layers"].get(identity)) in engine_layers_by_id
+        ]
+        if [str(x) for x in engine_layer_ids_in_track] != [
+            str(x) for x in want_layer_ids
+        ]:
+            if want_layer_ids:
+                phase_b.append((
+                    "reorder_curve_layers",
+                    {"track_id": engine_id, "layer_ids": want_layer_ids},
+                ))
+        for host_layer in host_track.layers:
+            identity = _layer_identity(host_layer)
+            engine_layer_id = entry["layers"].get(identity)
+            engine_layer = engine_layers_by_id.get(str(engine_layer_id))
+            if engine_layer is None:
+                continue
+            host_color = (host_layer.color or "#1972b8").lower()
+            if str(engine_layer.get("color", "")).lower() != host_color:
+                phase_b.append((
+                    "set_layer_style",
+                    {"layer_id": engine_layer_id, "color": host_color},
+                ))
+
+    for op, fields in phase_b:
+        fields = {"document_id": doc_id, **fields}
+        try:
+            apply_track_op(view, op, **fields)
+        except EngineSubmitError:
+            return None
+    return live_bindings

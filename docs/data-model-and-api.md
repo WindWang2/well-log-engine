@@ -203,25 +203,18 @@ struct WellLogDocument {
 
 ## 8. Track、Layer 与 Scale
 
-```cpp
-struct TrackSpec {
-    EntityId id;
-    PhysicalLength width;
-    HeaderSpec header;
-    ClipPolicy clip;
-    std::vector<EntityId> scaleIds;
-    std::vector<LayerSpec> layers;
-};
+实现词汇（include/welllog/scene/scene.hpp）：`TrackSpec { id, width,
+z_order, header, visible }`、`TrackScaleSpec { id, track_id, mode, minimum,
+maximum, direction, unit }`、`CurveLayerSpec { id, track_id, curve_id,
+scale_id, color, line_width, z_order, visible, qc_display }` 以及
+interval / crossover fill / image / marker / symbol / text / custom 等
+Layer 类型。历史草图中 "track 持有 scaleIds/layers 数组" 的形态已被否决：
+Track 与 Curve 的绑定事实只存在于 Presentation 的平铺 Layer 集合
+（ADR 0056），引擎内不存在第二份 `Track.curves[]`。
 
-struct TrackScale {
-    EntityId id;
-    ScaleMode mode;      // linear or logarithmic
-    double minimum;
-    double maximum;
-    ScaleDirection direction;
-    Unit unit;
-};
-```
+`TrackSpec.visible == false` 的隐藏 track 保留自己的布局槽位与全部绑定
+（preflight 仍完整校验），但其所有 Layer 与 header 行不产生任何 prepared
+geometry——"灰显不重排" 策略。
 
 Layer 是带语义类型的 tagged variant，不是继承自 QWidget 的多态树。首期内置类型：
 
@@ -389,6 +382,31 @@ Patch 必须声明：
 - 修改 Cross-Well Overlay。
 
 若基础 Revision 不匹配，返回 Conflict；内核不得按名称或当前位置自动套用。未来的三方合并属于独立模块。
+
+### 13.1 Track/Data 工作流命令（ADR 0056/0057）
+
+`include/welllog/session/track_commands.hpp` 在 Document Patch 之上提供专业
+工作流命令：`AddTrack` / `RemoveTrack`（级联移除 scale+layer 的原子补丁）/
+`ReorderTracks` / `ResizeTrack` / `SetTrackHeader` / `SetTrackVisibility`、
+`BindCurveToTrack` / `UnbindCurveFromTrack` / `MoveCurveLayer` /
+`DuplicateCurveLayer` / `ReorderCurveLayers` / `SetCurveLayerVisibility` /
+`SetCurveLayerStyle`、`SetTrackScale` / `AutoRangeTrackScale`。每条命令通过
+绑定索引解析当前 document+presentation，构造一条基于当前 revision 的
+DocumentPatch 并委托给 `ApplyPatchCommand`——没有第二套 mutation engine；
+原子性、revision 门、preflight、undo/redo、事件与 LOD 复用全部继承。
+Move 只改写 layer 的 track/scale 绑定与 z-order，原始曲线与深度缓冲区
+地址不变（benchmark `welllog.track-command-benchmark` 以地址/容量不变为
+硬门）。Auto-range 是显式操作（log 刻度拟合正有限值域），任何比例尺都不
+随可见 min/max 逐帧变化。配套稳定错误键：`track_entity_missing`、
+`track_binding_invalid`、`track_order_incomplete`、
+`track_scale_range_invalid`。
+
+绑定索引（O(1) 解析、不触碰原始缓冲区）：core 的
+`DocumentBindingIndex`（按 id 定位实体 + `curves_on_axis` 文档序）与
+scene 的 `PresentationBindingIndex`（z 序 track 列表、track→scales/
+layers、curve→layers、layer→track 全类型、`all_layers_of_track` 级联集）。
+悬停检查用 `scene/inspect.hpp` 的 `resolve_curve_pick` 得到 CurvePickInfo
+（mnemonic/单位/QC 状态/scale 上下文/derived provenance 与 staleness）。
 
 ## 14. Append Batch
 

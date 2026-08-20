@@ -99,6 +99,8 @@ private slots:
   void refresh_emits_data_changed_over_spans();
   void clipboard_internal_mime_carries_axis_and_curve_identity();
   void set_projection_clears_stale_selection_source();
+  void session_events_auto_refresh_the_reflection();
+  void detach_stops_auto_refresh();
 };
 
 // A session depth-range selection on axis A is reflected by a model built on
@@ -277,6 +279,77 @@ void TableSelectionSyncTest::set_projection_clears_stale_selection_source() {
   QCOMPARE(model.current_row_selection().last_row, std::uint64_t{0});
   // set_row_selection returns false with no source attached.
   QVERIFY(!model.set_row_selection(0, 1));
+}
+
+// The model subscribes to the session's selection events once a source is
+// attached: a session-side selection (e.g. from the graphics view's Ctrl+drag)
+// is reflected WITHOUT the host calling refresh_session_selection — the
+// event is marshalled onto the model's thread and refreshes automatically.
+void TableSelectionSyncTest::session_events_auto_refresh_the_reflection() {
+  WellLogSession session;
+  QVERIFY(session.execute(SetDocumentCommand{make_document()}).has_value());
+
+  const auto tables =
+      TableProjectionBuilder::from_document(*session.document(document_id));
+  const auto *axis_a_table = find_table(tables, axis_a_id);
+  QVERIFY(axis_a_table != nullptr);
+
+  TableModel model;
+  model.set_projection(*axis_a_table);
+  QSignalSpy spy(&model, &TableModel::dataChanged);
+  QVERIFY(spy.isValid());
+  model.set_session_selection_source(&session, document_id, axis_a_id);
+
+  // Session-side selection — no explicit refresh call anywhere.
+  QVERIFY(session
+              .execute(SetSelectionCommand{
+                  .document_id = document_id,
+                  .sampling_axis_id = axis_a_id,
+                  .reference_depth_range = {.top = 1001.0, .bottom = 1002.0},
+              })
+              .has_value());
+  // The subscription marshals via a queued invocation; spin the loop.
+  QVERIFY(QTest::qWaitFor([&spy]() { return spy.count() >= 1; }, 1000));
+  const auto reflected = model.current_row_selection();
+  QCOMPARE(reflected.first_row, std::uint64_t{1});
+  QCOMPARE(reflected.last_row, std::uint64_t{3});
+
+  // Clearing the selection session-side is reflected automatically too.
+  QVERIFY(session.execute(ClearSelectionCommand{.document_id = document_id})
+              .has_value());
+  QVERIFY(QTest::qWaitFor([&model]() {
+    return model.current_row_selection().last_row == 0;
+  }, 1000));
+}
+
+// Detaching (null session) stops the auto-refresh: later session selections
+// no longer touch the model.
+void TableSelectionSyncTest::detach_stops_auto_refresh() {
+  WellLogSession session;
+  QVERIFY(session.execute(SetDocumentCommand{make_document()}).has_value());
+
+  const auto tables =
+      TableProjectionBuilder::from_document(*session.document(document_id));
+  const auto *axis_a_table = find_table(tables, axis_a_id);
+  QVERIFY(axis_a_table != nullptr);
+
+  TableModel model;
+  model.set_projection(*axis_a_table);
+  model.set_session_selection_source(&session, document_id, axis_a_id);
+  model.set_session_selection_source(nullptr, {}, {});
+  QSignalSpy spy(&model, &TableModel::dataChanged);
+  QVERIFY(spy.isValid());
+
+  QVERIFY(session
+              .execute(SetSelectionCommand{
+                  .document_id = document_id,
+                  .sampling_axis_id = axis_a_id,
+                  .reference_depth_range = {.top = 1000.0, .bottom = 1001.0},
+              })
+              .has_value());
+  QTest::qWait(100);
+  QCOMPARE(spy.count(), 0);
+  QCOMPARE(model.current_row_selection().last_row, std::uint64_t{0});
 }
 
 } // namespace

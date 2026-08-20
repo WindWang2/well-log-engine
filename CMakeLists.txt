@@ -256,6 +256,7 @@ endfunction()
 
 add_library(welllog_core ${WELLLOG_LIBRARY_TYPE}
     src/core/document.cpp
+    src/core/document_index.cpp
     src/core/entity_id.cpp
     src/core/utf8.cpp
 )
@@ -319,6 +320,8 @@ add_library(welllog_scene ${WELLLOG_LIBRARY_TYPE}
     src/scene/axis_ticks.cpp
     src/scene/curve_lod.cpp
     src/scene/image_pyramid.cpp
+    src/scene/inspect.cpp
+    src/scene/presentation_index.cpp
     src/scene/scene.cpp
     src/scene/time_depth.cpp
     src/scene/triangulate.cpp
@@ -520,6 +523,7 @@ endif()
 
 add_library(welllog_session ${WELLLOG_LIBRARY_TYPE}
     src/session/session.cpp
+    src/session/track_commands.cpp
     src/session/observability.cpp
 )
 add_library(WellLog::Session ALIAS welllog_session)
@@ -800,6 +804,13 @@ if(WELLLOG_BUILD_BENCHMARKS)
     add_executable(welllog_dense_curve_benchmark
         benchmarks/dense_curve_benchmark.cpp
     )
+    add_executable(welllog_track_command_benchmark
+        benchmarks/track_command_benchmark.cpp
+    )
+    target_compile_features(welllog_track_command_benchmark PRIVATE cxx_std_20)
+    welllog_enable_warnings(welllog_track_command_benchmark)
+    target_link_libraries(welllog_track_command_benchmark PRIVATE WellLog::Session)
+    add_test(NAME welllog.track-command-benchmark COMMAND welllog_track_command_benchmark)
     target_compile_features(
         welllog_dense_curve_benchmark
         PRIVATE cxx_std_20
@@ -1856,6 +1867,18 @@ if(WELLLOG_BUILD_TESTS)
     target_link_libraries(welllog_apply_patch_tests PRIVATE WellLog::Session)
     add_test(NAME welllog.apply-patch COMMAND welllog_apply_patch_tests)
 
+    # Track/Data workflow command layer (ADR 0055/0056): bind/unbind/move
+    # curve layers, track add/remove/reorder/resize/header/visibility, scale
+    # edits + auto-range, binding indexes, hidden-track prepare policy,
+    # hover inspect resolution — all over the ApplyPatchCommand engine.
+    add_executable(welllog_track_command_tests
+        tests/integration/track_commands_test.cpp
+    )
+    target_compile_features(welllog_track_command_tests PRIVATE cxx_std_20)
+    welllog_enable_warnings(welllog_track_command_tests)
+    target_link_libraries(welllog_track_command_tests PRIVATE WellLog::Session)
+    add_test(NAME welllog.track-commands COMMAND welllog_track_command_tests)
+
     # Interpretation-entity patch coverage (#205, AC #2 of #158): create/move/
     # modify/delete of Interval/Marker/Annotation via ApplyPatchCommand, with
     # invalid-edit rejections (Interval top>=bottom, invalid UTF-8) and
@@ -2066,6 +2089,15 @@ if(WELLLOG_BUILD_TESTS)
                 "QT_QPA_PLATFORM=minimal"
                 "${Python_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/python/test_qt_embedding.py"
+        )
+        add_test(
+            NAME welllog.python.track-commands
+            COMMAND
+                "${CMAKE_COMMAND}" -E env
+                "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python:${WELLLOG_PYTHON_SITE_PACKAGES}"
+                "QT_QPA_PLATFORM=minimal"
+                "${Python_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/python/test_track_commands.py"
         )
         add_test(
             NAME welllog.python.qt-lifecycle-stress

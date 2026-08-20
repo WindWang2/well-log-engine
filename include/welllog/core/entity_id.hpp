@@ -18,6 +18,10 @@ public:
 
   [[nodiscard]] static std::optional<EntityId>
   parse(std::string_view text) noexcept;
+  // Generates a fresh random (version 4, variant 1) id. Hosts that need
+  // reproducible ids across runs supply their own; session commands use this
+  // when a host leaves a to-be-created entity id nil.
+  [[nodiscard]] static EntityId generate() noexcept;
   [[nodiscard]] std::string to_string() const;
   [[nodiscard]] bool is_nil() const noexcept;
 

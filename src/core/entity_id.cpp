@@ -1,6 +1,10 @@
 #include <welllog/core/entity_id.hpp>
 
 #include <charconv>
+#include <chrono>
+#include <cstdint>
+#include <random>
+#include <unistd.h>
 namespace welllog {
 namespace {
 
@@ -40,6 +44,37 @@ std::optional<EntityId> EntityId::parse(std::string_view text) noexcept {
     byte = *parsed;
     source_index += 2;
   }
+  return EntityId{bytes};
+}
+
+EntityId EntityId::generate() noexcept {
+  // std::random_device may itself be deterministic on some platforms, so mix
+  // it with a per-process timestamp and a per-call counter; the ids only need
+  // uniqueness, not cryptographic strength.
+  static thread_local std::mt19937_64 engine = [] {
+    const auto steady = static_cast<std::uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    std::seed_seq seed{std::random_device{}(),
+                       static_cast<std::uint32_t>(::getpid()),
+                       static_cast<std::uint32_t>(steady),
+                       static_cast<std::uint32_t>(steady >> 32)};
+    return std::mt19937_64{seed};
+  }();
+  static thread_local std::uint64_t counter = 0;
+  std::array<std::uint8_t, 16> bytes{};
+  const auto mix = [&bytes](std::uint64_t value, std::size_t offset) {
+    for (std::size_t i = 0; i < sizeof(value); ++i) {
+      bytes[offset + i] ^=
+          static_cast<std::uint8_t>((value >> (i * 8)) & 0xffu);
+    }
+  };
+  mix(engine(), 0);
+  mix(engine(), 8);
+  mix(++counter, 0);
+  // Version 4, variant 10xx (RFC 4122 bits so to_string() is a well-formed
+  // UUID that round-trips through parse()).
+  bytes[6] = (bytes[6] & 0x0fu) | 0x40u;
+  bytes[8] = (bytes[8] & 0x3fu) | 0x80u;
   return EntityId{bytes};
 }
 

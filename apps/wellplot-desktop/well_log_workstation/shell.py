@@ -693,14 +693,15 @@ class WellLogWorkstationWindow(QMainWindow):
         self.multi_track_canvas.curve_drawn_committed.connect(
             self._on_curve_drawn_committed
         )
-        # Track-header drag reorder (FRS §2.x): persist the new order.
+        # Track-header drag reorder (FRS §2.x): persist the new order; mirror
+        # into the engine incrementally when its surface is active.
         self.multi_track_canvas.track_order_changed.connect(
-            lambda _order: self._persist_track_overrides()
+            self._on_canvas_track_order_changed
         )
         # Track-header width drag (FRS §2.x): width_fraction persists via the
         # same track_overrides path.
         self.multi_track_canvas.track_width_changed.connect(
-            lambda _track_id, _frac: self._persist_track_overrides()
+            self._on_canvas_track_width_changed
         )
         self.single_well_stack.addWidget(self.multi_track_canvas)  # index 0 host
 
@@ -714,6 +715,10 @@ class WellLogWorkstationWindow(QMainWindow):
         self.engine_caption.setObjectName("EngineCaption")
         ep.addWidget(self.engine_caption)
         self._engine_view = None  # WellLogView | None
+        # Host track id → engine entity ids, captured after each full engine
+        # submit (engine_bridge.capture_engine_bindings). Feeds the
+        # incremental track-command sync (ADR 0056/0057).
+        self._engine_bindings: dict | None = None
         self._engine_placeholder = QLabel(
             "引擎未激活。勾选「优先使用引擎画布」并应用图版，"
             "或将 welllog 加入 PYTHONPATH。"
@@ -1631,6 +1636,14 @@ class WellLogWorkstationWindow(QMainWindow):
             )
             self._engine_last_error = None
             self._primary_surface = "engine"
+            from well_log_workstation.engine_bridge import capture_engine_bindings
+
+            doc_id = getattr(self._presentation, "well_document_id", "")
+            self._engine_bindings = (
+                capture_engine_bindings(view, doc_id, self._presentation)
+                if self._presentation is not None
+                else None
+            )
             self.single_well_stack.setCurrentIndex(1)
             tracks = report.get("track_count", "?")
             curves = report.get("curve_count", "?")
@@ -2204,8 +2217,54 @@ class WellLogWorkstationWindow(QMainWindow):
         # Refresh list labels (hidden marker) without losing selection
         self._refresh_track_list_labels_only()
         self.multi_track_canvas.set_presentation(self._presentation)
-        self._sync_primary_single_well_surface()
+        if not self._try_incremental_engine_track_sync():
+            self._sync_primary_single_well_surface()
         self._persist_track_overrides()
+
+    def _try_incremental_engine_track_sync(self) -> bool:
+        """Value-level track edits as engine commands; False → full re-submit.
+
+        The engine view must already present this exact document (full submit
+        captured the bindings snapshot); structural edits fail the snapshot
+        match and fall back to the full path. Commands are atomic, so a
+        failed incremental attempt never leaves the engine mid-edit.
+        """
+        if (
+            self._engine_view is None
+            or self._presentation is None
+            or self._primary_surface != "engine"
+            or self._engine_bindings is None
+        ):
+            return False
+        from well_log_workstation.engine_bridge import (
+            incremental_presentation_sync,
+        )
+
+        try:
+            applied = incremental_presentation_sync(
+                self._engine_view, self._presentation, self._engine_bindings
+            )
+        except Exception:  # noqa: BLE001 — any surprise → full re-submit
+            return False
+        if applied is not None:
+            # The sync returns its refreshed bindings (commands may have
+            # replaced engine ids — bind creates new layer ids, add_track a
+            # new track id); keep them for the next incremental sync.
+            self._engine_bindings = applied
+            return True
+        return False
+
+    def _on_canvas_track_order_changed(self, _order: list) -> None:
+        """Host track-header drag reorder: persist + engine reorder command."""
+        self._persist_track_overrides()
+        if not self._try_incremental_engine_track_sync():
+            self._sync_primary_single_well_surface()
+
+    def _on_canvas_track_width_changed(self, _track_id: str, _frac: float) -> None:
+        """Host track-header width drag: persist + engine resize command."""
+        self._persist_track_overrides()
+        if not self._try_incremental_engine_track_sync():
+            self._sync_primary_single_well_surface()
 
     def _refresh_track_list_labels_only(self) -> None:
         if self._presentation is None or not hasattr(self, "track_list"):
@@ -2877,7 +2936,11 @@ class WellLogWorkstationWindow(QMainWindow):
             tab = f"{tab} · {self._active_plot_id[:8]}"
         self.document_tabs.setTabText(0, tab)
         self.document_tabs.setCurrentIndex(0)
-        self._sync_primary_single_well_surface()
+        # Display-set rebuild (tree drop / uncheck / template switch): mirror
+        # value-level + membership changes into engine commands; structural
+        # changes fall back to the full re-submit.
+        if not self._try_incremental_engine_track_sync():
+            self._sync_primary_single_well_surface()
         self._sync_apply_enabled()
         self._refresh_correlation_well_list(None)
         self._refresh_well_content_tree()

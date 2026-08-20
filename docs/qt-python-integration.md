@@ -63,6 +63,29 @@ Widget 不负责：
 - 在 Python 中拼接逐帧顶点；
 - 以 Qt Model 作为 Core 数据事实来源。
 
+### 2.1 Track/Data 工作流与状态内省（ADR 0056/0057）
+
+`WellLogView` 额外注入：
+
+- `apply_track_command(payload) -> dict`：`{"op": ..., "document_id": ...,
+  ...}` 一对一映射到 C++ track 命令（ops：add_track / remove_track /
+  reorder_tracks / resize_track / set_track_header / set_track_visibility /
+  bind_curve / unbind_curve / move_curve_layer / duplicate_curve_layer /
+  reorder_curve_layers / set_layer_visibility / set_layer_style / set_scale /
+  auto_range_scale）。新建实体的 id 在桥内生成并随报告返回
+  （`track_id` / `layer_id` / `new_layer_id`）。
+- `presentation_state(document_id) -> dict | None`：live presentation 的
+  tracks/scales/curve_layers（id、绑定、宽度、z 序、可见性、样式）。
+- `hover_info() -> dict | None`：C++ 侧解析的悬停检查（mnemonic、单位、
+  QC 状态、scale 上下文、derived provenance/staleness）。
+- `selection_state() -> dict | None` 与
+  `set_row_selection(axis_id, first_row, last_row)`：ADR 0024 共享
+  Selection Set 的读写（表格↔图形同一事实源）。
+
+宿主拖放工作流（WellPlot Desktop）通过 `engine_bridge.capture_engine_
+bindings` / `incremental_presentation_sync` 把 display-set 编辑镜像为上述
+命令而非整包重发；快照无法表达的变化回退完整 `submit_multi_track`。
+
 ## 3. OpenGL Profile
 
 适配器提供一个可在 QApplication 创建前调用的配置函数，建议请求：

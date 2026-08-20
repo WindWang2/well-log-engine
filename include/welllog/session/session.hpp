@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 #include <welllog/core/document.hpp>
@@ -13,6 +14,7 @@
 #include <welllog/scene/scene.hpp>
 #include <welllog/scene/text_engine.hpp>
 #include <welllog/session/export.hpp>
+#include <welllog/session/track_commands.hpp>
 
 namespace welllog {
 
@@ -495,6 +497,41 @@ public:
   execute(const ApplyPatchCommand &command);
   [[nodiscard]] Result<CommandReceipt> execute(const UndoCommand &command);
   [[nodiscard]] Result<CommandReceipt> execute(const RedoCommand &command);
+  // --- Track/Data workflow commands (track_commands.hpp; ADR 0056/0057) ----
+  // Each overload validates the binding against the live document +
+  // presentation through the binding indexes, builds a DocumentPatch at the
+  // current revision and delegates to execute(ApplyPatchCommand) — one
+  // mutation engine, atomic, undoable, LOD-reusing.
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const AddTrackCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const RemoveTrackCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const ReorderTracksCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const ResizeTrackCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const SetTrackHeaderCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const SetTrackVisibilityCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const BindCurveToTrackCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const UnbindCurveFromTrackCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const MoveCurveLayerCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const DuplicateCurveLayerCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const ReorderCurveLayersCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const SetCurveLayerVisibilityCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const SetCurveLayerStyleCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const SetTrackScaleCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const AutoRangeTrackScaleCommand &command);
   // Installs the text pipeline used to shape annotations and labels during
   // scene preparation (ADR 0029). Without an engine, text layers prepare
   // empty and a text_engine_unavailable diagnostic is published.
@@ -511,6 +548,14 @@ public:
   diagnostic_error(std::uint64_t diagnostic_id) const noexcept;
   [[nodiscard]] std::shared_ptr<const WellLogDocument>
   document(EntityId id) const noexcept;
+  // The live presentation bound to a document (nullptr before the first
+  // SetPresentationCommand or after a document replacement that has not been
+  // re-presented). The pointer is valid until the next session command; read
+  // what you need, do not store it. Track managers, data trees and hover
+  // inspectors resolve track/scale/layer state through this plus the
+  // presentation binding index.
+  [[nodiscard]] const ScenePresentation *presentation(EntityId id) const
+      noexcept;
   [[nodiscard]] std::shared_ptr<const PreparedScene>
   prepared_scene(EntityId document_id) const noexcept;
   // Prepares (or re-prepares) the document's scene at export density so
@@ -631,6 +676,16 @@ private:
     undo,
     redo,
   };
+
+  // Track-data command support (track_commands.cpp): Impl is pimpl-private
+  // to session.cpp, so the command implementations reach the live document
+  // and presentation maps through these read-only views.
+  [[nodiscard]] const std::unordered_map<
+      EntityId, std::shared_ptr<const WellLogDocument>, EntityIdHash> &
+  documents_view() const noexcept;
+  [[nodiscard]] const std::unordered_map<EntityId, ScenePresentation,
+                                         EntityIdHash> &
+  presentations_view() const noexcept;
 
   [[nodiscard]] Result<CommandReceipt>
   execute_history(EntityId document_id, HistoryDirection direction);

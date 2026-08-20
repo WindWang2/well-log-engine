@@ -35,25 +35,40 @@ struct TableModel::Impl {
   TableProjection projection;
   // ADR 0024 selection sync (Phase B). When non-null, the model reflects the
   // session's Selection Set for this (document, axis) as a [first,last) span.
+  // The subscription mirrors session selection events onto the GUI thread
+  // (queued) and calls refresh_session_selection, so the reflection stays
+  // current without host-side polling.
   WellLogSession *session{nullptr};
   EntityId document_id{};
   EntityId sampling_axis_id{};
   RowSelection reflected{{}, {}};
   bool has_reflected{false};
+  ViewEventObserverId observer_id{0};
+
+  void detach_selection_observer() noexcept {
+    if (session != nullptr && observer_id != 0) {
+      session->unsubscribe_view_events(observer_id);
+    }
+    observer_id = 0;
+  }
 };
 
 TableModel::TableModel(QObject *parent)
     : QAbstractTableModel(parent), impl_(std::make_unique<Impl>()) {}
 
-TableModel::~TableModel() = default;
+TableModel::~TableModel() {
+  // The session (raw pointer contract) must outlive the model or be detached
+  // first; unsubscribe before the functor's captured model pointer dies.
+  impl_->detach_selection_observer();
+}
 
 void TableModel::set_projection(TableProjection projection) noexcept {
   beginResetModel();
   impl_->projection = std::move(projection);
   // A new projection may be a different document/axis with different row
   // indices — drop the reflected selection so stale indices are never emitted.
-  // The host re-attaches a selection source and calls refresh_session_selection
-  // after setting the projection.
+  // The host re-attaches a selection source after setting the projection.
+  impl_->detach_selection_observer();
   impl_->reflected = {{}, {}};
   impl_->has_reflected = false;
   impl_->session = nullptr;
@@ -151,13 +166,32 @@ TableRowCell TableModel::raw_cell(std::uint64_t row,
 void TableModel::set_session_selection_source(WellLogSession *session,
                                               EntityId document_id,
                                               EntityId sampling_axis_id) noexcept {
+  impl_->detach_selection_observer();
   impl_->session = session;
   impl_->document_id = document_id;
   impl_->sampling_axis_id = sampling_axis_id;
-  // Drop any stale reflection; the host calls refresh_session_selection() once
-  // the source is wired (and on every subsequent selection event).
+  // Drop any stale reflection; the subscription below reflects the session's
+  // current state on the next selection event, and an explicit
+  // refresh_session_selection() call forces it immediately.
   impl_->has_reflected = false;
   impl_->reflected = {{}, {}};
+  if (session != nullptr) {
+    // Auto-refresh: selection events published by the session (from any
+    // thread — e.g. an async preparation invalidation) are marshalled onto
+    // the model's thread via a queued invocation. With the context object
+    // being this model, Qt drops the call if the model is destroyed first.
+    auto *model = this;
+    impl_->observer_id = session->subscribe_view_events(
+        [model](const ViewEvent &event) {
+          if (event.kind != ViewEventKind::selection_changed &&
+              event.kind != ViewEventKind::selection_invalidated) {
+            return;
+          }
+          QMetaObject::invokeMethod(
+              model, [model]() { model->refresh_session_selection(); },
+              Qt::QueuedConnection);
+        });
+  }
 }
 
 void TableModel::refresh_session_selection() noexcept {

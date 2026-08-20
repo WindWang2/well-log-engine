@@ -139,6 +139,42 @@
                     %PYARG_0 = welllog::python::export_scene_cgm(%CPPSELF, %1, %2);
                 </inject-code>
             </add-function>
+            <!-- Track/Data workflow (ADR 0056/0057): one payload → one
+                 validated undoable track command riding ApplyPatchCommand. -->
+            <add-function
+                signature="apply_track_command(PyObject*@payload@)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::apply_track_command(%CPPSELF, %PYARG_1);
+                </inject-code>
+            </add-function>
+            <add-function signature="hover_info()" return-type="PyObject*">
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::hover_info(%CPPSELF);
+                </inject-code>
+            </add-function>
+            <add-function signature="selection_state()" return-type="PyObject*">
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::selection_state(%CPPSELF);
+                </inject-code>
+            </add-function>
+            <add-function
+                signature="set_row_selection(QString@axis_id@,unsigned long long@first_row@,unsigned long long@last_row@)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::set_row_selection(%CPPSELF, %1, %2, %3);
+                </inject-code>
+            </add-function>
+            <add-function
+                signature="presentation_state(QString@document_id@)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::presentation_state(%CPPSELF, %1);
+                </inject-code>
+            </add-function>
         </object-type>
 
         <!-- TableModel / TableProjection: not listed in WELLLOG_PYTHON_GENERATED_SOURCES
