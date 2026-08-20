@@ -338,6 +338,21 @@ def leaf_id_for_curve(document_id: str, mnemonic: str, version: str = "raw") -> 
     return f"{document_id}:{mnemonic}"
 
 
+def version_from_leaf_id(leaf_id: str) -> str | None:
+    """Curve version encoded in a leaf id, or ``None`` for the plain shape.
+
+    Inverse of :func:`leaf_id_for_curve` for the versioned shape
+    (``doc:mnemonic:version``; the version itself may contain colons).
+    Plain ``doc:mnemonic`` ids (historic "raw" leaves) return ``None`` so
+    lookups keep the first-match behaviour.
+    """
+    if ":" in leaf_id:
+        parts = leaf_id.split(":")
+        if len(parts) >= 3:
+            return ":".join(parts[2:])
+    return None
+
+
 def leaves_from_document(document: ImportedWellDocument) -> list[DisplayableTrackLeaf]:
     """Build scalar leaves for an imported well document (one source)."""
     source_id = document.source_path or document.document_id
@@ -457,11 +472,7 @@ def presentation_from_display_set(
         # Multi-rate (Epic A): a versioned leaf ("doc:mnemonic:version")
         # resolves to that exact curve version; plain leaves keep the
         # historic first-match behaviour.
-        version: str | None = None
-        if ":" in desc.leaf_id:
-            parts = desc.leaf_id.split(":")
-            if len(parts) >= 3:
-                version = ":".join(parts[2:])
+        version = version_from_leaf_id(desc.leaf_id)
         curve = document.curve_by_mnemonic(desc.mnemonic, version=version)
         if curve is None:
             continue

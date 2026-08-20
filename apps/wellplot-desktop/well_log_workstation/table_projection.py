@@ -35,6 +35,7 @@ from well_log_workstation.display_set import (
     StyledTrackDescriptor,
     compose,
     leaves_from_document,
+    version_from_leaf_id,
 )
 from well_log_workstation.las_import import ImportedCurve, ImportedWellDocument
 from well_log_workstation.template_model import PlotTemplate
@@ -153,7 +154,14 @@ def build_table_projections(
         done += 1
         if on_progress is not None:
             on_progress(done, total_steps)
-        curve = document.curve_by_mnemonic(desc.mnemonic)
+        # Version-aware lookup (#34): a versioned leaf ("doc:mnemonic:version")
+        # must resolve to that exact curve version — same parsing as the
+        # graphic path (presentation_from_display_set). A mnemonic-only
+        # lookup would first-match the wrong version when the Display Set
+        # holds e.g. raw GR + resampled GR@resample-0.5m.
+        curve = document.curve_by_mnemonic(
+            desc.mnemonic, version=version_from_leaf_id(desc.leaf_id)
+        )
         if curve is None:
             continue
         n = int(curve.values.size)
