@@ -6,6 +6,9 @@ Engine Manifest is per-well data only — never the whole-project container.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -94,6 +97,12 @@ class Workspace:
     # Lets a template slot ``GR`` match a curve named ``GRD`` etc. Optional;
     # empty dict means match by exact (case-insensitive) mnemonic only.
     mnemonic_alias: dict[str, list[str]] = field(default_factory=dict)
+    # #35: serializes save_workspace calls on this instance — the GUI save
+    # points and the background LAS-import worker share one Workspace.
+    # Never persisted; excluded from repr/equality.
+    _save_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False
+    )
 
     @property
     def wells_dir(self) -> Path:
@@ -333,13 +342,37 @@ def ensure_startup_workspace() -> Workspace:
 
 
 def save_workspace(ws: Workspace) -> None:
-    """Write ``workspace.json`` atomically-ish (write temp then replace)."""
+    """Write ``workspace.json`` atomically (unique temp + os.replace).
+
+    #35: the GUI save points and the background LAS-import worker save the
+    same ``Workspace`` from two threads. A fixed ``workspace.json.tmp`` name
+    let one thread replace (or unlink) the file the other was still writing
+    into — FileNotFoundError storms, torn catalog reads, and false
+    "import failed" reports after the well had already been appended.
+    Same-instance saves are serialized by the instance lock, and every save
+    writes its own uniquely named temp file so writers never collide on the
+    temp path; a failed save leaves no temp file behind.
+    """
     ws.root.mkdir(parents=True, exist_ok=True)
     path = ws.catalog_path
-    tmp = path.with_suffix(".json.tmp")
     payload = json.dumps(_to_json_dict(ws), indent=2, ensure_ascii=False) + "\n"
-    tmp.write_text(payload, encoding="utf-8")
-    tmp.replace(path)
+    with ws._save_lock:
+        fd, name = tempfile.mkstemp(
+            dir=str(ws.root), prefix=f"{WORKSPACE_FILENAME}.", suffix=".tmp"
+        )
+        tmp = Path(name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+            os.replace(tmp, path)
+        except BaseException:
+            # Never leave an orphaned temp file on any failure path; a
+            # failing cleanup must not mask the original error.
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
 
 def add_well(

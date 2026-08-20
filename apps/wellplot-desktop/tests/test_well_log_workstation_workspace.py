@@ -192,3 +192,74 @@ def test_shell_tree_shows_catalog(qtbot, tmp_path: Path) -> None:
     assert any("Well-X" in x for x in labels)
     assert any("X 单井" in x for x in labels)
     assert "WellPlot Desktop" in win.windowTitle() or "UI Field" in win.windowTitle()
+
+
+def test_save_workspace_concurrent_threads_no_errors(tmp_path: Path) -> None:
+    """#35: concurrent save_workspace (GUI vs LAS-import worker) is safe.
+
+    The GUI save points and the background LAS-import worker persist the
+    same ``Workspace`` from two threads. With the old fixed temp name
+    (``workspace.json.tmp``, no lock), 800 concurrent saves raised ~294
+    FileNotFoundError storms and could tear the catalog; the worker side
+    surfaced them as false "导入失败" after the well was already appended.
+    """
+    import threading
+
+    from well_log_workstation.workspace import WellCatalogEntry
+
+    ws = create_workspace(tmp_path / "ws", name="race")
+    ws.wells = [WellCatalogEntry(id=f"w{i}", name=f"W{i}") for i in range(20)]
+
+    errors: list[tuple[str, str]] = []
+    n = 200
+
+    def gui_saves() -> None:
+        for _ in range(n):
+            try:
+                save_workspace(ws)
+            except Exception as exc:
+                errors.append(("gui", f"{type(exc).__name__}: {exc}"))
+
+    def worker_saves() -> None:
+        for i in range(n):
+            try:
+                ws.wells.append(WellCatalogEntry(id=f"new{i}", name="x"))
+                save_workspace(ws)
+            except Exception as exc:
+                errors.append(("worker", f"{type(exc).__name__}: {exc}"))
+
+    t1 = threading.Thread(target=gui_saves)
+    t2 = threading.Thread(target=worker_saves)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert errors == []
+    # Deterministic final save → catalog is complete, valid, never torn
+    save_workspace(ws)
+    data = json.loads((ws.root / WORKSPACE_FILENAME).read_text(encoding="utf-8"))
+    assert {w["id"] for w in data["wells"]} == {w.id for w in ws.wells}
+    # No orphaned temp files left behind in the workspace root
+    leftovers = [p.name for p in ws.root.iterdir() if p.name.endswith(".tmp")]
+    assert leftovers == []
+
+
+def test_save_workspace_replace_failure_leaves_no_tmp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#35: a failed os.replace must not leave an orphaned temp file."""
+    from well_log_workstation import workspace as ws_mod
+
+    ws = create_workspace(tmp_path / "ws")
+    before = {p.name for p in ws.root.iterdir()}
+
+    def boom(src, dst):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(ws_mod.os, "replace", boom)
+    with pytest.raises(OSError, match="simulated replace failure"):
+        save_workspace(ws)
+
+    after = {p.name for p in ws.root.iterdir()}
+    assert after == before
