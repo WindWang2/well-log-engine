@@ -1,4 +1,4 @@
-"""Track/Data workflow bindings (ADR 0055/0056).
+"""Track/Data workflow bindings (ADR 0056/0057).
 
 apply_track_command maps one payload to one validated, undoable C++ track
 command riding ApplyPatchCommand; presentation_state / selection_state /

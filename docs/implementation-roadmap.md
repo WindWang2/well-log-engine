@@ -310,7 +310,7 @@ WELLLOG_WARNINGS_AS_ERRORS
 
 
 
-## 14. Track/Data 工作流（2026-08，ADR 0055/0056/0057）
+## 14. Track/Data 工作流（2026-08，ADR 0056/0057/0057）
 
 已完成（本地测试 `welllog.track-commands` / `welllog.qt-table-selection-sync`
 / `welllog.python.track-commands` / `welllog.track-command-benchmark` +

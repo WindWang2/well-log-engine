@@ -89,7 +89,7 @@ export_scene_pdf(WellLogView *view, const QString &document_id,
 export_scene_cgm(WellLogView *view, const QString &document_id,
                  double page_height_mm = 0.0) noexcept;
 
-// --- Track/Data workflow (ADR 0055/0056) ------------------------------------
+// --- Track/Data workflow (ADR 0056/0057) ------------------------------------
 //
 // One payload dict → one validated, undoable C++ track command. Payload:
 // {"op": str, "document_id": str, ...op fields...}. Supported ops: add_track,

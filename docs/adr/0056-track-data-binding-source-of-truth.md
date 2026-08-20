@@ -1,4 +1,4 @@
-# ADR 0055 — Track/Data Binding Source of Truth
+# ADR 0056 — Track/Data Binding Source of Truth
 
 Status: Accepted (2026-08)
 
@@ -35,7 +35,7 @@ commands so hosts stop hand-building patches and re-submitting documents.
    a second copy of binding facts: **there is still no `Track.curves[]`
    anywhere** — the presentation layer remains the only binding truth.
 
-2. **One mutation engine.** The track-data commands (ADR 0056) mutate state
+2. **One mutation engine.** The track-data commands (ADR 0057) mutate state
    exclusively through `ApplyPatchCommand`. The session gains no second
    writer, so atomicity, base-revision safety, preflight validation
    (dangling curve/scale/track references, unit compatibility, log

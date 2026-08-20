@@ -12,7 +12,7 @@
 
 namespace welllog {
 
-// --- Track/Data workflow commands (ADR 0055/0056) ---------------------------
+// --- Track/Data workflow commands (ADR 0056/0057) ---------------------------
 //
 // High-level, validated, undoable operations for the professional track
 // workflow: adding/removing/reordering/resizing tracks, binding/unbinding/

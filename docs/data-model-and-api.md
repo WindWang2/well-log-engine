@@ -210,7 +210,7 @@ scale_id, color, line_width, z_order, visible, qc_display }` 以及
 interval / crossover fill / image / marker / symbol / text / custom 等
 Layer 类型。历史草图中 "track 持有 scaleIds/layers 数组" 的形态已被否决：
 Track 与 Curve 的绑定事实只存在于 Presentation 的平铺 Layer 集合
-（ADR 0055），引擎内不存在第二份 `Track.curves[]`。
+（ADR 0056），引擎内不存在第二份 `Track.curves[]`。
 
 `TrackSpec.visible == false` 的隐藏 track 保留自己的布局槽位与全部绑定
 （preflight 仍完整校验），但其所有 Layer 与 header 行不产生任何 prepared
@@ -383,7 +383,7 @@ Patch 必须声明：
 
 若基础 Revision 不匹配，返回 Conflict；内核不得按名称或当前位置自动套用。未来的三方合并属于独立模块。
 
-### 13.1 Track/Data 工作流命令（ADR 0055/0056）
+### 13.1 Track/Data 工作流命令（ADR 0056/0057）
 
 `include/welllog/session/track_commands.hpp` 在 Document Patch 之上提供专业
 工作流命令：`AddTrack` / `RemoveTrack`（级联移除 scale+layer 的原子补丁）/

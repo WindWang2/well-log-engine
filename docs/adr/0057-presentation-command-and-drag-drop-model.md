@@ -1,4 +1,4 @@
-# ADR 0056 — Presentation Command Model & Desktop Drag/Drop Command Model
+# ADR 0057 — Presentation Command Model & Desktop Drag/Drop Command Model
 
 Status: Accepted (2026-08)
 
@@ -20,7 +20,7 @@ drifting from the host display-set model.
 
 `include/welllog/session/track_commands.hpp` adds the professional
 vocabulary as first-class session commands, each implemented by resolving
-the live document + presentation through the binding indexes (ADR 0055),
+the live document + presentation through the binding indexes (ADR 0056),
 building one `DocumentPatch` at the live revision, and delegating to
 `execute(ApplyPatchCommand)`:
 
@@ -89,7 +89,7 @@ the loop to Python hosts.
 ## Consequences
 
 - Desktop edits become O(changed presentation entities) engine commands;
-  no raw buffers are re-sent (ADR 0055 gates this in the benchmark).
+  no raw buffers are re-sent (ADR 0056 gates this in the benchmark).
 - The engine document deliberately accumulates curves the host once
   displayed (unbind keeps data truth); a full re-submit remains the
   compaction point.

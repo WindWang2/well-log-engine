@@ -497,7 +497,7 @@ public:
   execute(const ApplyPatchCommand &command);
   [[nodiscard]] Result<CommandReceipt> execute(const UndoCommand &command);
   [[nodiscard]] Result<CommandReceipt> execute(const RedoCommand &command);
-  // --- Track/Data workflow commands (track_commands.hpp; ADR 0055/0056) ----
+  // --- Track/Data workflow commands (track_commands.hpp; ADR 0056/0057) ----
   // Each overload validates the binding against the live document +
   // presentation through the binding indexes, builds a DocumentPatch at the
   // current revision and delegates to execute(ApplyPatchCommand) — one

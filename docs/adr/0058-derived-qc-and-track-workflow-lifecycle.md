@@ -1,4 +1,4 @@
-# ADR 0057 — Derived/QC Lifecycle through the Track/Data Workflow
+# ADR 0058 — Derived/QC Lifecycle through the Track/Data Workflow
 
 Status: Accepted (2026-08)
 
@@ -11,7 +11,7 @@ provenance (`input_curve_id`, `input_revision`, `algorithm id/version`,
 when their input changes. `tests/integration/qc_derived_curve_test.cpp`
 already covers the core lifecycle (byte-identical buffers, table/graphics
 policy, staleness, undo/redo, raw-patch rejection). The track/data
-workflow (ADR 0055/0056) now touches the same documents, so this ADR
+workflow (ADR 0056/0057) now touches the same documents, so this ADR
 records how the two interact and what the workflow adds.
 
 ## Decision

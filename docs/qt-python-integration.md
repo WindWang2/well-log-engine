@@ -63,7 +63,7 @@ Widget 不负责：
 - 在 Python 中拼接逐帧顶点；
 - 以 Qt Model 作为 Core 数据事实来源。
 
-### 2.1 Track/Data 工作流与状态内省（ADR 0055/0056）
+### 2.1 Track/Data 工作流与状态内省（ADR 0056/0057）
 
 `WellLogView` 额外注入：
 

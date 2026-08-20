@@ -1,4 +1,4 @@
-"""Track/Data workflow: engine bridge wrappers + incremental sync (ADR 0055/0056).
+"""Track/Data workflow: engine bridge wrappers + incremental sync (ADR 0056/0057).
 
 Model+command-layer tests with a fake engine view that mirrors the C++
 apply_track_command semantics (validated ops over a presentation-state dict).

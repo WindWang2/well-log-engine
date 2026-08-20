@@ -115,7 +115,7 @@ enum class MessageKey : std::uint16_t {
   invalid_geometry,
   // A track-data workflow command referenced an entity (track, scale, layer
   // or curve) that does not exist on the current document/presentation
-  // (ADR 0055). Paired with ErrorCode::document_not_found.
+  // (ADR 0056). Paired with ErrorCode::document_not_found.
   track_entity_missing,
   // A track-data workflow command produced an invalid binding (scale does
   // not belong to the layer's track, curve/scale unit mismatch, or no

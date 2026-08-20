@@ -822,7 +822,7 @@ def survey_depth_transform(
 
 
 # ---------------------------------------------------------------------------
-# Track/Data workflow commands (ADR 0055/0056)
+# Track/Data workflow commands (ADR 0056/0057)
 #
 # The host presentation (display set + template) stays the persistence truth;
 # these wrappers mirror value-level edits into the engine session as one
@@ -1038,7 +1038,7 @@ def incremental_presentation_sync(
 
     All commands ride the engine's ApplyPatchCommand engine — atomic,
     undoable, O(changed presentation entities), never re-sending curve
-    buffers (ADR 0055/0056). Returns the refreshed bindings snapshot when
+    buffers (ADR 0056/0057). Returns the refreshed bindings snapshot when
     every difference was applied (the caller keeps it for the next sync);
     None when the change is outside what the snapshot can express (an
     unknown host track id, a NEW curve identity the engine document cannot

@@ -1,4 +1,4 @@
-// Track/Data command-layer benchmark (ADR 0055/0056, goal §26): proves track
+// Track/Data command-layer benchmark (ADR 0056/0057, goal §26): proves track
 // workflow operations are O(changed presentation entities), not O(raw
 // samples), and never touch raw buffers.
 //

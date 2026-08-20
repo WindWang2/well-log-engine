@@ -139,7 +139,7 @@
                     %PYARG_0 = welllog::python::export_scene_cgm(%CPPSELF, %1, %2);
                 </inject-code>
             </add-function>
-            <!-- Track/Data workflow (ADR 0055/0056): one payload → one
+            <!-- Track/Data workflow (ADR 0056/0057): one payload → one
                  validated undoable track command riding ApplyPatchCommand. -->
             <add-function
                 signature="apply_track_command(PyObject*@payload@)"

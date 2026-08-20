@@ -717,7 +717,7 @@ class WellLogWorkstationWindow(QMainWindow):
         self._engine_view = None  # WellLogView | None
         # Host track id → engine entity ids, captured after each full engine
         # submit (engine_bridge.capture_engine_bindings). Feeds the
-        # incremental track-command sync (ADR 0055/0056).
+        # incremental track-command sync (ADR 0056/0057).
         self._engine_bindings: dict | None = None
         self._engine_placeholder = QLabel(
             "引擎未激活。勾选「优先使用引擎画布」并应用图版，"
