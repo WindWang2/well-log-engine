@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <utility>
 
 #include <QOpenGLWidget>
 
@@ -124,6 +125,12 @@ private:
   void schedule_coalesced_signals() noexcept;
   void update_pointer(double left, double top) noexcept;
   void update_capability_overlay() noexcept;
+  // Unified surface horizontal window (left/span in surface millimetres),
+  // active only while the surface is wider than the widget's physical width;
+  // nullopt keeps the legacy fit-to-surface-width mapping. Shared by the
+  // paint mapping and pointer/picking so both always agree.
+  [[nodiscard]] std::optional<std::pair<double, double>>
+  horizontal_window() const noexcept;
   // Ctrl+drag selection gesture (ADR 0024). begin_selection_drag captures the
   // Reference Depth at `pixel_top` and resolves the axis the press falls in
   // (the hovered curve's axis, else the document's first axis).

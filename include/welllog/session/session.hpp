@@ -70,6 +70,22 @@ struct SetSurfaceHorizontalViewCommand {
   double right_mm{};
 };
 
+// Pans the horizontal window over the multi-well surface by a delta in
+// surface millimetres (positive shifts the window right). Requires an active
+// layout and an existing horizontal window; the shifted window is clamped to
+// the surface extent [0, total layout width] so panning stops at the edges.
+struct PanSurfaceHorizontalCommand {
+  double delta_mm{};
+};
+
+// Sets the focused well of the unified surface (ADR 0011: the engine owns
+// interaction state). Single-well is the surface with one placement: the
+// focused well selects which document the implicit one-placement surface
+// shows, which well selection gestures target, and the crosshair anchor.
+struct SetFocusedWellCommand {
+  EntityId document_id{};
+};
+
 // --- Depth Transform + Cross-Well Overlay (#161, ADR 0013) ------------------
 
 // Applies a reversible piecewise Depth Transform to one well's presentation.
@@ -336,6 +352,8 @@ enum class ViewEventKind : std::uint8_t {
   selection_invalidated,
   // Read can_undo()/can_redo() after this event to observe the new stacks.
   history_changed,
+  // The focused well of the unified surface changed (SetFocusedWellCommand).
+  focused_well_changed,
 };
 
 struct ViewEvent {
@@ -445,6 +463,10 @@ public:
   [[nodiscard]] Result<CommandReceipt>
   execute(const SetSurfaceHorizontalViewCommand &command);
   [[nodiscard]] Result<CommandReceipt>
+  execute(const PanSurfaceHorizontalCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
+  execute(const SetFocusedWellCommand &command);
+  [[nodiscard]] Result<CommandReceipt>
   execute(const SetDepthTransformCommand &command);
   [[nodiscard]] Result<CommandReceipt>
   execute(const AlignWellsToMarkersCommand &command);
@@ -503,21 +525,60 @@ public:
                      std::uint64_t aggregate_pixel_height) const noexcept;
   // Active multi-well layout placements (empty when single-well mode).
   [[nodiscard]] std::span<const WellPlacement> well_layout() const noexcept;
+  // The focused well of the unified surface (ADR 0011). The implicit
+  // one-placement surface (single well) shows this document; nullopt when
+  // never set and no single-document fallback resolves.
+  [[nodiscard]] std::optional<EntityId> focused_well() const noexcept;
   [[nodiscard]] std::span<const CrossWellOverlay>
   cross_well_overlays() const noexcept;
   // Per-document Depth Transform (identity when unset).
   [[nodiscard]] DepthTransform
   depth_transform(EntityId document_id) const noexcept;
   // Composes the multi-well surface from per-well prepared scenes with
-  // horizontal culling. Returns nullptr when layout is empty or no well is
-  // prepared/visible. Single-document layout of size 1 still composes.
+  // horizontal culling. Returns nullptr when no well is prepared/visible.
+  // Unified surface semantics: with an empty layout this resolves the
+  // implicit one-placement surface (the focused well, else the session's
+  // single prepared document) and returns that prepared scene unchanged —
+  // single well IS a one-placement surface, never a separate path.
+  // Single-document layouts of size 1 still compose.
   [[nodiscard]] std::shared_ptr<const PreparedScene>
   prepared_surface_scene() const noexcept;
-  // Unified multi-well curve pick (document_id + track_id filled).
+  // Unified surface curve pick (document_id + track_id filled). Resolves the
+  // same implicit one-placement surface when the layout is empty, so single
+  // and multi-well picking share one path with per-well DepthTransform-correct
+  // reference depths.
   [[nodiscard]] std::optional<CurvePick>
   pick_surface_curve(const CurvePickQuery &query) const noexcept;
   [[nodiscard]] std::optional<DepthViewport>
   shared_depth_viewport() const noexcept;
+  // Unified surface viewport accessors: resolve the state a surface view
+  // should render with, regardless of placement count. The depth viewport is
+  // the shared Display Depth window when a layout is active, else the focused
+  // (or single) document's viewport. The crosshair is the focused well's
+  // (SetCrosshairCommand broadcasts it across layout wells, so all agree).
+  [[nodiscard]] std::optional<DepthViewport>
+  surface_depth_viewport() const noexcept;
+  [[nodiscard]] std::optional<CrosshairState>
+  surface_crosshair() const noexcept;
+  // Full horizontal extent of the surface in millimetres (the right edge of
+  // the last placement; NOT the culled compose width). Nullopt when no
+  // placement resolves.
+  [[nodiscard]] std::optional<double> surface_width_mm() const noexcept;
+  // The active horizontal window in surface millimetres (left, right).
+  [[nodiscard]] std::optional<std::pair<double, double>>
+  surface_horizontal_view() const noexcept;
+  // Virtualization counters for the last prepared_surface_scene() compose.
+  struct SurfaceStatistics {
+    std::uint64_t visible_wells{};
+    std::uint64_t culled_wells{};
+    std::uint64_t visible_tracks{};
+    std::uint64_t culled_tracks{};
+  };
+  [[nodiscard]] SurfaceStatistics surface_statistics() const noexcept;
+  // Per-document viewport. Unified-surface delegation: when the document is
+  // a member of an active layout and a shared viewport is set, the shared
+  // Display Depth window is returned (layout wells always pan/zoom together);
+  // otherwise the document's own viewport.
   [[nodiscard]] std::optional<DepthViewport>
   viewport(EntityId document_id) const noexcept;
   [[nodiscard]] std::optional<std::uint32_t>

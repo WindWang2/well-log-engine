@@ -21,6 +21,15 @@ struct GlDepthViewport {
   double bottom{};
 };
 
+// Horizontal window over the scene in surface millimetres (unified surface
+// canvas): scene x ∈ [left_mm, left_mm + span_mm] maps to the framebuffer
+// width. Absent (nullopt) keeps the legacy fit-to-scene-width mapping where
+// the whole scene physical width spans the framebuffer.
+struct GlHorizontalView {
+  double left_mm{};
+  double span_mm{};
+};
+
 struct GlCrosshair {
   double horizontal_fraction{};
   double display_depth{};
@@ -32,6 +41,7 @@ struct GlRenderFrame {
   int pixel_height{};
   double physical_pixels_per_millimetre{};
   GlDepthViewport viewport;
+  std::optional<GlHorizontalView> horizontal;
   std::optional<GlCrosshair> crosshair;
   bool draw_scene{};
 };
