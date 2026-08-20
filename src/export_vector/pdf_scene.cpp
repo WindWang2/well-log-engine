@@ -1197,13 +1197,22 @@ void emit_track_body(PdfPathStream &stream, const PreparedScene &scene,
                                               marker_pad)) {
         continue;
       }
+      // A path-painting operator terminates the whole path, so the symbol's
+      // fill/stroke emitted below would otherwise discard this not-yet-stroked
+      // line subpath (all marker lines vanished when draw_symbols=true, #32).
+      // Stroke each line before its symbol — the same per-marker order the SVG
+      // backend uses (svg.cpp marker loop).
       stream.move_to(left, marker.display_top.value)
-          .line_to(right, marker.display_top.value);
+          .line_to(right, marker.display_top.value)
+          .stroke();
       if (layer.draw_symbols) {
+        // q/Q keeps the symbol's fill colour and cross line width from
+        // leaking into the next marker's line stroke.
+        stream.save_state();
         emit_marker_symbol(stream, marker, layer, left);
+        stream.restore_state();
       }
     }
-    stream.stroke();
   }
   // Symbols.
   for (const auto &layer : scene.symbol_layers()) {
