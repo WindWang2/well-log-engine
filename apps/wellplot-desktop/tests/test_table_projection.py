@@ -141,6 +141,81 @@ def test_split_tables_when_curve_length_differs(tmp_path: Path) -> None:
     assert lens == [3, 5]
 
 
+def test_build_projection_resolves_curve_version_per_leaf() -> None:
+    """#34: versioned leaves must resolve to their exact curve version.
+
+    A Display Set holding raw GR + resampled GR@resample-0.5m used to build
+    two table columns from the same first-match (raw) curve — the resampled
+    column silently showed a 797-row copy of raw data. The table path must
+    match the graphic path (version parsed from the leaf id).
+    """
+    from well_log_workstation.las_import import ImportedCurve, ImportedWellDocument
+    from well_log_workstation.display_set import presentation_from_display_set
+
+    depth = np.arange(0.0, 100.0, 0.1256)  # 797 samples
+    raw_vals = np.sin(depth / 10.0)
+    res_depth = np.arange(0.0, 100.0, 0.5)  # 200 samples
+    res_vals = np.cos(res_depth / 10.0)
+    doc = ImportedWellDocument(
+        document_id="d1",
+        well_name="W1",
+        source_path="wells/d1/x.las",
+        depth=depth.copy(),
+        depth_unit="m",
+        curves=[
+            ImportedCurve(
+                mnemonic="GR",
+                unit="GAPI",
+                values=raw_vals.copy(),
+                null_mask=np.zeros(raw_vals.size, dtype=bool),
+                version="raw",
+            ),
+            ImportedCurve(
+                mnemonic="GR",
+                unit="GAPI",
+                values=res_vals.copy(),
+                null_mask=np.zeros(res_vals.size, dtype=bool),
+                depth=res_depth.copy(),
+                version="resample-0.5m",
+            ),
+        ],
+    )
+    tpl = get_builtin_template("std-gr-rt-den")
+    assert tpl is not None
+    display = {
+        leaf_id_for_curve("d1", "GR"),
+        leaf_id_for_curve("d1", "GR", "resample-0.5m"),
+    }
+
+    projs = build_table_projections(doc, display, tpl)
+    rows = sorted(p.row_count for p in projs)
+    assert rows == [200, 797]  # raw table + resampled table, never two raws
+    assert len(projs) == 2
+
+    raw_proj = next(p for p in projs if p.row_count == 797)
+    res_proj = next(p for p in projs if p.row_count == 200)
+    raw_col = raw_proj.columns[0]
+    res_col = res_proj.columns[0]
+    assert raw_col.leaf_id == "d1:GR"
+    assert res_col.leaf_id == "d1:GR:resample-0.5m"
+    assert raw_col.values.size == 797
+    assert res_col.values.size == 200
+    # Column values differ (raw=sin, resampled=cos): neither is a copy of the other
+    assert not np.array_equal(raw_col.values[:200], res_col.values)
+    # Shared-axis table carries the real MD; resampled keeps its own axis
+    assert raw_proj.axis_id == "md"
+    assert res_proj.axis_id == "curve-GR"
+    # Table path agrees with the graphic path (same versions bound)
+    pres = presentation_from_display_set(tpl, doc, display)
+    layer_sizes = sorted(
+        l.values.size
+        for t in pres.tracks
+        if t.role == "curve"
+        for l in t.layers
+    )
+    assert layer_sizes == [200, 797]
+
+
 def test_soft_column_tip_threshold() -> None:
     assert SOFT_COLUMN_TIP_THRESHOLD == 64
 
