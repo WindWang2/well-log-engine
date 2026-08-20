@@ -227,6 +227,67 @@ void complex_cjk_like_outline_rasterizes_under_budget() {
   require(ms < 50.0, "CJK-like outline must rasterize in under 50ms (#607)");
 }
 
+// #33: pattern primitives far outside the tile (huge reach) must clip the
+// rasterizer's iteration box to the tile instead of walking the primitive's
+// full bounding box (unbounded loop, GL upload DoS) with double->int64 bound
+// casts that are UB past int64 range. Verified with reach 1e9 (slow walk)
+// and 1e300 (cast UB) — both must return within the time budget and draw the
+// visible part correctly.
+void far_reach_primitives_rasterize_bounded() {
+  for (const double reach : {1.0e9, 1.0e300}) {
+    PatternDefinition pattern;
+    pattern.id = id("50000000-0000-4000-8000-000000000003");
+    pattern.tile_width = Millimetres{10.0};
+    pattern.tile_height = Millimetres{10.0};
+    pattern.stroke_width = Millimetres{0.2};
+    pattern.foreground = RgbaColor{255, 0, 0, 255};
+    pattern.background = RgbaColor{0, 0, 0, 0};
+    pattern.primitives.push_back(PatternLine{
+        PhysicalPoint{Millimetres{0.0}, Millimetres{0.0}},
+        PhysicalPoint{Millimetres{reach}, Millimetres{0.0}}});
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto tile = rasterize_pattern_tile(pattern, 16.0);
+    const auto ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count();
+    require(tile.width == 160 && tile.height == 160,
+            "10mm tiles at 16px/mm must rasterize to 160px");
+    // The line runs along row 0: those pixels must be painted foreground;
+    // rows far from it must stay empty.
+    require(alpha_at(tile, 0, 0) == 255 && alpha_at(tile, 80, 0) == 255,
+            "the visible part of a far-reach line must still be drawn");
+    require(alpha_at(tile, 80, 40) == 0,
+            "pixels far from a far-reach line must stay empty");
+    require(ms < 100.0,
+            "far-reach primitives must rasterize within the tile bounds "
+            "(#33)");
+  }
+
+  // A circle centred far outside the tile intersects nothing: it must
+  // rasterize (draw nothing) within the same budget instead of walking its
+  // own huge bbox.
+  PatternDefinition circle_pattern;
+  circle_pattern.id = id("50000000-0000-4000-8000-000000000004");
+  circle_pattern.tile_width = Millimetres{10.0};
+  circle_pattern.tile_height = Millimetres{10.0};
+  circle_pattern.stroke_width = Millimetres{0.2};
+  circle_pattern.foreground = RgbaColor{255, 0, 0, 255};
+  circle_pattern.background = RgbaColor{0, 0, 0, 0};
+  circle_pattern.primitives.push_back(PatternCircle{
+      PhysicalPoint{Millimetres{1.0e300}, Millimetres{1.0e300}},
+      Millimetres{4.0}, true});
+  const auto t0 = std::chrono::steady_clock::now();
+  const auto tile = rasterize_pattern_tile(circle_pattern, 16.0);
+  const auto ms = std::chrono::duration<double, std::milli>(
+                      std::chrono::steady_clock::now() - t0)
+                      .count();
+  require(tile.width == 160 && tile.height == 160,
+          "circle tiles must keep the tile size");
+  require(alpha_at(tile, 80, 80) == 0,
+          "an off-tile circle must paint nothing");
+  require(ms < 100.0, "off-tile circles must rasterize bounded (#33)");
+}
+
 void atlas_packing_is_deterministic_and_bounded() {
   ShelfAtlasPacker packer(64, 32);
   const auto first = packer.allocate(16, 8);
@@ -257,6 +318,7 @@ int main() {
   glyph_outlines_rasterize_with_winding_fill();
   glyph_triangle_occupancy_matches_winding();
   complex_cjk_like_outline_rasterizes_under_budget();
+  far_reach_primitives_rasterize_bounded();
   atlas_packing_is_deterministic_and_bounded();
   std::cout << "PASS: pattern and glyph rasterization\n";
   return EXIT_SUCCESS;

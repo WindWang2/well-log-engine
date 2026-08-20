@@ -47,33 +47,66 @@ void blend_pixel(RasterImage &image, std::uint32_t column, std::uint32_t row,
                                            255l));
 }
 
+// Intersects a primitive's pixel-space bounding box with the image bounds
+// before iteration, mirroring export_layout::clip_line_to_tile on the
+// SVG/PDF side. Without it a primitive far outside the tile (e.g. a pattern
+// line with reach 1e9..1e300) walked its whole bbox — effectively unbounded
+// per tile — and the double->int64 bound casts were UB (#33). Clamping to
+// [0, limit] first keeps every cast in range; a NaN bound fails the strict
+// comparisons below and draws nothing instead of looping on garbage.
+[[nodiscard]] bool clamp_bounds_to_image(double &minimum_x, double &maximum_x,
+                                         double &minimum_y, double &maximum_y,
+                                         std::uint32_t width,
+                                         std::uint32_t height) {
+  const auto limit_x = static_cast<double>(width);
+  const auto limit_y = static_cast<double>(height);
+  minimum_x = std::clamp(minimum_x, 0.0, limit_x);
+  maximum_x = std::clamp(maximum_x, 0.0, limit_x);
+  minimum_y = std::clamp(minimum_y, 0.0, limit_y);
+  maximum_y = std::clamp(maximum_y, 0.0, limit_y);
+  return minimum_x < maximum_x && minimum_y < maximum_y;
+}
+
 void draw_segment(RasterImage &image, RasterPoint from, RasterPoint to,
                   double half_width, RgbaColor color) {
-  const auto minimum_x = static_cast<std::int64_t>(std::floor(
-      std::min(from.x, to.x) - half_width - 1.0));
-  const auto maximum_x = static_cast<std::int64_t>(
-      std::ceil(std::max(from.x, to.x) + half_width + 1.0));
-  const auto minimum_y = static_cast<std::int64_t>(std::floor(
-      std::min(from.y, to.y) - half_width - 1.0));
-  const auto maximum_y = static_cast<std::int64_t>(
-      std::ceil(std::max(from.y, to.y) + half_width + 1.0));
+  auto minimum_x =
+      std::floor(std::min(from.x, to.x) - half_width - 1.0);
+  auto maximum_x =
+      std::ceil(std::max(from.x, to.x) + half_width + 1.0);
+  auto minimum_y =
+      std::floor(std::min(from.y, to.y) - half_width - 1.0);
+  auto maximum_y =
+      std::ceil(std::max(from.y, to.y) + half_width + 1.0);
+  if (!clamp_bounds_to_image(minimum_x, maximum_x, minimum_y, maximum_y,
+                             image.width, image.height)) {
+    return;
+  }
   const auto delta_x = to.x - from.x;
   const auto delta_y = to.y - from.y;
-  const auto length_squared = delta_x * delta_x + delta_y * delta_y;
-  for (auto row = minimum_y; row <= maximum_y; ++row) {
-    for (auto column = minimum_x; column <= maximum_x; ++column) {
+  // hypot is overflow-safe; normalizing the direction keeps the projection
+  // finite for extreme reaches (e.g. 1e300 px) where delta^2 would overflow
+  // to inf and the resulting NaN coverage would poison the blend (#33).
+  const auto length = std::hypot(delta_x, delta_y);
+  if (!std::isfinite(length)) {
+    return;
+  }
+  for (auto row = static_cast<std::int64_t>(minimum_y);
+       row <= static_cast<std::int64_t>(maximum_y); ++row) {
+    for (auto column = static_cast<std::int64_t>(minimum_x);
+         column <= static_cast<std::int64_t>(maximum_x); ++column) {
       const auto point_x = static_cast<double>(column) + 0.5;
       const auto point_y = static_cast<double>(row) + 0.5;
       double distance = 0.0;
-      if (length_squared == 0.0) {
+      if (length == 0.0) {
         distance = std::hypot(point_x - from.x, point_y - from.y);
       } else {
-        const auto projection = std::clamp(
-            ((point_x - from.x) * delta_x + (point_y - from.y) * delta_y) /
-                length_squared,
-            0.0, 1.0);
-        distance = std::hypot(point_x - (from.x + projection * delta_x),
-                              point_y - (from.y + projection * delta_y));
+        const auto unit_x = delta_x / length;
+        const auto unit_y = delta_y / length;
+        const auto offset = std::clamp(
+            (point_x - from.x) * unit_x + (point_y - from.y) * unit_y, 0.0,
+            length);
+        distance = std::hypot(point_x - (from.x + offset * unit_x),
+                              point_y - (from.y + offset * unit_y));
       }
       blend_pixel(image, static_cast<std::uint32_t>(column),
                   static_cast<std::uint32_t>(row), color,
@@ -85,16 +118,18 @@ void draw_segment(RasterImage &image, RasterPoint from, RasterPoint to,
 void draw_circle(RasterImage &image, RasterPoint center, double radius,
                  double half_width, bool filled, RgbaColor color) {
   const auto extent = filled ? radius : radius + half_width;
-  const auto minimum_x = static_cast<std::int64_t>(
-      std::floor(center.x - extent - 1.0));
-  const auto maximum_x =
-      static_cast<std::int64_t>(std::ceil(center.x + extent + 1.0));
-  const auto minimum_y = static_cast<std::int64_t>(
-      std::floor(center.y - extent - 1.0));
-  const auto maximum_y =
-      static_cast<std::int64_t>(std::ceil(center.y + extent + 1.0));
-  for (auto row = minimum_y; row <= maximum_y; ++row) {
-    for (auto column = minimum_x; column <= maximum_x; ++column) {
+  auto minimum_x = std::floor(center.x - extent - 1.0);
+  auto maximum_x = std::ceil(center.x + extent + 1.0);
+  auto minimum_y = std::floor(center.y - extent - 1.0);
+  auto maximum_y = std::ceil(center.y + extent + 1.0);
+  if (!clamp_bounds_to_image(minimum_x, maximum_x, minimum_y, maximum_y,
+                             image.width, image.height)) {
+    return;
+  }
+  for (auto row = static_cast<std::int64_t>(minimum_y);
+       row <= static_cast<std::int64_t>(maximum_y); ++row) {
+    for (auto column = static_cast<std::int64_t>(minimum_x);
+         column <= static_cast<std::int64_t>(maximum_x); ++column) {
       const auto distance =
           std::hypot(static_cast<double>(column) + 0.5 - center.x,
                      static_cast<double>(row) + 0.5 - center.y);
