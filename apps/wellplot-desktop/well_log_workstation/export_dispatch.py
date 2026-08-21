@@ -31,6 +31,8 @@ Pagination is host-side and only applies to depth-axis types
 
 from __future__ import annotations
 
+import os
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -293,7 +295,18 @@ def _engine_export(
     min_size = 20 if fmt == "cgm" else 50
     if not isinstance(data, bytes) or len(data) < min_size:
         raise ExportError(f"引擎 {fmt} 导出返回空数据")
-    out.write_bytes(data)
+    # Atomic write: never leave a half-written export on failure (issue #38).
+    tmp = out.with_name(f".{out.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, out)
+    except Exception:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        raise
     return out
 
 # -- per-type backends ---------------------------------------------------

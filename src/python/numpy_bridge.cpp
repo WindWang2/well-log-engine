@@ -75,17 +75,24 @@ void set_welllog_error(const char *type_name, const char *code,
                        const char *message) {
   auto *module = PyImport_ImportModule("welllog.errors");
   if (module == nullptr) {
+    PyErr_Clear();
+    PyErr_Format(PyExc_RuntimeError, "%s [%s]: %s", type_name, code, message);
     return;
   }
   auto *type = PyObject_GetAttrString(module, type_name);
   Py_DECREF(module);
   if (type == nullptr) {
+    PyErr_Clear();
+    PyErr_Format(PyExc_RuntimeError, "%s [%s]: %s", type_name, code, message);
     return;
   }
   auto *instance = PyObject_CallFunction(type, "ss", message, code);
   if (instance != nullptr) {
     PyErr_SetObject(type, instance);
     Py_DECREF(instance);
+  } else {
+    PyErr_Clear();
+    PyErr_Format(PyExc_RuntimeError, "%s [%s]: %s", type_name, code, message);
   }
   Py_DECREF(type);
 }
@@ -512,6 +519,11 @@ PyObject *submit_curve_impl(WellLogView *view, PyObject *depth,
 
 PyObject *sample_value_impl(WellLogView *view, const QString &curve_id_text,
                             unsigned long long sample_index) {
+  if (view != nullptr && QThread::currentThread() != view->thread()) {
+    set_welllog_error("WellLogThreadError", "thread_violation",
+                      "sample_value must run on the Qt GUI thread");
+    return nullptr;
+  }
   if (view == nullptr || !view->document_id().has_value()) {
     Py_RETURN_NONE;
   }
