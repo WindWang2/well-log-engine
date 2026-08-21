@@ -1707,7 +1707,80 @@ class WellLogWorkstationWindow(QMainWindow):
                 f"引擎对比不可用，已回退主机画布 · {exc}"
             )
 
+    def _clear_workspace_state(self) -> None:
+        """Clear per-workspace session and UI state (issue #38).
+
+        Must be called on every workspace switch (None->ws, ws->None, wsA->wsB),
+        and also covers the direct-to-None close path.
+        """
+        self.session.clear()
+        self._selected_well_id = None
+        self._active_plot_id = None
+        self._active_plot_type = None
+        self._presentation = None
+        self._correlation_presentations = []
+        self._correlation_links = []
+        self._active_tops = []
+        self._tops_diagnostics = []
+        self._semantic_selection = None
+        self._selection_guard = False
+        self._display_sets.clear()
+        self._view_modes.clear()
+        self._view_mode = "graphic"
+        self._tops_history.clear_all()
+        self._curve_edit_history.clear_all()
+        self._corr_layout_undo.clear()
+        self._corr_layout_redo.clear()
+        self.multi_track_canvas.set_presentation(None)
+        self._refresh_track_list()
+        self.multi_track_canvas.set_tops(None)
+        self.correlation_canvas.set_columns([])
+        self.correlation_canvas.set_links(None)
+        self._refresh_links_list()
+        self._refresh_correlation_well_list(None)
+        self._primary_surface = "host"
+        self._engine_last_error = None
+        if hasattr(self, "single_well_stack"):
+            self.single_well_stack.setCurrentIndex(0)
+        if hasattr(self, "correlation_stack"):
+            self.correlation_stack.setCurrentIndex(0)
+        self.plot_caption.setText("单井分析图 · 多图道（选择井并应用图版）")
+        self.correlation_caption.setText(
+            "地层对比图-lite · 多井并列 · 共享深度（需 ≥2 口井）"
+        )
+        self.document_tabs.setTabText(0, "单井分析图（多图道）")
+        self.document_tabs.setTabText(1, "地层对比图-lite")
+        self.document_tabs.setCurrentIndex(0)
+        # Reset table page
+        if hasattr(self, "_primary_table_model"):
+            self._primary_table_model.set_projection(None)
+        if hasattr(self, "table_axis_tabs"):
+            while self.table_axis_tabs.count() > 1:
+                w = self.table_axis_tabs.widget(1)
+                self.table_axis_tabs.removeTab(1)
+                if w is not None:
+                    w.deleteLater()
+            try:
+                self.table_axis_tabs.setTabText(0, "主表")
+            except Exception:
+                pass
+        self._table_models = [self._primary_table_model] if hasattr(self, "_primary_table_model") else []
+        if hasattr(self, "table_empty_label"):
+            try:
+                self.table_empty_label.hide()
+            except Exception:
+                pass
+        self._hide_table_error()
+        self._hide_table_progress()
+
     def set_workspace(self, ws: Workspace | None) -> None:
+        # Every workspace switch must clear the previous workspace's state
+        # (issue #38: non-None -> non-None previously skipped the cleanup).
+        # Capture old root before overwriting self._workspace.
+        old_root = self._workspace.root if self._workspace is not None else None
+        new_root = ws.root if ws is not None else None
+        if old_root != new_root:
+            self._clear_workspace_state()
         self._workspace = ws
         # Activate the workspace mnemonic alias dictionary so template/display
         # matching picks up alias curves (FRS §1.2 / P0-A).
@@ -1715,38 +1788,10 @@ class WellLogWorkstationWindow(QMainWindow):
 
         set_active_map(ws.mnemonic_alias if ws is not None else None)
         if ws is None:
-            self.session.clear()
-            self._selected_well_id = None
-            self._active_plot_id = None
-            self._active_plot_type = None
-            self._presentation = None
-            self._correlation_presentations = []
-            self._correlation_links = []
-            self._active_tops = []
-            self._tops_diagnostics = []
-            self._tops_history.clear_all()
-            self._curve_edit_history.clear_all()
-            self._corr_layout_undo.clear()
-            self._corr_layout_redo.clear()
-            self.multi_track_canvas.set_presentation(None)
-            self._refresh_track_list()
-            self.multi_track_canvas.set_tops(None)
-            self.correlation_canvas.set_columns([])
-            self.correlation_canvas.set_links(None)
-            self._refresh_links_list()
-            self._refresh_correlation_well_list(None)
-            self._primary_surface = "host"
-            if hasattr(self, "single_well_stack"):
-                self.single_well_stack.setCurrentIndex(0)
-            if hasattr(self, "correlation_stack"):
-                self.correlation_stack.setCurrentIndex(0)
-            self.plot_caption.setText("单井分析图 · 多图道（选择井并应用图版）")
-            self.correlation_caption.setText(
-                "地层对比图-lite · 多井并列 · 共享深度（需 ≥2 口井）"
-            )
-            self.document_tabs.setTabText(0, "单井分析图（多图道）")
-            self.document_tabs.setTabText(1, "地层对比图-lite")
-            self.document_tabs.setCurrentIndex(0)
+            # Already cleared above (old_root != new_root when closing), but
+            # keep idempotent clear for the None->None re-entry path.
+            if old_root == new_root:
+                self._clear_workspace_state()
         self._act_import_las.setEnabled(ws is not None)
         self._act_import_plot_xml.setEnabled(ws is not None)
         self._act_import_plot_xlsx.setEnabled(ws is not None)
@@ -2386,16 +2431,27 @@ class WellLogWorkstationWindow(QMainWindow):
         )
         self.apply_semantic_selection(sel)
 
-    def _on_table_selection_changed(self, *_args) -> None:
+    def _on_table_selection_changed(self, *_args, view=None, model=None) -> None:
+        """Handle row selection in any axis table tab — graph↔table semantic sync.
+
+        Secondary tabs pass their view/model via the lambda binding created in
+        _refresh_table_projection; the primary tab falls back to
+        _primary_table_view/_primary_table_model. No sender() inspection.
+        """
         if self._selection_guard or self._selected_well_id is None:
             return
-        if not hasattr(self, "_primary_table_view"):
+        target_view = view if view is not None else getattr(self, "_primary_table_view", None)
+        target_model = model if model is not None else getattr(self, "_primary_table_model", None)
+        if target_view is None or target_model is None:
             return
-        indexes = self._primary_table_view.selectionModel().selectedRows()
+        try:
+            indexes = target_view.selectionModel().selectedRows()
+        except Exception:  # noqa: BLE001
+            return
         if not indexes:
             return
-        row = indexes[0].row()
-        proj = self._primary_table_model.projection()
+        row = int(indexes[0].row())
+        proj = target_model.projection()
         if proj is None:
             return
         mnemo, leaf = self._primary_curve_hint()
@@ -2426,43 +2482,106 @@ class WellLogWorkstationWindow(QMainWindow):
             return
         self.multi_track_canvas.set_selection_depth(sel.reference_depth)
 
+    @staticmethod
+    def _is_index_axis_projection(proj) -> bool:
+        """True for len-N index-axis projections (issue #38 / table_projection.py:213).
+
+        These carry depth == arange(n) with unit == "idx" and must not be
+        mapped by reference depth.
+        """
+        try:
+            return str(getattr(proj, "depth_unit", "")) == "idx"
+        except Exception:  # noqa: BLE001
+            return False
+
     def _apply_selection_to_table(self) -> None:
+        """Sync semantic selection into the table tab highlights.
+
+        For len-N index-axis projections (depth == arange(n), unit == "idx")
+        the reference depth carries no axis semantics, so depth-based
+        nearest_sample_index mapping is skipped — the tab is left
+        unhighlighted rather than jumping to a wrong row.
+        """
         if not hasattr(self, "_primary_table_view"):
             return
         sel = self._semantic_selection
-        model = self._primary_table_model
-        proj = model.projection()
-        if sel is None or proj is None:
+        # Clear or (re-)highlight every visible axis tab; _table_models is
+        # kept in sync with table_axis_tabs order.
+        views: list = []
+        models: list = []
+        if hasattr(self, "_primary_table_view") and hasattr(self, "_primary_table_model"):
+            views.append(self._primary_table_view)
+            models.append(self._primary_table_model)
+        # Extra tabs (index 1..)
+        if hasattr(self, "table_axis_tabs"):
+            for i in range(1, self.table_axis_tabs.count()):
+                w = self.table_axis_tabs.widget(i)
+                if w is None:
+                    continue
+                # Model is at index i in _table_models (0 == primary)
+                m = self._table_models[i] if i < len(self._table_models) else None
+                if m is not None:
+                    views.append(w)
+                    models.append(m)
+        if sel is None:
             self._selection_guard = True
             try:
-                self._primary_table_view.clearSelection()
+                for v in views:
+                    try:
+                        v.clearSelection()
+                    except Exception:  # noqa: BLE001
+                        pass
             finally:
                 self._selection_guard = False
             return
-        if (
-            self._selected_well_id is not None
-            and sel.well_id != self._selected_well_id
-        ):
-            return
-        # Prefer sample_index when it lands on this projection's axis
-        row = sel.sample_index
-        if row < 0 or row >= proj.row_count:
-            # Map by reference depth
-            from well_log_workstation.semantic_selection import (  # local avoid cycle noise
-                nearest_sample_index,
-            )
-
-            mapped = nearest_sample_index(proj.depth, sel.reference_depth)
-            if mapped is None:
-                return
-            row = mapped
-        if row >= model.rowCount():
+        if self._selected_well_id is not None and sel.well_id != self._selected_well_id:
             return
         self._selection_guard = True
         try:
-            index = model.index(row, 0)
-            self._primary_table_view.selectRow(row)
-            self._primary_table_view.scrollTo(index)
+            for v, m in zip(views, models):
+                proj = m.projection() if hasattr(m, "projection") else None
+                if proj is None:
+                    try:
+                        v.clearSelection()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    continue
+                is_index = self._is_index_axis_projection(proj)
+                row = int(sel.sample_index)
+                needs_map = row < 0 or row >= proj.row_count
+                if needs_map:
+                    if is_index:
+                        # No depth semantics — leave this tab unhighlighted
+                        # rather than seeking the nearest pseudo-depth.
+                        try:
+                            v.clearSelection()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        continue
+                    from well_log_workstation.semantic_selection import (  # local
+                        nearest_sample_index,
+                    )
+
+                    mapped = nearest_sample_index(proj.depth, sel.reference_depth)
+                    if mapped is None:
+                        try:
+                            v.clearSelection()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        continue
+                    row = int(mapped)
+                if row < 0 or row >= m.rowCount():
+                    try:
+                        v.clearSelection()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    continue
+                try:
+                    idx = m.index(row, 0)
+                    v.selectRow(row)
+                    v.scrollTo(idx)
+                except Exception:  # noqa: BLE001
+                    pass
         finally:
             self._selection_guard = False
 
@@ -2686,6 +2805,12 @@ class WellLogWorkstationWindow(QMainWindow):
                     QAbstractItemView.SelectionMode.SingleSelection
                 )
                 view.verticalHeader().setDefaultSectionSize(20)
+                # Wire secondary tab selection directly with captured view/model
+                # (issue #38: no sender() inference; lambda captures via defaults
+                # bound to this window — same pattern as mode buttons above).
+                view.selectionModel().selectionChanged.connect(
+                    lambda _s, _d, v=view, m=model: self._on_table_selection_changed(view=v, model=m),
+                )
                 self.table_axis_tabs.addTab(view, f"轴 {proj.axis_id}")
                 self._table_models.append(model)
             self._apply_selection_to_table()
