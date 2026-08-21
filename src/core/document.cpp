@@ -417,8 +417,14 @@ bool NullBitmapView::is_null(std::uint64_t index) const noexcept {
   // data may legally be null when bit_length is 0, but from_raw (public API)
   // does not reject bit_length > 0 with a null data pointer — guard so the
   // accessor returns false instead of dereferencing null (issue #478).
+  // bit_length alone does not prove the backing store is readable that far:
+  // from_raw also accepts bit_length > byte_capacity * 8, so an index can be
+  // in declared-bit range yet past the buffer end (heap over-read under ASan,
+  // issue #37). Reads beyond the declared capacity return false — beyond the
+  // declared null semantics — instead of touching memory the view does not
+  // own.
   return impl_ != nullptr && impl_->data != nullptr &&
-         index < impl_->bit_length &&
+         index < impl_->bit_length && index / 8 < impl_->byte_capacity &&
          (impl_->data[index / 8] & (std::uint8_t{1} << (index % 8))) != 0;
 }
 

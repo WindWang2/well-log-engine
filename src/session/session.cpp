@@ -3635,6 +3635,21 @@ WellLogSession::execute(const AppendBatchCommand &command) {
     if (!impl_->documents.contains(command.document_id)) {
       return append_document_missing(command.document_id);
     }
+    if (command.blocks.empty()) {
+      // An empty batch consumes no revision — the same no-op receipt as the
+      // non-coalescing path, without the monotonic gate below.
+      return commit_append_batch(command);
+    }
+    // Same monotonic revision gate as commit_append_batch (issue #37): the
+    // staging path must not let a stale/equal target_revision ride into a
+    // later flush. The immediate-commit path refuses such a command; without
+    // this gate the coalescing branch accepted it, staged its blocks, and a
+    // due flush committed them as a fresh revision — silently clobbering the
+    // revision contract a racing host depends on.
+    if (command.target_revision.value <=
+        impl_->documents.at(command.document_id)->revision().value) {
+      return append_revision_not_monotonic(command.document_id);
+    }
     // Stage this command's tail-blocks into the per-document coalescer.
     auto &coalescer = impl_->append_coalescers[command.document_id];
     for (const auto &block : command.blocks) {
@@ -4164,6 +4179,38 @@ WellLogSession::execute(const ApplyPatchCommand &command) {
       const auto presentation_result =
           execute(SetPresentationCommand{*patched_presentation});
       if (!presentation_result.has_value()) {
+        // All-or-nothing (issue #37): the SetDocumentCommand commit above
+        // already published a new revision, so returning the error alone
+        // would strand the session half-way through the composite patch —
+        // new document, no presentation, no history entry. Roll back to the
+        // captured pre-patch semantic state (document + presentation +
+        // selection) through the same staged-restore path history uses, so
+        // observers see one coherent transition back to the original state.
+        // The pre-patch state was live moments ago, so its restore cannot
+        // fail for the reasons the patched presentation just did.
+        if (history_entry.before.document == nullptr) {
+          return Error{
+              .code = ErrorCode::internal_error,
+              .severity = Severity::error,
+              .entity_id = command.document_id,
+              .message = MessageKey::internal_error,
+              .arguments = {},
+          };
+        }
+        impl_->pending_history_restores.insert_or_assign(
+            command.document_id, history_entry.before);
+        const auto rollback =
+            execute(SetDocumentCommand{*history_entry.before.document});
+        impl_->pending_history_restores.erase(command.document_id);
+        if (!rollback.has_value()) {
+          return Error{
+              .code = ErrorCode::internal_error,
+              .severity = Severity::error,
+              .entity_id = command.document_id,
+              .message = MessageKey::internal_error,
+              .arguments = {},
+          };
+        }
         return presentation_result;
       }
       presentation_commit = presentation_result.value();
@@ -4284,6 +4331,39 @@ WellLogSession::execute_history(EntityId document_id,
       const auto presentation =
           execute(SetPresentationCommand{*target.presentation});
       if (!presentation.has_value()) {
+        // All-or-nothing (issue #37): the SetDocumentCommand above already
+        // moved the document to the history target, so returning the error
+        // alone would leave the session mid-transition (target document, no
+        // presentation, entry neither undone nor redone). Restore the
+        // pre-transition semantic state — the other end of this history
+        // entry — through the same staged-restore path, making the failed
+        // undo/redo a no-op.
+        const auto &rollback_state = direction == HistoryDirection::undo
+                                         ? source.back().after
+                                         : source.back().before;
+        if (rollback_state.document == nullptr) {
+          return Error{
+              .code = ErrorCode::internal_error,
+              .severity = Severity::error,
+              .entity_id = document_id,
+              .message = MessageKey::internal_error,
+              .arguments = {},
+          };
+        }
+        impl_->pending_history_restores.insert_or_assign(document_id,
+                                                         rollback_state);
+        const auto rollback =
+            execute(SetDocumentCommand{*rollback_state.document});
+        impl_->pending_history_restores.erase(document_id);
+        if (!rollback.has_value()) {
+          return Error{
+              .code = ErrorCode::internal_error,
+              .severity = Severity::error,
+              .entity_id = document_id,
+              .message = MessageKey::internal_error,
+              .arguments = {},
+          };
+        }
         return presentation;
       }
       receipt = presentation.value();

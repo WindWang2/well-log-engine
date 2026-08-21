@@ -749,6 +749,30 @@ void escaped_surrogate_pair_decodes_to_astral_character() {
 
 } // namespace
 
+// A NullBitmapView whose declared bit_length exceeds the backing bytes
+// (byte_capacity * 8) must answer is_null with false beyond the buffer
+// instead of reading out of bounds (issue #37; ASan heap-buffer-overflow on
+// from_raw(1 byte, bit_length=64).is_null(8..63) before the guard).
+void null_bitmap_view_reads_beyond_capacity_as_not_null() {
+  auto one_byte = std::make_shared<const std::vector<std::uint8_t>>(
+      std::initializer_list<std::uint8_t>{0b11111111});
+  const auto view = NullBitmapView::from_raw(one_byte->data(), 64,
+                                             one_byte->size(),
+                                             SharedOwner{one_byte}, {});
+  require(!view.empty(), "view with bit_length 64 must not be empty");
+  require(view.bit_length() == 64, "declared bit length must round-trip");
+  require(view.byte_capacity() == 1, "declared capacity must round-trip");
+  // Bits 0..7 are backed by the single byte (all set) — still readable.
+  require(view.is_null(0) && view.is_null(7),
+          "bits inside the backing byte must read as null");
+  // Bits 8..63 have no backing byte — false, never an out-of-bounds read.
+  for (std::uint64_t index = 8; index < 64; ++index) {
+    require(!view.is_null(index),
+            "bits beyond byte_capacity*8 must read as not null");
+  }
+  require(!view.is_null(64), "index past bit_length must read as not null");
+}
+
 int main() {
   manifest_round_trip_rebinds_external_buffers();
   manifest_writer_rejects_documents_outside_schema();
@@ -756,6 +780,7 @@ int main() {
   over_limit_image_and_empty_custom_sources_rejected();
   version_gate_accepts_v1_and_rejects_unknown();
   escaped_surrogate_pair_decodes_to_astral_character();
+  null_bitmap_view_reads_beyond_capacity_as_not_null();
   std::cout << "PASS: manifest round trip\n";
   return EXIT_SUCCESS;
 }
