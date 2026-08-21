@@ -708,6 +708,10 @@ struct PreparedScene::Impl {
   std::string font_asset_fingerprint;
   PresentationVersion presentation_version;
   std::uint64_t depth_transform_version{};
+  // The control-point map itself (not just its version) so pick inverse
+  // mapping can undo the same Reference→Display placement transform the
+  // preparer applied (issue #37). Empty (identity) when no transform is set.
+  DepthTransform depth_transform_map{};
   std::vector<PreparedTrack> tracks;
   std::vector<PreparedCurveLayer> curve_layers;
   std::vector<PreparedCurveSegment> curve_segments;
@@ -1473,6 +1477,30 @@ PreparedScene::pick_fill(const FillPickQuery &query) const noexcept {
   return std::nullopt;
 }
 
+namespace {
+
+// Invert the preparer's depth placement for pick hits (issue #37). Placement
+// maps Reference Depth → Display Depth via the presentation DepthTransform,
+// then normalizes over the (display-space) depth range into scene mm:
+//   top_mm = (display - top) / (bottom - top) * physical_height
+// (see the depth_to_top placement lambda). The exact inverse therefore runs
+// scene mm → display depth → map_display_to_reference. With an identity
+// transform (empty control points) map_display_to_reference is the identity,
+// so this reduces to the historical linear inversion.
+[[nodiscard]] double
+pick_top_to_reference(const DepthTransform &depth_transform, double top_mm,
+                      double depth_top, double depth_span,
+                      double physical_height_mm) noexcept {
+  if (!(physical_height_mm > 0.0) || !(depth_span > 0.0)) {
+    return depth_top;
+  }
+  const auto display_depth =
+      depth_top + (top_mm / physical_height_mm) * depth_span;
+  return map_display_to_reference(depth_transform, display_depth);
+}
+
+} // namespace
+
 std::optional<ImagePick>
 PreparedScene::pick_image(const ImagePickQuery &query) const noexcept {
   if (impl_ == nullptr) {
@@ -1496,14 +1524,13 @@ PreparedScene::pick_image(const ImagePickQuery &query) const noexcept {
           position.top.value < top || position.top.value > bottom) {
         continue;
       }
-      // Invert the depth mapping (depth = top + (top_mm / height) * span) to
-      // report the reference depth at the hit point.
-      auto reference_depth = depth_top;
-      if (impl_->physical_height.value > 0.0 && depth_span > 0.0) {
-        reference_depth =
-            depth_top + (position.top.value / impl_->physical_height.value) *
-                            depth_span;
-      }
+      // Invert the depth placement (placement = forward DepthTransform, then
+      // depth_range → mm; see depth_to_top) to report the reference depth at
+      // the hit point — never a linear mm→reference guess, which ignores a
+      // non-identity DepthTransform (issue #37).
+      const auto reference_depth = pick_top_to_reference(
+          impl_->depth_transform_map, position.top.value, depth_top,
+          depth_span, impl_->physical_height.value);
       return ImagePick{
           .layer_id = layer_it->id,
           .image_source_id = tile.image_source_id,
@@ -1570,12 +1597,11 @@ PreparedScene::pick_custom(const CustomPickQuery &query) const noexcept {
           position.top.value > bottom + tol_v) {
         continue;
       }
-      auto reference_depth = depth_top;
-      if (impl_->physical_height.value > 0.0 && depth_span > 0.0) {
-        reference_depth =
-            depth_top + (position.top.value / impl_->physical_height.value) *
-                            depth_span;
-      }
+      // Same inverse placement as pick_image (issue #37): undo the forward
+      // DepthTransform instead of assuming a linear mm→reference axis.
+      const auto reference_depth = pick_top_to_reference(
+          impl_->depth_transform_map, position.top.value, depth_top,
+          depth_span, impl_->physical_height.value);
       return CustomPick{
           .layer_id = layer_it->id,
           .source_id = primitive.source_id,
@@ -2036,6 +2062,7 @@ Result<PreparedScene> detail::ScenePreparer::prepare_impl(
         std::string{presentation.font_asset_fingerprint()};
     scene->presentation_version = presentation.presentation_version();
     scene->depth_transform_version = presentation.depth_transform().version;
+    scene->depth_transform_map = presentation.depth_transform_map();
     scene->tracks.reserve(presentation.tracks().size());
     scene->curve_layers.reserve(presentation.curve_layers().size());
 
@@ -3887,11 +3914,15 @@ compose_multi_well_scene(std::span<const WellScenePlacement> wells,
       // Copy source then shift (avoids mutating the live per-well scene).
       PreparedScene::Impl local = src;
       shift_scene_impl(local, dx, placement.document_id);
+      // The composite revision must track the freshest well: a host compares
+      // it against per-well revisions to detect staleness, so pinning the
+      // first well's revision made a newer second well look stale (issue
+      // #37).
+      out->document_revision =
+          DocumentRevision{std::max(out->document_revision.value,
+                                    local.document_revision.value)};
       // Depth range: union of wells (shared display depth should match).
       if (!depth_range_set) {
-        out->document_revision = local.document_revision.value == 0
-                                     ? DocumentRevision{1}
-                                     : local.document_revision;
         out->reference_depth_domain = local.reference_depth_domain;
         out->reference_depth_unit = local.reference_depth_unit;
         out->reference_depth_top = local.reference_depth_top;
@@ -3996,6 +4027,37 @@ compose_multi_well_scene(std::span<const WellScenePlacement> wells,
       for (auto layer : local.text_layers) {
         layer.first_run += static_cast<std::uint64_t>(run_base);
         out->text_layers.push_back(layer);
+      }
+      // Text fonts are keyed by font_index (a text-engine asset index), so a
+      // second well's fonts mostly repeat the first well's indices; keep one
+      // entry per index like the glyph-outline dedup below. Issues carry no
+      // scene-local indices — append them so export diagnostics survive
+      // composition (issue #37).
+      for (const auto &font : local.text_fonts) {
+        const auto already = std::any_of(
+            out->text_fonts.begin(), out->text_fonts.end(),
+            [&](const PreparedTextFont &existing) {
+              return existing.index == font.index;
+            });
+        if (!already) {
+          out->text_fonts.push_back(font);
+        }
+      }
+      for (const auto &issue : local.text_issues) {
+        out->text_issues.push_back(issue);
+      }
+      for (const auto &issue : local.value_issues) {
+        out->value_issues.push_back(issue);
+      }
+      // Track header entries feed the export legend band (pagination/PDF/CGM);
+      // dropping them emptied the legend on every multi-well surface. Their
+      // label runs are scene text runs — remap by this well's run base like
+      // interval/marker labels above (issue #37).
+      for (auto header : local.track_header_entries) {
+        if (header.label_run_index != no_text_run) {
+          header.label_run_index += static_cast<std::uint64_t>(run_base);
+        }
+        out->track_header_entries.push_back(header);
       }
       // Glyph outlines/commands are keyed (font_index, glyph_id); skip
       // outlines the composite already carries so SVG defs stay unique.

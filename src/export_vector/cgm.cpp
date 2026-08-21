@@ -549,12 +549,17 @@ struct DepthWindow {
   double height_mm{}; // printable height used for VDC (bottom-top or fixed)
 };
 
-[[nodiscard]] std::vector<DepthWindow>
+[[nodiscard]] Result<std::vector<DepthWindow>>
 build_depth_windows(double scene_height_mm, const CgmExportOptions &opt) {
   std::vector<DepthWindow> windows;
   if (!(opt.page_height_mm > 0.0) || !(scene_height_mm > 0.0)) {
     windows.push_back({0.0, scene_height_mm, scene_height_mm});
     return windows;
+  }
+  // Non-finite options (NaN page height / overlap) slice nothing usable.
+  if (!std::isfinite(opt.page_height_mm) || !std::isfinite(scene_height_mm)) {
+    return cgm_error(ErrorCode::invalid_presentation,
+                     MessageKey::presentation_invalid);
   }
   auto overlap = opt.page_overlap;
   if (!std::isfinite(overlap) || overlap < 0.0) {
@@ -564,8 +569,18 @@ build_depth_windows(double scene_height_mm, const CgmExportOptions &opt) {
     overlap = 0.0;
   }
   const auto step = opt.page_height_mm * (1.0 - overlap);
-  auto count = static_cast<std::uint32_t>(
-      std::ceil(scene_height_mm / std::max(step, 1e-9)));
+  // Guard the double→uint32 narrowing exactly like export_layout's
+  // compute_page_windows (k_max_page_windows): a tiny-but-positive
+  // page_height_mm makes the window count arbitrarily large (UB narrowing +
+  // multi-billion push_back loop). Reject as an invalid pagination request
+  // instead of hanging or overflowing (issue #37).
+  constexpr double k_max_page_windows = 65'536.0;
+  const auto count_d = std::ceil(scene_height_mm / std::max(step, 1e-9));
+  if (!std::isfinite(count_d) || count_d > k_max_page_windows) {
+    return cgm_error(ErrorCode::invalid_presentation,
+                     MessageKey::presentation_invalid);
+  }
+  auto count = static_cast<std::uint32_t>(count_d);
   if (count == 0) {
     count = 1;
   }
@@ -658,6 +673,9 @@ CgmSceneExporter::write(const PreparedScene &scene,
     }
 
     const auto windows = build_depth_windows(height_mm, options);
+    if (!windows.has_value()) {
+      return windows.error();
+    }
     const auto hatch_step =
         options.hatch_step_mm > 0.0 ? options.hatch_step_mm : 2.0;
 
@@ -682,8 +700,8 @@ CgmSceneExporter::write(const PreparedScene &scene,
     const auto points = scene.curve_points();
     const auto fill_vertices = scene.fill_vertices();
 
-    for (std::size_t pi = 0; pi < windows.size(); ++pi) {
-      const auto &win = windows[pi];
+    for (std::size_t pi = 0; pi < windows.value().size(); ++pi) {
+      const auto &win = windows.value()[pi];
       const auto scale = vdc_scale_for_window(width_mm, win.height_mm);
       const auto vdc_w = clamp_i16_counted(width_mm * scale,
                                            diag.vdc_coordinates_clamped);
