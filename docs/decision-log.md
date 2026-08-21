@@ -21,6 +21,8 @@
 - [ADR 0028：严格验证并局部容错](./adr/0028-strict-validation-local-tolerance.md)
 - [ADR 0031：原子分块追加](./adr/0031-append-only-streaming-contract.md)
 - [ADR 0032：强类型 API 配合版本化 Manifest](./adr/0032-versioned-manifest-external-buffers.md)
+- [ADR 0049：LIS ResForm 兼容 v1 身份与规则快照](./adr/0049-lis-resform-v1-profile.md)
+- [ADR 0051：宿主侧 per-plot 单调修订计数器（schema v3）](./adr/0051-plot-revision-schema-v3.md)
 
 ## 渲染与扩展
 
@@ -37,6 +39,7 @@
 - [ADR 0033：不提供软件交互回退](./adr/0033-no-software-interactive-fallback.md)
 - [ADR 0034：派生 CPU/GPU 缓存预算化](./adr/0034-budgeted-derived-caches.md)
 - [ADR 0039：文档物理单位与屏幕单位分离](./adr/0039-physical-document-units.md)
+- [ADR 0050：显式虚线段数组为三后端共同来源（DashPattern）](./adr/0050-dash-pattern-three-backends.md)
 
 ## Qt、Python 与数据适配
 
