@@ -6,6 +6,7 @@ Engine Manifest is per-well data only — never the whole-project container.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from well_log_workstation.mnemonic_alias import normalize_alias_mapping
+
+logger = logging.getLogger(__name__)
 
 WORKSPACE_FILENAME = "workspace.json"
 WELLS_DIRNAME = "wells"
@@ -337,7 +340,7 @@ def ensure_startup_workspace() -> Workspace:
             except (WorkspaceError, OSError):
                 continue
     except Exception:
-        pass
+        logger.warning("load_recent failed; falling back to default workspace", exc_info=True)
     return open_or_create_workspace(default_workspace_root(), name="默认")
 
 
