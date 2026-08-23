@@ -4,7 +4,12 @@
 #include <chrono>
 #include <cstdint>
 #include <random>
+#if defined(_WIN32)
+#include <process.h>
+#define getpid _getpid
+#else
 #include <unistd.h>
+#endif
 namespace welllog {
 namespace {
 

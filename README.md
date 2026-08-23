@@ -35,12 +35,22 @@ This repository is published as a **standalone open-source project**. Host appli
 
 ## Build (CMake)
 
-Requirements: CMake ≥ 3.24, C++20 compiler, Qt 6 Widgets (for Qt targets), optional vcpkg (`VCPKG_ROOT`).
+Requirements: CMake ≥ 3.24, C++20 compiler (GCC ≥ 11, Clang ≥ 14, or MSVC 2022), Qt 6 Widgets (for Qt targets), optional vcpkg (`VCPKG_ROOT`).
+
+### Linux / macOS
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build --output-on-failure
+```
+
+### Windows (Visual Studio 2022 MSVC)
+
+```powershell
+cmake -S . -B build -DWELLLOG_BUILD_TEXT=OFF -DWELLLOG_BUILD_TESTS=ON
+cmake --build build --config Release --parallel 4
+ctest --test-dir build -C Release --output-on-failure
 ```
 
 Presets: see [CMakePresets.json](CMakePresets.json). Dependencies: [vcpkg.json](vcpkg.json) (harfbuzz, freetype, icu, zlib).

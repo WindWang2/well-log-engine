@@ -13,12 +13,20 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
-
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 #if defined(WELLLOG_ARROW_HAS_IPC)
 #include <arrow/api.h>
@@ -69,18 +77,35 @@ struct ArrowArrayOwner {
 };
 
 struct MmapOwner {
+#if defined(_WIN32)
+  void *addr{nullptr};
+  std::size_t size{};
+  HANDLE handle{NULL};
+#else
   void *addr{MAP_FAILED};
   std::size_t size{};
+#endif
 
   MmapOwner() = default;
   MmapOwner(const MmapOwner &) = delete;
   MmapOwner &operator=(const MmapOwner &) = delete;
 
   ~MmapOwner() {
+#if defined(_WIN32)
+    if (addr != nullptr) {
+      ::UnmapViewOfFile(addr);
+      addr = nullptr;
+    }
+    if (handle != NULL && handle != INVALID_HANDLE_VALUE) {
+      ::CloseHandle(handle);
+      handle = NULL;
+    }
+#else
     if (addr != MAP_FAILED && addr != nullptr && size > 0) {
       ::munmap(addr, size);
       addr = MAP_FAILED;
     }
+#endif
   }
 };
 
@@ -426,6 +451,56 @@ import_mmap_scalar_column(const std::filesystem::path &path, ScalarType type,
     if (path_str.empty() || path_str.find('\0') != std::string::npos) {
       return buffer_error(ErrorCode::unresolved_buffer);
     }
+#if defined(_WIN32)
+    const auto wpath = path.wstring();
+    if (wpath.empty()) {
+      return buffer_error(ErrorCode::unresolved_buffer);
+    }
+    HANDLE file_handle = ::CreateFileW(
+        wpath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file_handle == INVALID_HANDLE_VALUE) {
+      return buffer_error(ErrorCode::unresolved_buffer);
+    }
+    LARGE_INTEGER file_size{};
+    if (!::GetFileSizeEx(file_handle, &file_size)) {
+      ::CloseHandle(file_handle);
+      return buffer_error(ErrorCode::unresolved_buffer);
+    }
+    if (file_size.QuadPart < 0 ||
+        static_cast<std::uint64_t>(file_size.QuadPart) < *need_bytes) {
+      ::CloseHandle(file_handle);
+      return buffer_error();
+    }
+    const auto map_size = static_cast<std::size_t>(file_size.QuadPart);
+    if (static_cast<std::uint64_t>(map_size) >
+        default_container_security_limits().max_mmap_file_bytes) {
+      ::CloseHandle(file_handle);
+      return buffer_error(ErrorCode::resource_exhausted);
+    }
+    if (map_size == 0) {
+      ::CloseHandle(file_handle);
+      auto empty = std::make_shared<std::vector<std::byte>>();
+      return BufferView::from_raw(nullptr, 0, width, type, 0,
+                                  SharedOwner{empty}, std::move(source),
+                                  BufferAccessMode::zero_copy);
+    }
+    HANDLE map_handle = ::CreateFileMappingW(
+        file_handle, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    ::CloseHandle(file_handle);
+    if (map_handle == NULL) {
+      return buffer_error(ErrorCode::resource_exhausted);
+    }
+    void *addr = ::MapViewOfFile(map_handle, FILE_MAP_READ, 0, 0, map_size);
+    if (addr == nullptr) {
+      ::CloseHandle(map_handle);
+      return buffer_error(ErrorCode::resource_exhausted);
+    }
+    auto owner = std::make_shared<MmapOwner>();
+    owner->addr = addr;
+    owner->size = map_size;
+    owner->handle = map_handle;
+#else
     const int fd = ::open(path_str.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
       return buffer_error(ErrorCode::unresolved_buffer);
@@ -463,6 +538,7 @@ import_mmap_scalar_column(const std::filesystem::path &path, ScalarType type,
     auto owner = std::make_shared<MmapOwner>();
     owner->addr = addr;
     owner->size = map_size;
+#endif
     if (source.uri.empty()) {
       source.uri = path_str;
     }
