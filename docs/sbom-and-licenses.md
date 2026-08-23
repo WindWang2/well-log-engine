@@ -45,7 +45,7 @@ Bundled test fonts (not shipped in runtime wheels by default):
 | Compiler | GCC 14 / MSVC 19.4x / Clang 18 |
 | CMake | 3.28+ |
 | Qt | 6.x |
-| Python | 3.12 / 3.13 |
+| Python | 3.12 |
 | Engine version | 0.1.0 |
 | Git SHA | _(fill)_ |
 | Gate report | `WELLLOG_GATE_SCALE=full` log + dense_curve_benchmark JSON |

@@ -267,7 +267,6 @@ layout.addWidget(view)
 支持矩阵至少包含：
 
 - CPython 3.12；
-- CPython 3.13；
 - 项目明确支持的 PySide6/Qt 次版本；
 - Windows x64；
 - Linux x64。

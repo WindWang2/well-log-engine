@@ -41,7 +41,7 @@ Goal：环境治理 —— 修复/硬化 C++ → Python binding 环境、消除 
 
 - **base 解释器 + 显式 PYTHONPATH**（`scripts/python_env.sh` 从
   `pyvenv.cfg` 解析 base 解释器，拒绝 conda runtime，能力探测
-  PySide6==shiboken6 + numpy + CPython 3.12/3.13）。
+  PySide6==shiboken6 + numpy + CPython 3.12）。
 - 统一入口 `scripts/welllog_env.sh`（导出 `WELLLOG_PYTHON` /
   `WELLLOG_PYTHONPATH` / `WELLLOG_CMAKE`，并把 site-packages 桥接为
   `PYTHONPATH`）。

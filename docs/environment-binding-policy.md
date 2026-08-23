@@ -19,7 +19,7 @@
    site-packages。
 2. **拒绝 conda runtime**：`sys.base_prefix` 含 conda 即拒绝并给出原因
    （libstdc++ 封顶会破坏原生模块加载）。
-3. **版本一致性强制**：PySide6 == shiboken6，CPython 3.12/3.13，
+3. **版本一致性强制**：PySide6 == shiboken6，CPython 3.12，
    PySide6/shiboken6/Qt 同 SDK profile（CMake 侧已有 FATAL_ERROR 检查）。
 4. **GLIBCXX 可诊断**：`scripts/check_binding_env.py` 报告进程实际加载的
    libstdc++ 与 GLIBCXX 上限（≥ 3.4.35 才健康）。

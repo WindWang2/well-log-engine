@@ -17,7 +17,7 @@ runtime; it is not required to start the app.
 
 ## Prerequisites
 
-- Python 3.12 or 3.13
+- Python 3.12
 - Runtime deps for the host product: `PySide6`, `numpy`, `lasio` (and the
   `well_log_workstation` package on `PYTHONPATH` / installed editable)
 - Build-only: PyInstaller

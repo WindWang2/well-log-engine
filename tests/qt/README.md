@@ -35,4 +35,4 @@ ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
   ctest --test-dir build/asan -R 'async-lrw|qt-context-lifecycle' --output-on-failure
 ```
 
-Windows: use the toolchain’s ASan/UBSan (or Debug CRT) equivalent and re-run the same CTest names. Python 3.12 and 3.13: re-run `welllog.python.qt-lifecycle-stress` against each wheel.
+Windows: use the toolchain’s ASan/UBSan (or Debug CRT) equivalent and re-run the same CTest names. Python 3.12: re-run `welllog.python.qt-lifecycle-stress` against the wheel.

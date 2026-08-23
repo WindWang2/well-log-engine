@@ -76,7 +76,7 @@ Record evidence for each cell before a public release:
 | Linux x64 | NVIDIA / AMD / Intel | wheel | manual frame SLO |
 | Windows x64 | NVIDIA / AMD / Intel | wheel | manual frame SLO |
 
-Python **3.12** and **3.13** wheel smoke: `welllog.python.qt-embedding` + lifecycle stress when `WELLLOG_BUILD_PYTHON=ON`.
+Python **3.12** wheel smoke: `welllog.python.qt-embedding` + lifecycle stress when `WELLLOG_BUILD_PYTHON=ON`.
 
 ## Package / version gates (already automated)
 

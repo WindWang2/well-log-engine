@@ -51,7 +51,7 @@ try:
     import shiboken6_generator
 except Exception as exc:  # noqa: BLE001
     sys.exit(f"missing binding deps: {exc}")
-if not (3, 12) <= sys.version_info[:2] <= (3, 13):
+if sys.version_info[:2] != (3, 12):
     sys.exit(f"unsupported CPython {sys.version_info.major}.{sys.version_info.minor}")
 if PySide6.__version__ != shiboken6.__version__:
     sys.exit(f"PySide6 {PySide6.__version__} != shiboken6 {shiboken6.__version__}")
@@ -114,6 +114,6 @@ for cand in "${candidates[@]}"; do
 done
 
 echo "python_env: no capable Python runtime found" >&2
-echo "python_env: need CPython 3.12/3.13 with PySide6==shiboken6, shiboken6_generator, numpy" >&2
+echo "python_env: need CPython 3.12 with PySide6==shiboken6, shiboken6_generator, numpy" >&2
 echo "export WELLLOG_PYTHON_ENV=missing"
 exit 1

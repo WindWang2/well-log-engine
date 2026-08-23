@@ -120,10 +120,10 @@ def main() -> int:
         if PySide6.__version__ != shiboken6.__version__:  # type: ignore[union-attr]
             problems.append("PySide6 and shiboken6 versions differ")
 
-    if not (3, 12) <= sys.version_info[:2] <= (3, 13):
+    if sys.version_info[:2] != (3, 12):
         problems.append(
             f"CPython {sys.version_info.major}.{sys.version_info.minor} not in the "
-            "supported binding matrix (3.12/3.13)"
+            "supported binding matrix (3.12)"
         )
 
     print("\n".join(info))

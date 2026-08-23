@@ -11,7 +11,7 @@ name: WellLogEngine CI
 #   - Clang Debug ASan+UBSan, -Werror, full CTest
 #   - dense-curve benchmark with a committed regression baseline + metrics upload
 #   - Qt 6.8 Widgets headless/Mesa subset (GPU pixel tests excluded — see below)
-#   - Python 3.12/3.13 wheel build + binding smoke
+#   - Python 3.12 wheel build + binding smoke
 
 on:
   push:
@@ -229,7 +229,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.12"]
 
     steps:
       - name: Checkout

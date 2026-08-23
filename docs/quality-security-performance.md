@@ -127,7 +127,7 @@ Windows/Linux 真 GPU 运行夜间矩阵，不要求跨驱动逐像素相同。
 - Context 丢失/重建；
 - Widget 重挂载；
 - 信号限频；
-- Python 3.12/3.13 wheel 导入。
+- Python 3.12 wheel 导入。
 
 ## 3. Fuzz 与鲁棒性
 
