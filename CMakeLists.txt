@@ -44,8 +44,27 @@ if(NOT ZLIB_FOUND)
         URL https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
         URL_HASH SHA256=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        EXCLUDE_FROM_ALL
     )
     FetchContent_MakeAvailable(welllog_zlib)
+    if(TARGET zlibstatic)
+        set_property(
+            TARGET zlibstatic
+            PROPERTY INTERFACE_INCLUDE_DIRECTORIES
+            $<BUILD_INTERFACE:${welllog_zlib_BINARY_DIR}>
+            $<BUILD_INTERFACE:${welllog_zlib_SOURCE_DIR}>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+        )
+    endif()
+    if(TARGET zlib)
+        set_property(
+            TARGET zlib
+            PROPERTY INTERFACE_INCLUDE_DIRECTORIES
+            $<BUILD_INTERFACE:${welllog_zlib_BINARY_DIR}>
+            $<BUILD_INTERFACE:${welllog_zlib_SOURCE_DIR}>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+        )
+    endif()
     if(TARGET zlibstatic AND NOT TARGET ZLIB::ZLIB)
         add_library(ZLIB::ZLIB ALIAS zlibstatic)
         set(WELLLOG_ZLIB_INSTALL_TARGET zlibstatic)
