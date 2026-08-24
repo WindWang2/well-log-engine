@@ -184,15 +184,14 @@ scalar_type_for_buffer(const Py_buffer &view) noexcept {
   if (format == "q" && view.itemsize == 8) {
     return ScalarType::int64;
   }
-  // LP64 platforms (Linux/macOS) report C long as 'l'/'L': numpy's int64/
-  // uint64 expose buffer format "l"/"L" with itemsize 8 there, so accept them
-  // alongside the explicit 'q'/'Q'. The itemsize check keeps 4-byte longs
-  // (LLP64 Windows) rejected (#36).
-  if (format == "l" && view.itemsize == 8) {
-    return ScalarType::int64;
+  // Accept C long format "l"/"L" on both LP64 (itemsize 8) and LLP64 Windows (itemsize 4)
+  if (format == "l") {
+    if (view.itemsize == 4) return ScalarType::int32;
+    if (view.itemsize == 8) return ScalarType::int64;
   }
-  if (format == "L" && view.itemsize == 8) {
-    return ScalarType::uint64;
+  if (format == "L") {
+    if (view.itemsize == 4) return ScalarType::uint32;
+    if (view.itemsize == 8) return ScalarType::uint64;
   }
   if (format == "B" && view.itemsize == 1) {
     return ScalarType::uint8;
