@@ -3350,13 +3350,21 @@ command_report(const CommandReceipt &receipt) {
     }
     return parse_id(text, role);
   };
+  // #51: an absent optional id yields a nil EntityId; a PRESENT-but-invalid
+  // one must propagate parse_id's WellLogValidationError, not dereference
+  // the empty optional (bad_optional_access escaped as internal_error and
+  // swallowed the validation error chained on the indicator).
   const auto optional_id_field =
-      [&](const char *key) -> EntityId {
+      [&](const char *key) -> std::optional<EntityId> {
     QString text;
     if (!dict_get_string(payload, key, &text) || text.isEmpty()) {
       return EntityId{};
     }
-    return *parse_id(text, key);
+    auto parsed = parse_id(text, key);
+    if (!parsed) {
+      return std::nullopt;
+    }
+    return *parsed;
   };
 
   if (op == QStringLiteral("add_track")) {
@@ -3370,8 +3378,11 @@ command_report(const CommandReceipt &receipt) {
     dict_get_float_optional(payload, "header_font_size_mm",
                             &header_font_size_mm);
     const auto track_id = optional_id_field("track_id");
+    if (!track_id) {
+      return nullptr;  // parse error already reported
+    }
     const auto effective_track_id =
-        track_id.is_nil() ? generate_bridge_id() : track_id;
+        track_id->is_nil() ? generate_bridge_id() : *track_id;
     const auto result = session.execute(AddTrackCommand{
         .document_id = *document_id,
         .track_id = effective_track_id,
@@ -3491,9 +3502,15 @@ command_report(const CommandReceipt &receipt) {
       return nullptr;
     }
     const auto scale_id = optional_id_field("scale_id");
+    if (!scale_id) {
+      return nullptr;
+    }
     const auto layer_id_raw = optional_id_field("layer_id");
+    if (!layer_id_raw) {
+      return nullptr;
+    }
     const auto layer_id =
-        layer_id_raw.is_nil() ? generate_bridge_id() : layer_id_raw;
+        layer_id_raw->is_nil() ? generate_bridge_id() : *layer_id_raw;
     bool auto_range = true;
     dict_get_bool_optional(payload, "auto_range", &auto_range);
     QString color_text;
@@ -3554,11 +3571,15 @@ command_report(const CommandReceipt &receipt) {
     if (!target_track_id) {
       return nullptr;
     }
+    const auto target_scale_id = optional_id_field("target_scale_id");
+    if (!target_scale_id) {
+      return nullptr;
+    }
     const auto result = session.execute(MoveCurveLayerCommand{
         .document_id = *document_id,
         .layer_id = *layer_id,
         .target_track_id = *target_track_id,
-        .target_scale_id = optional_id_field("target_scale_id"),
+        .target_scale_id = *target_scale_id,
     });
     if (!result.has_value()) {
       set_result_error(result.error(), "move_curve_layer");
@@ -3572,8 +3593,11 @@ command_report(const CommandReceipt &receipt) {
       return nullptr;
     }
     const auto new_layer_raw = optional_id_field("new_layer_id");
+    if (!new_layer_raw) {
+      return nullptr;
+    }
     const auto new_layer_id =
-        new_layer_raw.is_nil() ? generate_bridge_id() : new_layer_raw;
+        new_layer_raw->is_nil() ? generate_bridge_id() : *new_layer_raw;
     const auto result = session.execute(DuplicateCurveLayerCommand{
         .document_id = *document_id,
         .layer_id = *layer_id,
@@ -3732,6 +3756,17 @@ command_report(const CommandReceipt &receipt) {
 }
 
 [[nodiscard]] PyObject *hover_info_impl(WellLogView *view) {
+  // #50: hover_pick reads GUI-thread-written state from any calling thread.
+  if (view == nullptr) {
+    set_welllog_error("WellLogValidationError", "invalid_view",
+                      "WellLogView is no longer valid");
+    return nullptr;
+  }
+  if (QThread::currentThread() != view->thread()) {
+    set_welllog_error("WellLogThreadError", "thread_violation",
+                      "hover inspection must run on the Qt GUI thread");
+    return nullptr;
+  }
   const auto pick = view->hover_pick();
   if (!pick.has_value()) {
     Py_RETURN_NONE;
@@ -3848,6 +3883,17 @@ command_report(const CommandReceipt &receipt) {
 }
 
 [[nodiscard]] PyObject *selection_state_impl(WellLogView *view) {
+  // #50: same view/thread contract as the other binding entries.
+  if (view == nullptr) {
+    set_welllog_error("WellLogValidationError", "invalid_view",
+                      "WellLogView is no longer valid");
+    return nullptr;
+  }
+  if (QThread::currentThread() != view->thread()) {
+    set_welllog_error("WellLogThreadError", "thread_violation",
+                      "selection read must run on the Qt GUI thread");
+    return nullptr;
+  }
   const auto document_id = view->document_id();
   if (!document_id.has_value()) {
     Py_RETURN_NONE;
@@ -3896,6 +3942,17 @@ command_report(const CommandReceipt &receipt) {
 
 [[nodiscard]] PyObject *presentation_state_impl(WellLogView *view,
                                                 const QString &document_id) {
+  // #50: same view/thread contract as the other binding entries.
+  if (view == nullptr) {
+    set_welllog_error("WellLogValidationError", "invalid_view",
+                      "WellLogView is no longer valid");
+    return nullptr;
+  }
+  if (QThread::currentThread() != view->thread()) {
+    set_welllog_error("WellLogThreadError", "thread_violation",
+                      "presentation read must run on the Qt GUI thread");
+    return nullptr;
+  }
   const auto parsed = parse_id(document_id, "document_id");
   if (!parsed) {
     return nullptr;
@@ -4108,6 +4165,18 @@ PyObject *set_row_selection(WellLogView *view, const QString &axis_id,
                             unsigned long long first_row,
                             unsigned long long last_row) noexcept {
   try {
+    // #50: session.execute mutates selection/undo state — without the
+    // guards this ran on ANY calling thread and corrupted GUI-thread state.
+    if (view == nullptr) {
+      set_welllog_error("WellLogValidationError", "invalid_view",
+                        "WellLogView is no longer valid");
+      return nullptr;
+    }
+    if (QThread::currentThread() != view->thread()) {
+      set_welllog_error("WellLogThreadError", "thread_violation",
+                        "row selection must run on the Qt GUI thread");
+      return nullptr;
+    }
     const auto document_id = view->document_id();
     if (!document_id.has_value()) {
       set_welllog_error("WellLogValidationError", "invalid_document",
