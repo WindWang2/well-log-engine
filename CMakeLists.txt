@@ -2122,6 +2122,15 @@ if(WELLLOG_BUILD_TESTS)
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/python/test_track_commands.py"
         )
         add_test(
+            NAME welllog.python.linked-interaction-bindings
+            COMMAND
+                "${CMAKE_COMMAND}" -E env
+                "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/python:${WELLLOG_PYTHON_SITE_PACKAGES}"
+                "QT_QPA_PLATFORM=minimal"
+                "${Python_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/python/test_linked_interaction_bindings.py"
+        )
+        add_test(
             NAME welllog.python.numpy-scalar-dtypes
             COMMAND
                 "${CMAKE_COMMAND}" -E env
