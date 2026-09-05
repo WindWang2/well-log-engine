@@ -3961,7 +3961,7 @@ resolve_pick_info_impl(WellLogView *view, std::optional<CurvePick> pick) {
   return dict;
 }
 
-// --- Linked-interpretation interaction channel (paleo-workbench L2) ---------
+// --- External host interaction channel (linked-view hosts) -----------------
 //
 // The host needs to (a) read the crosshair depth the mouse just moved (the
 // depth-cursor producer), (b) push an EXTERNAL link cursor into the view (the
