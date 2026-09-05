@@ -126,5 +126,46 @@ set_row_selection(WellLogView *view, const QString &axis_id,
 [[nodiscard]] PyObject *presentation_state(WellLogView *view,
                                            const QString &document_id) noexcept;
 
+// External link-cursor channel (linked-interpretation L2): sets a document's
+// crosshair so a host can drive the cursor from an outside selection (e.g. a
+// seismic cursor). Takes the REFERENCE depth (the axis coordinate the host
+// submitted, e.g. MD in metres) and maps it through the document's live
+// DepthTransform — the host never replicates engine display transforms.
+// ``track_fraction`` is the [0,1] horizontal anchor (clamped). GUI thread
+// only. Returns the command receipt dict or raises.
+[[nodiscard]] PyObject *
+set_crosshair(WellLogView *view, const QString &document_id,
+              double reference_depth, double track_fraction = 0.5) noexcept;
+
+// Clears the document's crosshair (SetCrosshairCommand with nullopt).
+[[nodiscard]] PyObject *
+clear_crosshair(WellLogView *view, const QString &document_id) noexcept;
+
+// The view's focused-document crosshair as
+// {document_id, display_depth, track_fraction, reference_depth} or None.
+// ``reference_depth`` is mapped back through the DepthTransform so hosts
+// consume axis coordinates (MD), never display depths.
+[[nodiscard]] PyObject *crosshair_state(WellLogView *view) noexcept;
+
+// External depth-interval selection: issues the same SetSelectionCommand as
+// the built-in Ctrl+drag gesture, on the document's primary Sampling Axis
+// (Reference Depth range, top <= bottom, both finite). Returns the command
+// receipt dict or raises.
+[[nodiscard]] PyObject *
+set_depth_selection(WellLogView *view, const QString &document_id, double top,
+                    double bottom) noexcept;
+
+// Jumps the document's viewport so the [top, bottom] reference-depth range is
+// in view (SetViewportCommand after reference→display mapping). Finite,
+// strictly increasing bounds. Returns the command receipt dict or raises.
+[[nodiscard]] PyObject *
+set_viewport_depth_range(WellLogView *view, const QString &document_id,
+                         double top, double bottom) noexcept;
+
+// The view's last click pick resolved through the same inspect pipeline as
+// hover_info (mnemonic, unit, depths, value) or None when nothing was
+// clicked. Complements the parameterless curveClicked signal.
+[[nodiscard]] PyObject *click_pick_info(WellLogView *view) noexcept;
+
 } // namespace python
 } // namespace welllog

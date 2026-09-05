@@ -3755,19 +3755,10 @@ command_report(const CommandReceipt &receipt) {
   return nullptr;
 }
 
-[[nodiscard]] PyObject *hover_info_impl(WellLogView *view) {
-  // #50: hover_pick reads GUI-thread-written state from any calling thread.
-  if (view == nullptr) {
-    set_welllog_error("WellLogValidationError", "invalid_view",
-                      "WellLogView is no longer valid");
-    return nullptr;
-  }
-  if (QThread::currentThread() != view->thread()) {
-    set_welllog_error("WellLogThreadError", "thread_violation",
-                      "hover inspection must run on the Qt GUI thread");
-    return nullptr;
-  }
-  const auto pick = view->hover_pick();
+// Shared resolution for hover/click picks: identical thread contract, dict
+// shape and provenance fields so hosts treat both uniformly.
+[[nodiscard]] PyObject *
+resolve_pick_info_impl(WellLogView *view, std::optional<CurvePick> pick) {
   if (!pick.has_value()) {
     Py_RETURN_NONE;
   }
@@ -3882,6 +3873,36 @@ command_report(const CommandReceipt &receipt) {
   return dict;
 }
 
+[[nodiscard]] PyObject *hover_info_impl(WellLogView *view) {
+  // #50: hover_pick reads GUI-thread-written state from any calling thread.
+  if (view == nullptr) {
+    set_welllog_error("WellLogValidationError", "invalid_view",
+                      "WellLogView is no longer valid");
+    return nullptr;
+  }
+  if (QThread::currentThread() != view->thread()) {
+    set_welllog_error("WellLogThreadError", "thread_violation",
+                      "hover inspection must run on the Qt GUI thread");
+    return nullptr;
+  }
+  return resolve_pick_info_impl(view, view->hover_pick());
+}
+
+[[nodiscard]] PyObject *click_pick_info_impl(WellLogView *view) {
+  // #50: click_pick shares hover_pick's GUI-thread contract.
+  if (view == nullptr) {
+    set_welllog_error("WellLogValidationError", "invalid_view",
+                      "WellLogView is no longer valid");
+    return nullptr;
+  }
+  if (QThread::currentThread() != view->thread()) {
+    set_welllog_error("WellLogThreadError", "thread_violation",
+                      "click inspection must run on the Qt GUI thread");
+    return nullptr;
+  }
+  return resolve_pick_info_impl(view, view->click_pick());
+}
+
 [[nodiscard]] PyObject *selection_state_impl(WellLogView *view) {
   // #50: same view/thread contract as the other binding entries.
   if (view == nullptr) {
@@ -3938,6 +3959,223 @@ command_report(const CommandReceipt &receipt) {
   Py_DECREF(first);
   Py_DECREF(last);
   return dict;
+}
+
+// --- Linked-interpretation interaction channel (paleo-workbench L2) ---------
+//
+// The host needs to (a) read the crosshair depth the mouse just moved (the
+// depth-cursor producer), (b) push an EXTERNAL link cursor into the view (the
+// seismic→well consumer), (c) drive the same Reference-Depth selection the
+// built-in Ctrl+drag gesture produces, and (d) jump the viewport to a depth.
+// All four ride existing session commands; nothing new is invented here.
+
+[[nodiscard]] PyObject *crosshair_state_impl(WellLogView *view) {
+  // #50: same view/thread contract as the other binding entries.
+  if (view == nullptr) {
+    set_welllog_error("WellLogValidationError", "invalid_view",
+                      "WellLogView is no longer valid");
+    return nullptr;
+  }
+  if (QThread::currentThread() != view->thread()) {
+    set_welllog_error("WellLogThreadError", "thread_violation",
+                      "crosshair read must run on the Qt GUI thread");
+    return nullptr;
+  }
+  const auto document_id = view->document_id();
+  if (!document_id.has_value()) {
+    Py_RETURN_NONE;
+  }
+  const auto &session = view->session();
+  const auto crosshair = session.crosshair(*document_id);
+  if (!crosshair.has_value()) {
+    Py_RETURN_NONE;
+  }
+  const auto transform = session.depth_transform(*document_id);
+  const auto reference_depth =
+      map_display_to_reference(transform, crosshair->display_depth);
+  auto *dict = PyDict_New();
+  if (dict == nullptr) {
+    return nullptr;
+  }
+  auto *document =
+      PyUnicode_FromString(document_id->to_string().c_str());
+  auto *display = PyFloat_FromDouble(crosshair->display_depth);
+  auto *fraction = PyFloat_FromDouble(crosshair->track_fraction);
+  auto *reference = PyFloat_FromDouble(reference_depth);
+  if (document == nullptr || display == nullptr || fraction == nullptr ||
+      reference == nullptr ||
+      PyDict_SetItemString(dict, "document_id", document) != 0 ||
+      PyDict_SetItemString(dict, "display_depth", display) != 0 ||
+      PyDict_SetItemString(dict, "track_fraction", fraction) != 0 ||
+      PyDict_SetItemString(dict, "reference_depth", reference) != 0) {
+    Py_XDECREF(document);
+    Py_XDECREF(display);
+    Py_XDECREF(fraction);
+    Py_XDECREF(reference);
+    Py_DECREF(dict);
+    return nullptr;
+  }
+  Py_DECREF(document);
+  Py_DECREF(display);
+  Py_DECREF(fraction);
+  Py_DECREF(reference);
+  return dict;
+}
+
+[[nodiscard]] PyObject *
+set_crosshair_impl(WellLogView *view, const QString &document_id,
+                   double reference_depth, double track_fraction) {
+  if (view == nullptr) {
+    set_welllog_error("WellLogValidationError", "invalid_view",
+                      "WellLogView is no longer valid");
+    return nullptr;
+  }
+  if (QThread::currentThread() != view->thread()) {
+    set_welllog_error("WellLogThreadError", "thread_violation",
+                      "crosshair write must run on the Qt GUI thread");
+    return nullptr;
+  }
+  if (!std::isfinite(reference_depth)) {
+    set_welllog_error("WellLogValidationError", "invalid_depth",
+                      "reference_depth must be finite");
+    return nullptr;
+  }
+  const auto parsed = parse_id(document_id, "document_id");
+  if (!parsed) {
+    return nullptr;
+  }
+  auto &session = view->session();
+  const auto transform = session.depth_transform(*parsed);
+  const auto display_depth =
+      map_reference_to_display(transform, reference_depth);
+  const auto result = session.execute(SetCrosshairCommand{
+      .document_id = *parsed,
+      .crosshair = CrosshairState{.track_fraction = std::clamp(track_fraction, 0.0, 1.0),
+                                  .display_depth = display_depth},
+  });
+  if (!result) {
+    set_result_error(result.error(), "set_crosshair");
+    return nullptr;
+  }
+  return command_report(result.value());
+}
+
+[[nodiscard]] PyObject *
+clear_crosshair_impl(WellLogView *view, const QString &document_id) {
+  if (view == nullptr) {
+    set_welllog_error("WellLogValidationError", "invalid_view",
+                      "WellLogView is no longer valid");
+    return nullptr;
+  }
+  if (QThread::currentThread() != view->thread()) {
+    set_welllog_error("WellLogThreadError", "thread_violation",
+                      "crosshair clear must run on the Qt GUI thread");
+    return nullptr;
+  }
+  const auto parsed = parse_id(document_id, "document_id");
+  if (!parsed) {
+    return nullptr;
+  }
+  const auto result = view->session().execute(SetCrosshairCommand{
+      .document_id = *parsed,
+      .crosshair = std::nullopt,
+  });
+  if (!result) {
+    set_result_error(result.error(), "clear_crosshair");
+    return nullptr;
+  }
+  return command_report(result.value());
+}
+
+[[nodiscard]] PyObject *
+set_depth_selection_impl(WellLogView *view, const QString &document_id,
+                         double top, double bottom) {
+  if (view == nullptr) {
+    set_welllog_error("WellLogValidationError", "invalid_view",
+                      "WellLogView is no longer valid");
+    return nullptr;
+  }
+  if (QThread::currentThread() != view->thread()) {
+    set_welllog_error("WellLogThreadError", "thread_violation",
+                      "depth selection must run on the Qt GUI thread");
+    return nullptr;
+  }
+  if (!std::isfinite(top) || !std::isfinite(bottom)) {
+    set_welllog_error("WellLogValidationError", "invalid_depth",
+                      "selection bounds must be finite");
+    return nullptr;
+  }
+  if (bottom < top) {
+    set_welllog_error("WellLogValidationError", "invalid_depth",
+                      "selection bottom must not be above top");
+    return nullptr;
+  }
+  const auto parsed = parse_id(document_id, "document_id");
+  if (!parsed) {
+    return nullptr;
+  }
+  auto &session = view->session();
+  const auto document = session.document(*parsed);
+  if (document == nullptr) {
+    set_welllog_error("WellLogValidationError", "invalid_document",
+                      "document_id does not match an open document");
+    return nullptr;
+  }
+  // Axis resolution mirrors the built-in gesture without a hovered curve:
+  // the document's first Sampling Axis (the primary axis).
+  if (document->sampling_axes().empty()) {
+    set_welllog_error("WellLogValidationError", "invalid_document",
+                      "document has no sampling axis to select on");
+    return nullptr;
+  }
+  const auto axis_id = document->sampling_axes().front().id;
+  const auto result = session.execute(SetSelectionCommand{
+      .document_id = *parsed,
+      .sampling_axis_id = axis_id,
+      .reference_depth_range = {.top = top, .bottom = bottom},
+  });
+  if (!result) {
+    set_result_error(result.error(), "set_depth_selection");
+    return nullptr;
+  }
+  return command_report(result.value());
+}
+
+[[nodiscard]] PyObject *
+set_viewport_depth_range_impl(WellLogView *view, const QString &document_id,
+                              double top, double bottom) {
+  if (view == nullptr) {
+    set_welllog_error("WellLogValidationError", "invalid_view",
+                      "WellLogView is no longer valid");
+    return nullptr;
+  }
+  if (QThread::currentThread() != view->thread()) {
+    set_welllog_error("WellLogThreadError", "thread_violation",
+                      "viewport write must run on the Qt GUI thread");
+    return nullptr;
+  }
+  if (!std::isfinite(top) || !std::isfinite(bottom) || !(top < bottom)) {
+    set_welllog_error("WellLogValidationError", "invalid_depth",
+                      "viewport needs finite strictly-increasing bounds");
+    return nullptr;
+  }
+  const auto parsed = parse_id(document_id, "document_id");
+  if (!parsed) {
+    return nullptr;
+  }
+  auto &session = view->session();
+  const auto transform = session.depth_transform(*parsed);
+  const auto result = session.execute(SetViewportCommand{
+      .document_id = *parsed,
+      .viewport = DepthViewport{
+          .top = map_reference_to_display(transform, top),
+          .bottom = map_reference_to_display(transform, bottom)},
+  });
+  if (!result) {
+    set_result_error(result.error(), "set_viewport_depth_range");
+    return nullptr;
+  }
+  return command_report(result.value());
 }
 
 [[nodiscard]] PyObject *presentation_state_impl(WellLogView *view,
@@ -4149,6 +4387,18 @@ PyObject *hover_info(WellLogView *view) noexcept {
   }
 }
 
+PyObject *click_pick_info(WellLogView *view) noexcept {
+  try {
+    return click_pick_info_impl(view);
+  } catch (const std::bad_alloc &) {
+    return PyErr_NoMemory();
+  } catch (...) {
+    set_welllog_error("WellLogError", "internal_error",
+                      "unexpected native failure during click inspect");
+    return nullptr;
+  }
+}
+
 PyObject *selection_state(WellLogView *view) noexcept {
   try {
     return selection_state_impl(view);
@@ -4219,6 +4469,73 @@ PyObject *set_row_selection(WellLogView *view, const QString &axis_id,
   } catch (...) {
     set_welllog_error("WellLogError", "internal_error",
                       "unexpected native failure during row selection");
+    return nullptr;
+  }
+}
+
+PyObject *crosshair_state(WellLogView *view) noexcept {
+  try {
+    return crosshair_state_impl(view);
+  } catch (const std::bad_alloc &) {
+    return PyErr_NoMemory();
+  } catch (...) {
+    set_welllog_error("WellLogError", "internal_error",
+                      "unexpected native failure reading crosshair");
+    return nullptr;
+  }
+}
+
+PyObject *set_crosshair(WellLogView *view, const QString &document_id,
+                        double reference_depth,
+                        double track_fraction) noexcept {
+  try {
+    return set_crosshair_impl(view, document_id, reference_depth,
+                              track_fraction);
+  } catch (const std::bad_alloc &) {
+    return PyErr_NoMemory();
+  } catch (...) {
+    set_welllog_error("WellLogError", "internal_error",
+                      "unexpected native failure during crosshair write");
+    return nullptr;
+  }
+}
+
+PyObject *clear_crosshair(WellLogView *view,
+                          const QString &document_id) noexcept {
+  try {
+    return clear_crosshair_impl(view, document_id);
+  } catch (const std::bad_alloc &) {
+    return PyErr_NoMemory();
+  } catch (...) {
+    set_welllog_error("WellLogError", "internal_error",
+                      "unexpected native failure during crosshair clear");
+    return nullptr;
+  }
+}
+
+PyObject *set_depth_selection(WellLogView *view, const QString &document_id,
+                              double top, double bottom) noexcept {
+  try {
+    return set_depth_selection_impl(view, document_id, top, bottom);
+  } catch (const std::bad_alloc &) {
+    return PyErr_NoMemory();
+  } catch (...) {
+    set_welllog_error("WellLogError", "internal_error",
+                      "unexpected native failure during depth selection");
+    return nullptr;
+  }
+}
+
+PyObject *set_viewport_depth_range(WellLogView *view,
+                                   const QString &document_id, double top,
+                                   double bottom) noexcept {
+  try {
+    return set_viewport_depth_range_impl(view, document_id, top, bottom);
+  } catch (const std::bad_alloc &) {
+    return PyErr_NoMemory();
+  } catch (...) {
+    set_welllog_error("WellLogError", "internal_error",
+                      "unexpected native failure during viewport write");
     return nullptr;
   }
 }

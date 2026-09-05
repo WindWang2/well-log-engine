@@ -154,6 +154,48 @@
                     %PYARG_0 = welllog::python::hover_info(%CPPSELF);
                 </inject-code>
             </add-function>
+            <add-function signature="click_pick_info()" return-type="PyObject*">
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::click_pick_info(%CPPSELF);
+                </inject-code>
+            </add-function>
+            <add-function signature="crosshair_state()" return-type="PyObject*">
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::crosshair_state(%CPPSELF);
+                </inject-code>
+            </add-function>
+            <add-function
+                signature="set_crosshair(QString@document_id@,double@reference_depth@,double@track_fraction@=0.5)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::set_crosshair(%CPPSELF, %1, %2, %3);
+                </inject-code>
+            </add-function>
+            <add-function
+                signature="clear_crosshair(QString@document_id@)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::clear_crosshair(%CPPSELF, %1);
+                </inject-code>
+            </add-function>
+            <add-function
+                signature="set_depth_selection(QString@document_id@,double@top@,double@bottom@)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::set_depth_selection(%CPPSELF, %1, %2, %3);
+                </inject-code>
+            </add-function>
+            <add-function
+                signature="set_viewport_depth_range(QString@document_id@,double@top@,double@bottom@)"
+                return-type="PyObject*"
+            >
+                <inject-code class="target" position="beginning">
+                    %PYARG_0 = welllog::python::set_viewport_depth_range(%CPPSELF, %1, %2, %3);
+                </inject-code>
+            </add-function>
             <add-function signature="selection_state()" return-type="PyObject*">
                 <inject-code class="target" position="beginning">
                     %PYARG_0 = welllog::python::selection_state(%CPPSELF);
