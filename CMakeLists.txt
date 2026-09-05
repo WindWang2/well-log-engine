@@ -149,8 +149,11 @@ if(WELLLOG_BUILD_PYTHON)
         REQUIRED
         COMPONENTS Interpreter Development
     )
-    if(Python_VERSION VERSION_GREATER_EQUAL 3.13)
-        message(FATAL_ERROR "WellLog Python bindings support CPython 3.12 only")
+    if(Python_VERSION VERSION_GREATER_EQUAL 3.14)
+        message(
+            FATAL_ERROR
+            "WellLog Python bindings support CPython 3.12/3.13 only (stable abi3 module)"
+        )
     endif()
     execute_process(
         COMMAND

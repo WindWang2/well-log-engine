@@ -3522,7 +3522,7 @@ command_report(const CommandReceipt &receipt) {
         .curve_id = *curve_id,
         .track_id = *track_id,
         .layer_id = layer_id,
-        .scale_id = scale_id,
+        .scale_id = *scale_id,
         .auto_range = auto_range,
         .color = parse_hex_color(
             color_text,
@@ -3540,8 +3540,8 @@ command_report(const CommandReceipt &receipt) {
       Py_XDECREF(report);
       return nullptr;
     }
-    if (!scale_id.is_nil()) {
-      if (!report_set_id(report, "scale_id", scale_id)) {
+    if (!scale_id->is_nil()) {
+      if (!report_set_id(report, "scale_id", *scale_id)) {
         Py_DECREF(report);
         return nullptr;
       }
