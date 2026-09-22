@@ -479,6 +479,10 @@ def _qt_paint_export(
         pm = QPixmap(int(w_mm * 4), int(h_mm * 4))  # ~4 px/mm (~100 dpi)
         pm.fill(QColor("#ffffff"))
         painter = QPainter(pm)
+        # paint_fn draws in millimetre units; scale the device to the 4
+        # px/mm raster, otherwise the whole plot lands in the top-left
+        # quarter of the canvas (ISSUE-009).
+        painter.scale(4.0, 4.0)
         try:
             paint_fn(painter, QRectF(0, 0, w_mm, h_mm))
             if border_frame:

@@ -941,3 +941,45 @@ def test_qt_pdf_crop_marks_grow_output(tmp_path: Path) -> None:
         path=str(tmp_path / "marked.pdf"), crop_marks=True,
     )
     assert marked.stat().st_size > plain.stat().st_size
+
+
+def test_qt_png_export_paints_full_canvas(qtbot, tmp_path: Path) -> None:
+    """ISSUE-009: the PNG device is 4 px/mm but paint_fn draws in mm units —
+    without painter.scale(4, 4) everything lands in the top-left quarter."""
+    from PySide6.QtCore import QLineF, QRectF
+    from PySide6.QtGui import QColor, QImage, QPen
+    from well_log_workstation.export_dispatch import PageSpec, _qt_paint_export
+
+    class _StubDoc:
+        type = "correlation"
+        id = "quarter"
+
+    def paint_fn(painter, rect: QRectF) -> None:
+        # Draw in millimetre units across the whole page, as every real
+        # host paint callback does.
+        painter.setPen(QPen(QColor("#000000"), 0.5))
+        painter.drawLine(QLineF(rect.left(), rect.top(), rect.right(), rect.bottom()))
+        painter.drawLine(QLineF(rect.left(), rect.bottom(), rect.right(), rect.top()))
+
+    out = tmp_path / "quarter.png"
+    _qt_paint_export(_StubDoc(), "png", PageSpec(), paint_fn=paint_fn, path=out)
+
+    img = QImage(str(out))
+    assert not img.isNull()
+    w, h = img.width(), img.height()
+    # A4 landscape ~ 297x210mm -> ~1188x840 px. Diagonals from the mm-rect
+    # corners must reach the far corners of the DEVICE; without the scale
+    # they stop at (w/4, h/4) and the outer region stays blank.
+    def _dark_in(x0, y0, x1, y1) -> int:
+        n = 0
+        for y in range(y0, y1, 3):
+            for x in range(x0, x1, 3):
+                c = img.pixelColor(x, y)
+                if c.red() < 128 and c.green() < 128 and c.blue() < 128:
+                    n += 1
+        return n
+
+    assert _dark_in(w - w // 4, h - h // 4, w, h) > 5, (
+        "no ink in the far corner — 25%-scale shrink regression (ISSUE-009)"
+    )
+    assert _dark_in(0, 0, w // 4, h // 4) > 5, "near corner must have ink too"

@@ -215,8 +215,10 @@ def _paint_curve(
     if n < 2 or tw < 4 or th < 4:
         return
     if mode == "log":
-        vmin = max(vmin, 1e-6)
-        vmax = max(vmax, vmin * 10)
+        if not math.isfinite(vmin) or vmin <= 0.0:
+            vmin = 1e-6  # NaN/inf bounds must not leak into log mapping (ISSUE-016)
+        if not math.isfinite(vmax) or vmax <= vmin:
+            vmax = vmin * 10.0
         log_min, log_max = math.log10(vmin), math.log10(vmax)
 
     def x_map(v: float) -> float:
@@ -237,6 +239,8 @@ def _paint_curve(
         return x0 + t * tw
 
     def y_map(d: float) -> float:
+        if d1 <= d0:
+            return y0 + th / 2.0  # flat span: mid-track instead of ZeroDivision (ISSUE-007)
         return y0 + ((d - d0) / (d1 - d0)) * th
 
     # Baseline fill (FRS §2.x 基线充填) — under the curve line, same

@@ -343,3 +343,32 @@ GR.GAPI
     assert len(derived) >= 1, "the derived resampled curve must bind a layer"
     # Grid 1000..1002 (2 m step over 1000–1003): [1000, 1002].
     np.testing.assert_allclose(derived[0].depth, [1000.0, 1002.0])
+
+
+def test_resample_descending_depth_keeps_data() -> None:
+    """ISSUE-008: wireline curves logged bottom-up (descending MD) must
+    resample identically to their ascending reversal — np.interp on a
+    descending axis returned 100% NaN, silently destroying the curve."""
+    depth = np.array([0.0, 0.125, 0.25, 0.375, 0.5])
+    values = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
+    asc_d, asc_v, _ = resample_curve(depth, values, None, 0.125)
+    desc_d, desc_v, desc_null = resample_curve(
+        depth[::-1].copy(), values[::-1].copy(), None, 0.125
+    )
+    np.testing.assert_allclose(desc_d, asc_d)
+    np.testing.assert_allclose(desc_v, asc_v)
+    assert not desc_null.any(), "descending input must not produce NaNs"
+
+
+def test_resample_descending_null_mask_flipped_with_data() -> None:
+    depth = np.array([100.0, 100.5, 101.0, 101.5])
+    values = np.array([1.0, 2.0, 3.0, 4.0])
+    null_mask = np.array([False, True, False, False])
+    _, v, n = resample_curve(depth[::-1].copy(), values[::-1].copy(),
+                             null_mask[::-1].copy(), 0.5)
+    # The null sample at 100.5 must still gap the same positions as the
+    # ascending run (mask flips with the data, not against it).
+    _, v_asc, n_asc = resample_curve(depth, values, null_mask, 0.5)
+    np.testing.assert_allclose(np.nan_to_num(v, nan=-9.0),
+                               np.nan_to_num(v_asc, nan=-9.0))
+    np.testing.assert_array_equal(n, n_asc)
