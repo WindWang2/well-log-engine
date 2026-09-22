@@ -329,3 +329,36 @@ GR.GAPI
     # First station: tvdss = 500 − 0 = 500.
     assert points[0][0] == pytest.approx(500.0)
     assert points[0][1] == pytest.approx(0.0)
+
+
+def test_sidetrack_nonzero_md0_vertical_tvd_preserved() -> None:
+    """ISSUE-003: a survey starting below surface (sidetrack / subsea tieback,
+    MD0 > 0, vertical) must keep the pre-survey vertical hole in TVD. The
+    double tvd[0] assignment used to reset it to 0.0 for every n>1 survey,
+    shifting the whole trajectory up by MD0."""
+    stations = [
+        SurveyStation(1000.0, 0.0, 0.0),
+        SurveyStation(1100.0, 0.0, 0.0),
+        SurveyStation(1200.0, 0.0, 0.0),
+    ]
+    t = compute_trajectory(stations)
+    np.testing.assert_allclose(t.tvd, [1000.0, 1100.0, 1200.0])
+    np.testing.assert_allclose(t.north, [0.0, 0.0, 0.0])
+    np.testing.assert_allclose(t.east, [0.0, 0.0, 0.0])
+
+
+def test_sidetrack_nonzero_md0_deviated_start_tvd_anchored_at_md0() -> None:
+    """Deviated first station: the segment integration starts at TVD = MD0
+    (the vertical hole above the first survey station is still real hole —
+    it cannot vanish), then grows more slowly than MD once deviation
+    builds."""
+    stations = [
+        SurveyStation(500.0, 0.0, 0.0),
+        SurveyStation(600.0, 45.0, 0.0),
+        SurveyStation(700.0, 45.0, 0.0),
+    ]
+    t = compute_trajectory(stations)
+    assert t.tvd[0] == 500.0
+    assert t.tvd[1] > 500.0
+    assert t.tvd[-1] < 700.0  # 45° build: TVD grows slower than MD
+    assert t.tvd[-1] > 600.0

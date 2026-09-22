@@ -289,8 +289,12 @@ def _grid_cell(
     fy = max(0.0, (y - s.y_origin_m) / s.y_step_m)
     i = min(int(math.floor(fx)), s.x_nodes - 2)
     j = min(int(math.floor(fy)), s.y_nodes - 2)
-    u = min(max(fx - math.floor(fx), 0.0), 1.0)
-    v = min(max(fy - math.floor(fy), 0.0), 1.0)
+    # Fractions must be taken against the CLAMPED cell index (ISSUE-002):
+    # at the max edge (fx == x_nodes-1) the clamped cell is x_nodes-2 and the
+    # fraction there is 1.0 (the last node). Using the unclamped floor made
+    # u == 0.0, snapping the whole right/top boundary back one node.
+    u = min(max(fx - i, 0.0), 1.0)
+    v = min(max(fy - j, 0.0), 1.0)
     return i, j, u, v
 
 

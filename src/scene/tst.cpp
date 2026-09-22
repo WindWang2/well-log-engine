@@ -142,8 +142,12 @@ GridCell grid_cell(const SurfaceGrid& s, double x, double y) noexcept {
       std::min(static_cast<std::size_t>(std::floor(fx)), s.x_nodes - 2);
   const std::size_t j =
       std::min(static_cast<std::size_t>(std::floor(fy)), s.y_nodes - 2);
-  double u = fx - std::floor(fx);
-  double v = fy - std::floor(fy);
+  // Fractions must be taken against the CLAMPED cell index (ISSUE-002): at
+  // the max edge (fx == x_nodes-1) the clamped cell is x_nodes-2 and the
+  // fraction is 1.0 (the last node). Using the unclamped floor made u == 0,
+  // snapping the whole right/top boundary back one node.
+  double u = fx - static_cast<double>(i);
+  double v = fy - static_cast<double>(j);
   if (u < 0.0) {
     u = 0.0;
   }
