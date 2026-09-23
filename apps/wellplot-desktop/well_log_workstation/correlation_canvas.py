@@ -460,6 +460,10 @@ class CorrelationCanvas(QWidget):
             self._d0, self._d1 = min(mins), max(maxs)
         else:
             self._d0, self._d1 = 0.0, 1.0
+        # Flat span guard — same ZeroDivision family as section canvas
+        # (ISSUE-007).
+        if self._d1 <= self._d0:
+            self._d1 = self._d0 + 1.0
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
         if self._d0 is None or self._d1 is None:
@@ -669,8 +673,10 @@ class CorrelationCanvas(QWidget):
             wrap = bool(getattr(scale, "wrap", False)) if scale else False
             reverse = bool(getattr(scale, "reverse", False)) if scale else False
             if mode == "log":
-                vmin = max(vmin, 1e-6)
-                vmax = max(vmax, vmin * 10)
+                if not math.isfinite(vmin) or vmin <= 0.0:
+                    vmin = 1e-6  # NaN/inf bounds must not leak into log mapping (ISSUE-016)
+                if not math.isfinite(vmax) or vmax <= vmin:
+                    vmax = vmin * 10.0
                 log_min, log_max = math.log10(vmin), math.log10(vmax)
 
             def x_map(v: float) -> float:

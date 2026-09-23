@@ -57,8 +57,10 @@ def _map_xy(
     th: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     if mode == "log":
-        vmin = max(vmin, 1e-6)
-        vmax = max(vmax, vmin * 10)
+        if not math.isfinite(vmin) or vmin <= 0.0:
+            vmin = 1e-6  # NaN/inf bounds must not leak into log mapping (ISSUE-016)
+        if not math.isfinite(vmax) or vmax <= vmin:
+            vmax = vmin * 10.0
         log_min, log_max = math.log10(vmin), math.log10(vmax)
         with np.errstate(divide="ignore", invalid="ignore"):
             t = (np.log10(values) - log_min) / (log_max - log_min)

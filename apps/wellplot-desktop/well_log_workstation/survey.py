@@ -106,11 +106,15 @@ def compute_trajectory(
     east = np.empty(n, dtype=np.float64)
 
     md[0] = pts[0][0]
+    # First station (ISSUE-003): the hole above the first survey station is
+    # real hole. If the first station is vertical (inc 0), that section is a
+    # vertical drop, so TVD starts at MD0 (sidetracks / subsea tiebacks /
+    # surveys starting below a casing shoe keep their pre-survey depth). If
+    # the well is already deviated at the first station, the minimum-
+    # curvature integration below cannot reconstruct the unknown history
+    # above it, so the trajectory is anchored at the first station and
+    # segments add from there.
     tvd[0] = pts[0][0] if pts[0][1] == 0.0 else 0.0
-    # First station: if vertical (inc 0), TVD accumulates from 0 to md;
-    # otherwise the well starts deviating immediately — place TVD at 0 and
-    # let the first segment add to it.
-    tvd[0] = 0.0 if n > 1 else pts[0][0]
     north[0] = 0.0
     east[0] = 0.0
 

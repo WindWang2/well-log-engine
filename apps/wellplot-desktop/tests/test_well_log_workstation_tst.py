@@ -752,3 +752,37 @@ def test_bedding_sidecar_v1_files_still_load() -> None:
     spec = BeddingLayerSpec(top_md=0.0, bottom_md=200.0, dip_deg=10.0)
     assert spec.top_surface is None and spec.bottom_surface is None
     assert layer_surfaces(spec) is None
+
+
+def test_surface_height_at_max_boundary_hits_last_node() -> None:
+    """ISSUE-002: a point exactly on the right/top grid edge must evaluate to
+    the LAST node (u/v == 1 in the clamped last cell), not snap back one node
+    short (u/v == 0). Both the C++ SDK and this Python mirror shipped the
+    off-by-one, so the parity tests could not catch it."""
+    grid = SurfaceGrid(
+        x_origin_m=0.0,
+        y_origin_m=0.0,
+        x_step_m=10.0,
+        y_step_m=10.0,
+        x_nodes=3,
+        y_nodes=3,
+        # row-major y outer: rows y=0,10,20; each row x=0,10,20
+        z_tvd=[
+            0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0,
+            100.0, 200.0, 300.0,
+        ],
+    )
+    from well_log_workstation.tst import _surface_height
+
+    # Right edge of the top row: must be node (2,2) = 300, not node (1,2).
+    assert _surface_height(grid, 20.0, 20.0) == pytest.approx(300.0)
+    # Interior approach stays continuous: just inside the edge interpolates
+    # toward 300.
+    assert _surface_height(grid, 19.999, 20.0) == pytest.approx(300.0, abs=1.0)
+    # Top edge mid: node (1,2) = 200.
+    assert _surface_height(grid, 10.0, 20.0) == pytest.approx(200.0)
+    # Right edge mid: node (2,1) = 0 (row y=10 all zero).
+    assert _surface_height(grid, 20.0, 10.0) == pytest.approx(0.0)
+    # Origin corner unchanged.
+    assert _surface_height(grid, 0.0, 0.0) == pytest.approx(0.0)

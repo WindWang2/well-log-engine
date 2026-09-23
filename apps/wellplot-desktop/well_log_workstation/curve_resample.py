@@ -73,6 +73,13 @@ def resample_curve(
     work = values.astype(np.float64, copy=True)
     if null_mask is not None:
         work[np.asarray(null_mask, dtype=bool)] = np.nan
+    # np.interp requires an ascending xp axis: wireline curves logged
+    # bottom-up arrive descending, and interpolating against them yields
+    # 100% NaN (ISSUE-008). Flip the source pair; the derived axis below is
+    # ascending either way, so every caller sees the same orientation.
+    if depth.size >= 2 and float(depth[0]) > float(depth[-1]):
+        depth = depth[::-1]
+        work = work[::-1]
     new_depth = np.arange(d0, d1 + target_interval / 2.0, target_interval)
     new_values = np.interp(
         new_depth, depth, work, left=np.nan, right=np.nan

@@ -269,6 +269,11 @@ class SectionCanvas(QWidget):
             self._d0, self._d1 = min(mins), max(maxs)
         else:
             self._d0, self._d1 = 0.0, 1.0
+        # Flat span (every column sampled at one depth, e.g. single-sample
+        # curves) would ZeroDivision every (d - d0)/(d1 - d0) paint and
+        # hit-test mapping (ISSUE-007): widen to a 1-unit window instead.
+        if self._d1 <= self._d0:
+            self._d1 = self._d0 + 1.0
 
     # -- interaction (mirror CorrelationCanvas) -------------------------
 

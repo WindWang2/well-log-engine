@@ -251,6 +251,15 @@ jobs:
           version: "6.11.1"
           cache: true
 
+      - name: Restore Python 3.12 PATH
+        # jurplel/install-qt-action@v4 internally re-runs setup-python with
+        # >=3.14.0, which prepends CPython 3.14.x to PATH. Restore the
+        # 3.12 environment before the binding toolchain + wheel build so
+        # `python` and the CMake Python_EXECUTABLE pin resolve to 3.12.
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
       - name: Install binding toolchain
         shell: bash
         run: |
@@ -268,7 +277,14 @@ jobs:
 
       - name: Build wheel
         shell: bash
-        run: python -m build . --wheel --no-isolation --outdir dist
+        run: |
+          # Runner image drift: CMake FindPython can pick up a newer runner
+          # Python (e.g. 3.14.x in /opt/hostedtoolcache) ahead of
+          # setup-python's 3.12, tripping the 3.12/3.13 abi3 guard. Pin the
+          # interpreter explicitly so CMake sees the same CPython the wheel
+          # is being built for.
+          export CMAKE_ARGS="-DPython_EXECUTABLE=$(python -c 'import sys; print(sys.executable)')"
+          python -m build . --wheel --no-isolation --outdir dist
 
       - name: Install wheel
         shell: bash

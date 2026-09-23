@@ -11,6 +11,7 @@ four render sites (multi-track / correlation / section / export).
 
 from __future__ import annotations
 
+import math
 from typing import Callable
 
 import numpy as np
@@ -115,8 +116,10 @@ def _layer_x_map(
     vmax = eff.max if eff else 100.0
     mode = eff.mode if eff else "linear"
     if mode == "log":
-        vmin = max(vmin, 1e-6)
-        vmax = max(vmax, vmin * 10)
+        if not math.isfinite(vmin) or vmin <= 0.0:
+            vmin = 1e-6  # NaN/inf bounds must not leak into log mapping (ISSUE-016)
+        if not math.isfinite(vmax) or vmax <= vmin:
+            vmax = vmin * 10.0
         log_min, log_max = math.log10(vmin), math.log10(vmax)
         wrap = bool(getattr(eff, "wrap", False))
         reverse = bool(getattr(eff, "reverse", False))

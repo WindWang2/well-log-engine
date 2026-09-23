@@ -596,8 +596,10 @@ class MultiTrackCanvas(QWidget):
         if reverse:
             t = 1.0 - t  # FRS §2.x 反向刻度: inverse of the right->left mapping
         if mode == "log":
-            vmin = max(vmin, 1e-6)
-            vmax = max(vmax, vmin * 10)
+            if not math.isfinite(vmin) or vmin <= 0.0:
+                vmin = 1e-6  # NaN/inf bounds must not leak into log mapping (ISSUE-016)
+            if not math.isfinite(vmax) or vmax <= vmin:
+                vmax = vmin * 10.0
             log_min, log_max = math.log10(vmin), math.log10(vmax)
             return 10 ** (log_min + t * (log_max - log_min))
         return vmin + t * (vmax - vmin)
@@ -1459,8 +1461,10 @@ class MultiTrackCanvas(QWidget):
             mode = scale.mode if scale else "linear"
             reverse = bool(getattr(scale, "reverse", False)) if scale else False
             if mode == "log":
-                vmin = max(vmin, 1e-6)
-                vmax = max(vmax, vmin * 10)
+                if not math.isfinite(vmin) or vmin <= 0.0:
+                    vmin = 1e-6  # NaN/inf bounds must not leak into log mapping (ISSUE-016)
+                if not math.isfinite(vmax) or vmax <= vmin:
+                    vmax = vmin * 10.0
                 log_min, log_max = math.log10(vmin), math.log10(vmax)
             th = max(1, bottom - top)
 
@@ -1539,8 +1543,10 @@ class MultiTrackCanvas(QWidget):
         if n < 2 or tw < 4 or th < 4:
             return
         if mode == "log":
-            vmin = max(vmin, 1e-6)
-            vmax = max(vmax, vmin * 10)
+            if not math.isfinite(vmin) or vmin <= 0.0:
+                vmin = 1e-6  # NaN/inf bounds must not leak into log mapping (ISSUE-016)
+            if not math.isfinite(vmax) or vmax <= vmin:
+                vmax = vmin * 10.0
             log_min, log_max = math.log10(vmin), math.log10(vmax)
 
         def x_map(v: float) -> float:
