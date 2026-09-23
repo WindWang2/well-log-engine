@@ -251,6 +251,15 @@ jobs:
           version: "6.11.1"
           cache: true
 
+      - name: Restore Python 3.12 PATH
+        # jurplel/install-qt-action@v4 internally re-runs setup-python with
+        # >=3.14.0, which prepends CPython 3.14.x to PATH. Restore the
+        # 3.12 environment before the binding toolchain + wheel build so
+        # `python` and the CMake Python_EXECUTABLE pin resolve to 3.12.
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
       - name: Install binding toolchain
         shell: bash
         run: |
